@@ -411,9 +411,16 @@ def pseudonymize(
             )
         )
 
-    result = text
-    for entity, token in reversed(replacements):
-        result = result[: entity.start] + token + result[entity.end :]
+    # Junta os pedacos numa passada: fatiar o texto inteiro a cada troca era
+    # quadratico (dezenas de milhares de trocas num processo de mil folhas).
+    pieces: list[str] = []
+    cursor = 0
+    for entity, token in replacements:
+        pieces.append(text[cursor : entity.start])
+        pieces.append(token)
+        cursor = entity.end
+    pieces.append(text[cursor:])
+    result = "".join(pieces)
 
     return PseudonymizationResult(
         text=result,

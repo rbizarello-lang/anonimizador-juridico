@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections.abc import Iterable
+from itertools import accumulate
 
 from .types import EntitySpan
 from .validators import (
@@ -179,6 +181,24 @@ def _covered(start: int, end: int, spans: list[EntitySpan], entity_type: str) ->
     )
 
 
+class _Coverage:
+    """Mesma pergunta de ``_covered`` em O(log n), para a lista fixa de spans.
+
+    Os spans podem se sobrepor entre si: guarda o maior fim acumulado.
+    """
+
+    def __init__(self, spans: Iterable[EntitySpan], entity_type: str) -> None:
+        items = sorted(
+            (span.start, span.end) for span in spans if span.entity_type == entity_type
+        )
+        self._starts = [start for start, _end in items]
+        self._max_end = list(accumulate((end for _start, end in items), max))
+
+    def covers(self, start: int, end: int) -> bool:
+        index = bisect_left(self._starts, end)
+        return index > 0 and self._max_end[index - 1] > start
+
+
 def _scan(
     text: str,
     spans: list[EntitySpan],
@@ -191,6 +211,7 @@ def _scan(
     if not known:
         return []
     low, high = width_range
+    coverage = _Coverage(spans, entity_type)
     extras: list[EntitySpan] = []
     for match in seq_re.finditer(text):
         if match.group().count("\n") > 1:
@@ -205,7 +226,7 @@ def _scan(
         )
         if not target:
             continue
-        if _covered(match.start(), match.end(), spans, entity_type):
+        if coverage.covers(match.start(), match.end()):
             continue
         if _covered(match.start(), match.end(), extras, entity_type):
             continue
@@ -244,6 +265,7 @@ def _filial_spans(
 
     if not known_cnpj:
         return []
+    coverage = _Coverage(spans, "BR_CNPJ")
     found: list[EntitySpan] = []
     for match in _FORMATTED_CNPJ.finditer(text):
         if match.group().count("\n") > 1:
@@ -257,7 +279,7 @@ def _filial_spans(
             continue
         if key in known_cnpj or digits in known_cnpj:
             continue
-        if _covered(match.start(), match.end(), spans, "BR_CNPJ"):
+        if coverage.covers(match.start(), match.end()):
             continue
         if _covered(match.start(), match.end(), extras, "BR_CNPJ"):
             continue
