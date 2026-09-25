@@ -29,10 +29,17 @@ Se o app ja estava aberto com codigo velho, feche a janela e abra de novo.
 O atalho nao deve abrir janelas pretas do System32; se a abertura falhar,
 veja `saidas\app.log`.
 
-Duas abas:
+Tres abas:
 
-- **Anonimizar** — arquivos, nomes do caso (empresas/pessoas), pastas, executar
-- **Regras** — tags, regex estreita, lista de alvos, base CNPJ, exclusoes
+- **Lote** — fila de arquivos (escolher, adicionar pasta ou colar o caminho),
+  painel de execucao (resumo do caso, destinos, motor local) e resultado
+  (indicadores, trechos trocados por tipo, pastas, previa com os tokens
+  destacados)
+- **Caso** — empresas, pessoas e CPF/CNPJ da carteira; importa a planilha do Nexus
+- **Regras** — tags ligadas, regex estreita, termos protegidos, base CNPJ, experimentos
+
+O botao **?** do cabecalho abre "Como funciona" (principio de fidelidade,
+tags, extracao de PDF, leitura externa).
 
 ## Saidas
 

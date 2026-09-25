@@ -133,7 +133,7 @@ class GeminiPipelineTests(unittest.TestCase):
             markdown = job.outcomes[0].markdown_path.read_text(encoding="utf-8")
             self.assertTrue(job.export_allowed)
             self.assertIn("Joao Ainda Visivel", job.residual_hits)
-            self.assertIn("nao foram substituidos", job.export_warning)
+            self.assertIn("não foram substituídos", job.export_warning)
             self.assertNotIn("[PESSOA_2]", markdown)
 
 
