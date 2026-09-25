@@ -45,8 +45,9 @@ Nenhum dado real foi usado: todos os nomes, números e endereços dos testes sã
 7. **Entregue neste ciclo:** protótipo funcional (`tools/anonimizar_llm.py`), 47 testes novos,
    ferramenta de diagnóstico (`tools/sonda_vazamento.py`) e as correções de desempenho do
    núcleo. Medido: **3.000 páginas em 19 s** de processamento local (+ o tempo do LLM, estimado
-   em 3–8 min com 16–32 chamadas paralelas). Custo estimado: **US$ 2 a 13 por processo de
-   3.000 páginas**, conforme o modelo (§8.5, §9).
+   em 3–8 min com 16–32 chamadas paralelas). Custo estimado: **US$ 2,20 (3.1 Flash-Lite) a
+   13 (3.5 Flash) por processo de 3.000 páginas**, sem contar tokens de raciocínio — que
+   podem dobrar a conta do 3.5 Flash se ficarem no padrão (§8.5, correção de 25/09).
 
 ---
 
@@ -334,13 +335,25 @@ auditoria, lista de alvos e base CNPJ (como sementes do elenco).
 ### 8.5. Tempo e custo estimados
 
 Por chamada: prompt fixo ≈ 6 mil caracteres (~1,7 mil tokens) + trecho de 4 mil (~1,15 mil
-tokens); resposta ≈ 250 tokens. Duas leituras (descoberta + verificação). Preços públicos de
-setembro/2026, antes de desconto por cache implícito do prefixo.
+tokens); resposta ≈ 250 tokens. Duas leituras (descoberta + verificação): 2.046 chamadas para
+3.000 páginas, ≈ 5,8 milhões de tokens de entrada e 0,5 milhão de saída. Preços por milhão de
+tokens (entrada/saída), conferidos em agregadores em 25/09/2026 (a página oficial não abre
+deste ambiente): 3.1 Flash-Lite US$ 0,25/1,50; 3.5 Flash US$ 1,50/9,00. Sem desconto de cache
+nem de lote.
 
 | Processo | Trechos por leitura | Tempo LLM (16–32 em paralelo) | Gemini 3.1 Flash-Lite | Gemini 3.5 Flash |
 |---|---|---|---|---|
-| PARTE_1 (269 págs., 340 mil caracteres) | ~87 | 20–60 s | ~US$ 0,20 | ~US$ 0,60–1,10 |
-| 3.000 págs. (4 milhões de caracteres) | ~1.023 | 3–8 min | ~US$ 2 | ~US$ 7–13 |
+| PARTE_1 (269 págs., 340 mil caracteres) | ~87 | 20–60 s | ~US$ 0,20 | ~US$ 1,10 |
+| 3.000 págs. (4 milhões de caracteres) | ~1.023 | 3–8 min | ~US$ 2,20 | ~US$ 13 |
+
+**Correção (25/09):** a primeira versão desta tabela dava US$ 7–13 para o 3.5 Flash (uma fonte
+citava US$ 0,75/4,50) e **não contava tokens de raciocínio** (*thinking*), cobrados como saída.
+Cada 100 tokens de raciocínio por chamada somam ~US$ 0,30 (Flash-Lite) ou ~US$ 1,85 (3.5 Flash)
+por processo de 3.000 páginas. O 3.5 Flash vem com raciocínio "médio" por padrão, e o
+LangExtract 1.7 descarta `thinking_config` (não está entre as chaves que repassa ao Gemini):
+antes de usar o 3.5 Flash, o adaptador precisa de provedor próprio que fixe o nível mínimo.
+Com Flash-Lite, medir no piloto. Alavancas: modo lote do Gemini (−50%, resposta assíncrona),
+cache do prefixo fixo (até −90% na parte repetida do prompt), trechos maiores.
 
 Somar ~20 s de processamento local para 3.000 páginas e o OCR das páginas-imagem (~2 s por
 folha em CPU, pela medição da governança). Reexportação do mesmo processo com eventos novos
