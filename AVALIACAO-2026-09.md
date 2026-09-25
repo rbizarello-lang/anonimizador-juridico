@@ -395,7 +395,9 @@ comportamento.
 - Já aplicado: as cinco correções de desempenho do §4.2 (mesma saída, 6 a 7× mais rápido nas
   regras).
 - Geografia: só transformar "Evento N" em título quando ele iniciar a linha ou vier seguido de
-  " - " e sigla de documento; nunca no meio da frase.
+  " - " e sigla de documento; nunca no meio da frase. *Já aplicado:* vira título só o
+  cabeçalho colado (já marcado com `##`, depois de ponto/título/âncora, ou seguido de
+  travessão sem preposição antes); "conforme o evento 12, …" fica na frase.
 - `is_kept_term`: igualdade, não prefixo.
 - Desligar para spans da lista de alvos e da capa as regras `_PUBLIC_ORG_MARKERS`,
   `is_pfn_officer` e `is_precedent_party`; restringir `is_pfn_officer` ao nome imediatamente
