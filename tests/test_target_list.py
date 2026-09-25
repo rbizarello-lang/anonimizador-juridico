@@ -354,6 +354,25 @@ class TargetListCiclo3Tests(unittest.TestCase):
         pfn_values = {pfn[span.start : span.end] for span in engine.detect(pfn)}
         self.assertFalse(any("Juliano" in item for item in pfn_values))
 
+    def test_listed_full_name_is_tokenized_near_pgfn(self) -> None:
+        engine = TargetListEngine(
+            people=["Paulo Ficticio Souza", "Rafael Exemplo Bertoldi"]
+        )
+        text = (
+            "ADVOGADO: RAFAEL EXEMPLO BERTOLDI, OAB/PR 12.345\n\n"
+            "<!-- pagina-origem: 2 -->\n"
+            "A PGFN requer a citação do sócio PAULO FICTICIO SOUZA, administrador.\n"
+        )
+        values = {text[span.start : span.end] for span in engine.detect(text)}
+        self.assertIn("PAULO FICTICIO SOUZA", values)
+        self.assertIn("RAFAEL EXEMPLO BERTOLDI", values)
+        partial = TargetListEngine(people=["Paulo Ficticio Souza"])
+        officer = "PAULO FICTICIO, Procurador da Fazenda Nacional, juntou."
+        officer_values = {
+            officer[span.start : span.end] for span in partial.detect(officer)
+        }
+        self.assertFalse(any("PAULO" in item for item in officer_values))
+
     def test_leading_person_pair_is_tokenized(self) -> None:
         engine = TargetListEngine(people=["Vera Lucia Broggi", "Reinaldo Luiz Broggi"])
         text = "Compareceram VERA LUCIA e REINALDO LUIZ como testemunhas."

@@ -473,6 +473,7 @@ class _TargetEntry:
     canonical_key: str
     phrases: tuple[str, ...]
     particles: tuple[str, ...]
+    names: tuple[str, ...] = ()
 
 
 class TargetListEngine:
@@ -541,10 +542,14 @@ class TargetListEngine:
         phrase_jobs.sort(key=lambda item: item[0], reverse=True)
 
         for _length, entry, phrase in phrase_jobs:
+            # Nome completo listado (2+ palavras) e pedido explicito do operador:
+            # "A PGFN requer a citacao do socio FULANO" nao o protege (ver
+            # is_pfn_officer). Variante parcial continua cedendo ao procurador.
+            listed_full_name = phrase in entry.names and len(phrase.split()) >= 2
             for start, end in _exact_and_fuzzy_spans(text, phrase):
                 if entry.kind == "pessoa" and (
                     is_magistrate_or_citation(text, start, end)
-                    or is_pfn_officer(text, start, end)
+                    or (not listed_full_name and is_pfn_officer(text, start, end))
                 ):
                     continue
                 if entry.kind == "empresa":
@@ -867,6 +872,7 @@ def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_Ta
                 canonical_key=f"alvo:pessoa:{body}",
                 phrases=phrases,
                 particles=tuple(particles),
+                names=originals,
             )
         )
     return tuple(entries)

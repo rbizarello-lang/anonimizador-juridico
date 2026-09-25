@@ -399,7 +399,9 @@ comportamento.
 - `is_kept_term`: igualdade, não prefixo.
 - Desligar para spans da lista de alvos e da capa as regras `_PUBLIC_ORG_MARKERS`,
   `is_pfn_officer` e `is_precedent_party`; restringir `is_pfn_officer` ao nome imediatamente
-  seguido do cargo.
+  seguido do cargo. *Já aplicado (parte):* pessoa listada com nome completo (2+ palavras)
+  não cede mais ao `is_pfn_officer` dentro da lista de alvos — "A PGFN requer a citação do
+  sócio FULANO" agora troca FULANO; variante parcial do nome continua cedendo ao procurador.
 - `_read_docx`: parágrafos e tabelas na ordem do documento (já feito em `fast_extract.py`).
 
 **Minuta de "Veredito 3.0" para o `GOVERNANCA.md`** (se aprovado)
