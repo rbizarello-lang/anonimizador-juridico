@@ -1,0 +1,18 @@
+---
+description: GOVERNANCA.md é o mapa único; pesquisa externa não vira sprint; um fator por vez
+alwaysApply: true
+---
+
+# Governança prevalece
+
+Fonte: `GOVERNANCA.md` (veredito, §8, §8.8, §13). Este arquivo aponta; não substitui o mapa.
+
+- Conflito entre relatório, card HuggingFace, canvas ou regra de outro repo e o mapa: **o mapa vence** até ser atualizado por escrito.
+- Catálogo externo é insumo. Não é plano de sprint e não autoriza implementar o que o §8 recusou.
+- Reabrir item do §8 só com as cinco perguntas do §8.8 respondidas no próprio mapa (problema medido, Métrica 1, um fator, aborto, condição da coluna já ocorrida).
+- Um fator por lote. Não misturar troca de modelo + queda de limiar + âncora nova.
+
+```text
+# ❌ BAD — “o Sigilo usa BERT no Presidio, vamos plugar”
+# ✅ GOOD — §8.1: Presidio-com-transformer fora deste ciclo; LeNER só no LocalNerEngine, e só se a condição de reabertura ocorrer
+```

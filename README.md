@@ -1,0 +1,56 @@
+# Anonimizador Juridico
+
+App local para escolher documentos, trocar identificadores por tokens e gravar
+o Markdown numa pasta distinta do mapa reversivel.
+
+A peca precisa continuar analisavel. Datas, valores, eventos, teses e orgaos
+permanecem. Na duvida, o trecho original fica: um dado que escape pontualmente
+e menos grave do que descaracterizar o documento.
+
+O mapa de decisoes, metricas, alternativas descartadas e proximos passos
+esta em `GOVERNANCA.md`.
+
+## Como abrir
+
+O app **nao precisa do Chrome**. Dois cliques no atalho **Anonimizador Juridico**
+(area de trabalho ou Menu Iniciar), ou em `iniciar_app.vbs`. Abre uma janela
+deste computador, com o endereco proprio:
+
+`http://127.0.0.1:8765`
+
+Esse link tambem esta no arquivo `Anonimizador Juridico.url` (pasta do projeto).
+Se o app ja estiver aberto, um segundo clique **traz a janela para frente**
+(nao pergunta se deve encerrar a copia).
+
+Se preferir o navegador (Chrome/Edge), use `iniciar_navegador.bat`.
+`iniciar.bat` abre o mesmo app com a janela preta de mensagens (util se algo falhar).
+
+Se o app ja estava aberto com codigo velho, feche a janela e abra de novo.
+O atalho nao deve abrir janelas pretas do System32; se a abertura falhar,
+veja `saidas\app.log`.
+
+Duas abas:
+
+- **Anonimizar** — arquivos, nomes do caso (empresas/pessoas), pastas, executar
+- **Regras** — tags, regex estreita, lista de alvos, base CNPJ, exclusoes
+
+## Saidas
+
+Cada lote tem o mesmo identificador (`lote_AAAAMMDD_HHMMSS`) em dois lugares:
+
+- Textos anonimizados: `saidas\exportaveis\lote_...` (arquivos `.md` + `LEIA-ME.txt` + `AUDITORIA.txt`)
+- Mapa para reverter: `saidas\privados\lote_...\mapa.json` (+ `LEIA-ME.txt`)
+- Configuracao do app (regras, motor local): `saidas\privados\config.json`
+
+Pode escolher varios PDFs de uma vez (por exemplo PARTES de ~10 MB); o app
+processa um apos o outro e reutiliza os mesmos tokens no lote.
+
+O laboratorio Docling (`converter_docling.py`, `entrada`, `saida`) foi
+preservado. O app usa o Docling como extrator padrao de PDF: OCR so e ligado
+se alguma pagina nao tiver texto nativo util; se o Docling falhar, o PyMuPDF
+assume.
+
+O motor local (GLiNER, com spaCy em portugues de reserva) detecta nomes
+completos, empresas privadas e logradouros nesta maquina. O Gemini nao
+roda no app: a leitura de original e Markdown tokenizado, se houver,
+fica fora. O mapa reversivel permanece so nesta maquina.

@@ -1,0 +1,18 @@
+---
+description: Original e mapa ficam locais; atas sem PII; não chamar o exportável de Art. 12
+alwaysApply: true
+---
+
+# PII não viaja
+
+Fonte: `GOVERNANCA.md` §1–2 e glossário (mapa reversível). Res. CNJ 615/2025 art. 19, IV: LLM privada só recebe peça já tokenizada na origem.
+
+- Destino de análise recebe **só** o Markdown em `saidas/exportaveis`. Nunca o PDF/DOCX original, nunca `saidas/privados/mapa.json`.
+- O app **pseudonimiza** (token estável + mapa local). Não chamar o exportável de “anonimizado a teor do Art. 12 da LGPD”. O mapa é a chave; se viajar, a associação volta.
+- Atas, commits, issues, testes e canvases: falar em “a executada”, “advogados da capa”, “lote eproc”. Sem copiar nome, CPF, CNPJ ou razão social reais.
+- Corpus com PII real não entra no git. Hash de CPF sem salt não é anonimização.
+
+```text
+# ❌ BAD — colar trecho do mapa.json no chat ou no AUDITORIA visível
+# ✅ GOOD — AUDITORIA conta falso positivo por tipo/dicionário, sem copiar o original (§7, ciclo 5b)
+```

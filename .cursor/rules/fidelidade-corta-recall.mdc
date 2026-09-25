@@ -1,0 +1,22 @@
+---
+description: Métrica 1 corta amplitude; não tokenizar órgão, R$, data, tese, evento, juiz
+alwaysApply: true
+---
+
+# Fidelidade corta recall
+
+Fonte: `GOVERNANCA.md` §3, P10, item H, §10.2. Recall alto com peça desfigurada **não** é sucesso.
+
+Nunca tokenizar: datas; `R$`; evento eproc; teses/artigos/leis (CTN, LEF, CPC); órgãos (União, PGFN, INSS, TRF4); sistemas (SISBAJUD, RENAJUD, CNIB, INFOJUD); cidade, UF, comarca, vara ou juízo como se fossem endereço ou empresa.
+
+Tokenizar com confiança: IDs com DV ou rótulo (P10); nome completo de pessoa física; razão social **privada**; logradouro com via e, quando houver, número.
+
+- Regex **sem** rótulo (texto, cabeçalho de coluna ou campo de formulário) continua proibida (P10).
+- Juiz, diretor de secretaria, procurador da União e “Documento eletrônico assinado por…” **não** tokenizam (item H). Só muda com decisão expressa no mapa.
+- Polo ativo público não vira `[EMPRESA_n]`. Partícula banal (Silva, Lopes) só com rótulo de parte ou cola onomástica.
+- KEEP_TERMS e `drop_protected_spans` vencem NER e lista de alvos.
+
+```text
+# ❌ BAD — baixar GLiNER para 0,60 “para a capa passar”
+# ✅ GOOD — âncora de capa / lista de alvos; limiar 0,75 intocado; aborto se órgão/`R$`/tese virar token (§10.2)
+```

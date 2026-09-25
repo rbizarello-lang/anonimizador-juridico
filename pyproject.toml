@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anonimizador-juridico"
+version = "0.3.0"
+description = "App local de pseudonimizacao de documentos juridicos brasileiros"
+requires-python = ">=3.11"
+dependencies = [
+  "presidio-analyzer==2.2.364",
+  "PyMuPDF>=1.28,<2",
+  "python-docx>=1.2,<2",
+  "nicegui>=2.22,<3",
+  "pywebview>=5,<6",
+  "docling>=2.120,<3",
+  "gliner>=0.2.28,<0.3",
+  "torch>=2.13,<3",
+  "rapidocr>=3.9,<4",
+  "spacy>=3.8,<4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,14 @@
+Planilha de alvos (Nexus)
+
+O app NAO exige o dump da Receita. Para o caso em analise:
+
+1. No Nexus, exporte a planilha (Pessoas e/ou CNPJs).
+2. No Anonimizador, aba Anonimizar ou Regras, clique em "Anexar planilha".
+3. Escolha o .xlsx (ou .csv). O app le Nome e CPF/CNPJ e preenche
+   as listas de empresas e pessoas.
+
+CPF e CNPJ que aparecerem na peca continuam a ser tokenizados pelo
+motor de identificadores. A planilha serve para os NOMES.
+
+O indice anual da Receita (dados/cnpj_sul.sqlite) continua opcional
+e separado; nao e necessario para usar o app.

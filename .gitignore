@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.nicegui/
+saidas/
+dist/
+build/
+dados/*.sqlite
+# pecas e saidas de laboratorio: podem conter dado real
+entrada/
+saida/
+*.pdf
+*.docx

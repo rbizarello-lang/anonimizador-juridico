@@ -1,0 +1,38 @@
+{
+  "expected_counts": {
+    "BR_PROCESSO": 1,
+    "BR_CNPJ": 1,
+    "BR_CPF": 2,
+    "BR_PHONE": 2,
+    "EMAIL_ADDRESS": 1,
+    "BR_OAB": 1,
+    "BR_RG": 1,
+    "BR_MATRICULA_IMOVEL": 1,
+    "BR_CEP": 1
+  },
+  "expected_values": {
+    "BR_PROCESSO": ["0000100-52.2008.5.00.0000"],
+    "BR_CNPJ": ["12.ABC.345/01DE-35"],
+    "BR_CPF": ["529.982.247-25", "52998224725"],
+    "BR_PHONE": ["+55 (11) 98765-4321", "(11) 98765-4321"],
+    "EMAIL_ADDRESS": ["helena.teste@example.org"],
+    "BR_OAB": ["OAB/SP 123.456"],
+    "BR_RG": ["RG 12.345.678-2"],
+    "BR_MATRICULA_IMOVEL": ["matricula nº 45.678"],
+    "BR_CEP": ["CEP 01310-200"]
+  },
+  "must_preserve": [
+    "Evento 184",
+    "Evento 191",
+    "14/05/2024",
+    "03/02/2023",
+    "R$ 142.519,22",
+    "SISBAJUD",
+    "RENAJUD",
+    "art. 185 do CTN"
+  ],
+  "known_contextual_entities_not_yet_covered": [
+    "Horizonte Ficticio Ltda.",
+    "Helena Ficticia da Silva"
+  ]
+}

@@ -1,0 +1,18 @@
+---
+description: Teste unitário não é aceite; skip de corpus não é verde; custo por caractere
+alwaysApply: true
+---
+
+# Medir no app
+
+Fonte: `GOVERNANCA.md` §10 (lote real) e §5.2 (P5). Corpus sintético **já passava** e não mede o piloto.
+
+- Aceite é lote eproc real + `AUDITORIA.txt` + critérios do §10. Abrir a janela (`iniciar_app.vbs` / `http://127.0.0.1:8765`). Suíte verde não substitui isso.
+- Smoke GLiNER opcional, gate sem corpus ou variável de avaliação ausente **pulam** — skip não é aprovado. Antes de declarar sucesso, confirmar que o lote/gabarito foi lido.
+- Predizer tempo por **mil caracteres** do Markdown, não por folhas do PDF. Página nativa densa custa mais que scan esparso. P5 (2–3 mil folhas) é requisito; Marker/MinerU/OCR em nativo continuam fora.
+- Se o piloto de capa falhar: revisar âncora e janela. Não compensar com GLiNER PII, queda de limiar ou LLM. Se a âncora não estiver no Markdown, o diagnóstico é extração (P3), não HuggingFace.
+
+```text
+# ❌ BAD — “157 testes passaram, a capa está fechada”
+# ✅ GOOD — reprocessar o lote Cacau/Potinga; Paraná/Campo = 0 no mapa; União/`R$`/SISBAJUD intactos
+```

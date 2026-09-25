@@ -1,0 +1,6 @@
+Esta pasta guarda o mapa reversivel da anonimizacao.
+
+Nao envie estes arquivos a IAs externas, e-mail, nuvem ou colegas.
+O Markdown da pasta saida_exportacao e o unico arquivo destinado a analise externa
+— e, nesta versao, ainda nao e seguro para isso porque nomes, empresas e
+enderecos nao sao cobertos.
