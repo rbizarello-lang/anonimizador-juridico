@@ -4,12 +4,61 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from anonimizador_app.ocr_pages import apply_page_ocr, page_needs_ocr
+from anonimizador_app.ocr_pages import (
+    OCR_BROKEN_FONT,
+    OCR_SCAN,
+    OCR_VECTOR,
+    apply_page_ocr,
+    broken_glyph_ratio,
+    ocr_reason,
+    page_needs_ocr,
+)
+
+
+class OcrReasonTests(unittest.TestCase):
+    def test_thin_page_with_scan_or_vector_text_needs_ocr(self) -> None:
+        self.assertEqual(ocr_reason(60, 0.95), OCR_SCAN)
+        self.assertEqual(ocr_reason(60, 0.0, vector_paths=400), OCR_VECTOR)
+
+    def test_stamp_only_page_is_not_ocr_target(self) -> None:
+        self.assertIsNone(ocr_reason(60, 0.0, vector_paths=3))
+
+    def test_native_text_is_never_reread(self) -> None:
+        # Peca nativa com imagem (logo, assinatura) nao passa por OCR (GOVERNANCA §8.3).
+        self.assertIsNone(ocr_reason(1800, 0.95, broken_ratio=0.001))
+
+    def test_unreadable_native_layer_is_broken_font(self) -> None:
+        self.assertEqual(ocr_reason(1800, 0.0, broken_ratio=0.30), OCR_BROKEN_FONT)
+
+    def test_broken_glyph_ratio_flags_symbol_digits_only(self) -> None:
+        self.assertGreater(broken_glyph_ratio("Conta ˭ˮ˯˰˱˲˳˴ em ˬ˭/ˬˮ/ˮˬˮ˲"), 0.02)
+        self.assertEqual(broken_glyph_ratio("Conta 12345678 em 01/02/2026 da União, R$ 1,00"), 0.0)
 
 
 class PageOcrTests(unittest.TestCase):
     def test_native_page_with_scan_is_not_ocr_target(self) -> None:
         self.assertFalse(page_needs_ocr(1800, 0.95))
+
+    def test_ocr_without_anchor_counts_as_failure_not_read(self) -> None:
+        import pymupdf
+
+        markdown = "<!-- pagina-origem: 1 -->\nCapa\n"  # sem ancora da folha 2
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cortado.pdf"
+            document = pymupdf.open()
+            first = document.new_page()
+            first.insert_text((72, 72), "Capa " * 80)
+            second = document.new_page()
+            second.insert_text((72, 72), "Evento 7 AR1")
+            pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 280), False)
+            pix.clear_with(180)
+            second.insert_image(second.rect, pixmap=pix)
+            document.save(path)
+            document.close()
+            result = apply_page_ocr(path, markdown, recognize=lambda _image: "MUDOU-SE ao remetente")
+        self.assertEqual(result.pages_read, 0)
+        self.assertIn("ocr-falhas: 1", result.markdown)
+        self.assertNotIn("ocr-paginas", result.markdown)
 
     def test_splices_ocr_into_thin_page_only(self) -> None:
         import pymupdf

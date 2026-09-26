@@ -58,6 +58,13 @@ class GeographyTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertIn(expected, serialize_geography(raw))
 
+    def test_ocr_stamp_is_not_split_into_fake_heading(self) -> None:
+        # Carimbo eproc lido por OCR: no lote de 25/09 virou 28 titulos falsos "## Evento 1".
+        stamp = "Processo 0000000-00.2026.4.04.7000/PR, Evento 1, CONTRSOCIAL3, Página 4"
+        text = serialize_geography(f"{stamp}\nCONTRATO SOCIAL\n")
+        self.assertIn(stamp, text)
+        self.assertNotIn("## Evento", text)
+
     def test_marks_nfd_separation_heading(self) -> None:
         nfd = unicodedata.normalize("NFD", "PÁGINA DE SEPARAÇÃO")
         text = serialize_geography(f"Capa\n{nfd}\n")

@@ -61,6 +61,11 @@ KEEP_TERMS = frozenset(
         "presidente da republica",
         "presidente da república",
         "pessoa natural",
+        # 26/09/2026: o NER tomava "pessoa jurídica" por empresa (lote eproc de 25/09).
+        "pessoa juridica",
+        "pessoa jurídica",
+        "pessoa fisica",
+        "pessoa física",
         "socio controlador",
         "sócio controlador",
         "consumidor final",

@@ -1,8 +1,8 @@
 # Governança do desenvolvimento — Anonimizador Jurídico
 
-**Versão do app:** 0.3.0  
+**Versão do app:** 0.4.0 (indicador na janela e em cada lote)  
 **Data deste mapa:** 29/08/2026  
-**Atualizado:** 20/09/2026 (2.0-A/B no código; aceite = lote eproc).  
+**Atualizado:** 26/09/2026 (Veredito 3.0-E: PyMuPDF por folha como extrator padrão; Veredito 2.1: propagação do lote; aceite = lote eproc de 25/09).  
 **Para quem:** Roger (uso do app) e quem voltar a este projeto daqui a semanas ou meses.  
 **O que este arquivo é:** o mapa único do produto — o que se quis, o que se mediu, o que se fez, o que se recusou e **em que condição** cada recusa pode ser revista.  
 **O que este arquivo não é:** ordem de código, manual do usuário, nem ata de um lote específico.
@@ -34,7 +34,7 @@ O parecer interno da mesma noite (anonimização + estrutura) foi **aceito e rea
 
 | Eixo | O que vale |
 |---|---|
-| **Docling** | Permanece o default. Marker, MinerU e `pymupdf4llm` **não** entram como motor. Geografia (P3) usa o IR do Docling (`page_break_placeholder`); PyMuPDF só audita. |
+| **Docling** | ~~Permanece o default.~~ **Superado em 26/09/2026 (Veredito 3.0-E, abaixo):** o default passa a ser o PyMuPDF por folha; o Docling fica como caminho legado. Marker, MinerU e `pymupdf4llm` continuam **fora**. |
 | **Métrica 1** | “Não mexer no motor” = **não trocar o Docling**. Não é “não há o que fazer”: Markdown é export lossy; eventos fundidos ainda sangram (**P3**). CDA achatada também sangra (**P4**), mas **não gasta ciclo**. |
 | **Folga de engenharia** | Serialização conservadora, âncora de página/evento, auditor PyMuPDF × Docling — **sem contaminar** o piloto de capa (heurística, GLiNER e limiar intocados). |
 | **Sequência** | Capa (medir) → instrumento de medição / auto-auditoria → geografia P3 → camada determinística (lista de alvos **já no app**; CNPJ Sul em seguida; depois Aho-Corasick/RapidFuzz) → passada-sombra de caixa **antes** do LeNER → LeNER / `arthrod` / fine-tune só se o determinístico não bastar. |
@@ -42,6 +42,59 @@ O parecer interno da mesma noite (anonimização + estrutura) foi **aceito e rea
 | **Pergunta de produto em aberto** | Tokenizar juiz/servidor em “Documento eletrônico assinado por…”? Hoje **não**. O §10 aborta se a heurística de capa pegar magistrado. Só muda com decisão expressa neste arquivo. |
 
 Adiar o `arthrod` **não** é “já temos GLiNER”: continua o melhor candidato isolado da mesma família. Fine-tune adiado está certo; o teto no corpo eproc continua sendo esse caminho. O corpus dourado, quando existir, serve à medição **e** ao fine-tune.
+
+### Veredito 3.0-E — extração (26/09/2026)
+
+Medido no lote eproc de 25/09/2026 (IDPJ + execução fiscal de origem; 11 PDFs, 698 folhas), com o texto de cada folha tirado do próprio PDF e o carimbo eproc (“Evento X, DOC, Página Y”) como chave de conferência. Sem PII nesta ata.
+
+| Falha do caminho Docling | Medida no lote |
+|---|---|
+| O teto de 900 s devolve documento **parcial** (não é exceção; a reserva PyMuPDF não entra) | Execução fiscal de 251 folhas: saída termina na folha 45 |
+| Folha com o texto **desenhado em vetor** (sem camada de texto, sem imagem) não aciona OCR | 104 folhas: contratos sociais, alterações contratuais, relatórios SERPRO |
+| Âncora numerada por **contagem de quebras**: folha sem item no corpo não gera quebra | Folhas nativas sob a âncora errada: 80 de 83 num PARTE, 73 noutro (deslocamento de até 34) |
+| Âncora deslocada engana o OCR (“a folha já tem texto”) | 11 folhas escaneadas não lidas (matrículas, prints) |
+| OCR sem âncora descartado **e contado como lido** | 2 folhas (a AUDITORIA dizia “lidas por OCR”) |
+| Carimbo eproc descartado como cabeçalho | Todas as folhas perdem a chave de citação |
+| Regex de geografia | 28 títulos “## Evento 1” falsos partindo o carimbo lido por OCR |
+| **Total** | **289 de 698 folhas (41%) sem conteúdo no exportável**; ~66 min de lote |
+
+**Decisão.** O extrator padrão passa a ser o PyMuPDF por folha (`fast_extract`):
+
+1. âncora = folha física do PDF, sempre; marcadores do PDF (evento, documento, página) viram títulos; carimbo eproc preservado;
+2. OCR seletivo ampliado a três casos: **escaneada** (como antes), **vetorial** (folha só com carimbo e ≥ 50 caminhos desenhados) e **fonte quebrada** (> 2% de caracteres improváveis na camada de texto; o OCR **substitui** a camada ilegível). Página nativa legível continua sem OCR (§8.3);
+3. tabela com grade que cobre a folha vira tabela Markdown no lugar dela (`find_tables`); folha de colunas sem grade (SISBAJUD, débitos da CDA, listagem de eventos) sai com as colunas alinhadas num bloco `text`; folha com camadas de texto **sobrepostas** (várias folhas impressas numa só, como no rastreador CNIS) vira uma tabela por camada, na ordem do PDF (o cabeçalho de cada camada define as colunas; a célula quebrada volta a ficar inteira). Tabela e colunas só entram se nenhuma palavra da folha se perder nem se duplicar;
+4. cobertura no topo de cada Markdown (nativas / OCR / em branco / não lidas). Folha não lida fica marcada no lugar dela, aparece na AUDITORIA e **bloqueia o envio**;
+5. geografia sem regex no corpo: os eventos vêm dos marcadores do PDF. A regex de “evento descolado” fica só no caminho legado, restrita a cabeçalho desde 25/09 (commit 7e12ce0): “conforme o evento 12, …” não vira mais título.
+
+O Docling fica como caminho legado (`load_or_extract(prefer_docling=True)`), sem entrada na interface.
+
+**Respostas do §8.8.**
+1. *Problema medido:* P3 (geografia/âncora) e P5 (tempo e tamanho), no lote acima.
+2. *Métrica 1:* a troca é só de extração; nada novo vira token por ela. Vale o aborto do §10.2.
+3. *Um fator:* o extrator (OCR e tabela são parte dele). GLiNER, limiar 0,75, lista de alvos, regras e política: intocados.
+4. *Aborto:* token novo em órgão, `R$`, data, evento ou sistema nas mesmas folhas; folha nativa com menos palavras que o PDF; folha não lida sem motivo no lote real.
+5. *Condição de reabertura:* “Timeout / fatiamento (P5): medir depois da geografia” e “Auditor PyMuPDF × Docling” ocorreram (medido). “OCR em página com texto nativo” continua recusado para texto **legível**; a exceção é a camada comprovadamente ilegível (fonte quebrada), que o OCR não degrada.
+
+**Aceite (mesmo lote, mesma `config.json`; só o extrator muda).** Estrutura: **698 de 698 folhas** com âncora na folha física; **0 não lidas**; 165 por OCR (48 escaneadas, 104 vetoriais, 13 com fonte quebrada); tabelas: grade Markdown onde há grade, 93 folhas em colunas alinhadas, 22 com camadas sobrepostas (rastreador CNIS, extratos RENAJUD) remontadas em tabela por camada; carimbo eproc em todas as folhas; documentos que faltavam (4ª e 5ª alterações contratuais, decisão inicial da execução, recibos de transação, relatório SERPRO) presentes. Extração do lote inteiro em ~12 min (antes: ~40 min de Docling com 41% de perda).
+
+Anonimização (detecção intocada; gabarito local de ~35 entidades montado dos relatórios do Operador; só contagens). A primeira rodada acusou **regressão**: a razão social da sucessora em claro 3 → 213 vezes, toda no rastreador CNIS, onde o GLiNER fica no limiar (0,69 em lista vertical, 0,73 em linha corrida, 0,78 em linha de tabela Markdown; corte 0,75). Corrigido dentro do extrator (tabela por camada): 3 → 4. Resíduo nas folhas que já existiam: cerca de 17 menções a mais (nome partido por quebra de linha na prosa, tabela de um veículo só no RENAJUD, consulta DETRAN sem grade), todas de entidades que o mesmo lote tokeniza em outras folhas. Nas 289 folhas recuperadas as partes saem tokenizadas; endereços de contrato lido por OCR vazam mais (conteúdo novo, não regressão). **Próximo fator:** propagar o que já foi detectado (nome e ID) a todas as ocorrências do lote, a peça central do 3.0 sem LLM. Lote de aceite: `lote_20260926_034316`.
+
+### Veredito 2.1 — propagação do lote (26/09/2026)
+
+Sem canal institucional para LLM, o 3.0 anda sem ele: a peça central do desenho (elenco do processo inteiro + propagação determinística + um token por entidade) entra alimentada pela detecção local que já existe.
+
+**Decisão.** O lote passa a rodar em duas fases (`pipeline.prepare_file` → `BatchRoster` → `pipeline.finish_file`; o mesmo na interface):
+
+1. detecção em todos os arquivos, como antes;
+2. elenco do lote (`batch_propagation.py`): as grafias de pessoa e empresa se juntam por entidade (mesma forma dobrada; empresa sem sufixo societário; prefixo com 2+ palavras que só aponta para uma entidade; pessoa com o mesmo primeiro e último nome; 1–2 letras de diferença por OCR). Ambíguo em pessoa não junta;
+3. cada grafia com 2+ palavras de conteúdo é buscada no texto inteiro (maiúscula, acento, quebra de linha) e só preenche lacuna: o que a detecção já marcou não muda. Toda grafia da entidade leva o mesmo token;
+4. IDs já mapeados (placa, chassi, RENAVAM, e-mail) e a raiz de CNPJ privado já mapeado seguem pelo valor exato, com o token do próprio ID (não é regex sem rótulo: é o valor que a detecção achou com rótulo).
+
+Travas: entidade com cargo colado ao nome em qualquer arquivo (“assinado por NOME”, “NOME, Juiz Federal”, “protocolado por (NOME)”) não se propaga (item H); rótulo tomado por nome (“Tipo de Devedor”) e estrutura jurídica (“pessoa jurídica de direito privado”) não se propagam; “pessoa jurídica/física” viraram termo protegido. A ocorrência propagada passa por termo protegido, termo genérico e higiene, mas **não** repete as regras amplas por ocorrência (juiz/PFN em até 160 caracteres, parte de precedente, nome banal): a entidade é julgada uma vez, no elenco, como já valia para nome completo da lista de alvos. Endereço fica fora: a detecção de endereço engole trecho de cláusula e propagar espalharia o estrago.
+
+**Respostas do §8.8.** (1) Medido: 4 a 8 tokens por parte; o mesmo nome trocado numa folha e em claro noutra; ~500 raízes de CNPJ em claro. (2) Métrica 1: só propaga o que a detecção já aceitou; travas acima. (3) Um fator: a propagação (extração fixa na 3.0-E; GLiNER, limiar, lista, capa e regras de detecção iguais). (4) Aborto: token novo em órgão, `R$`, data, evento, sistema ou termo jurídico; juiz que deixa de ficar em claro; entidade do gabarito com mais menções em claro que no lote antigo. (5) Condição: AVALIACAO-2026-09 (plano B do 3.0) e Veredito 3.0-E.
+
+**Aceite (mesmo lote e config; `lote_20260926_083235`).** Folhas que já existiam, contra o lote de 25/09: devedora 4 → 0 em claro, sucessora 3 → 0, antiga razão social 7 → 0, sócio A 7 → 2, sócio C 7 → 5, placas 3 → 1, raiz de CNPJ ~500 → 0; juízes iguais (item H); nenhum alerta novo na AUDITORIA. Um token por entidade: sócio C, devedora e sucessora 1 cada (eram 2, 5 e 4); sócio A 2 (eram 8; a grafia sem o prenome fica à parte: sem LLM, juntar arrisca homônimo). A primeira rodada espalhou um falso positivo antigo (“pessoa jurídica” como empresa, 15 → 80 trocas): corrigido com as travas acima (→ 0). Sem mudança (a detecção não os acha, não há o que propagar): ex-sócia, um empregado, sobrenome dos advogados, perito, endereços de contrato lido por OCR. Pré-existente e só ampliado: juíza na coluna “Juiz solicitante” do SISBAJUD e secretário-geral da Junta já eram tokenizados (o cargo está no cabeçalho da coluna, não colado ao nome).
 
 ---
 
@@ -418,15 +471,16 @@ Esta é a seção que permite **voltar** ao que hoje não se faz. Três carimbos
 | Trocar Docling por MinerU | Fora | Stack pesada; pior no recorte *legal* de um teste 2026 (o consolidado: MinerU ganha paper acadêmico e perde aqui). | Idem. |
 | `pymupdf4llm` como motor | Fora | AGPL; rebaixa lei/regulamento a lista Markdown. | Não como export padrão. PyMuPDF **já é** fallback e candidato a **auditor**, não a segundo Markdown. |
 | LlamaParse / Unstructured cloud | Fora | Sai do app local. | Não, enquanto local for premissa. |
-| OCR em página com texto nativo | Já recusado no código | Inventa espaço e funde coluna. | Não. **OCR seletivo** em página que só tem carimbo eproc + imagem (contrato social digitalizado) **não** é este item: a peça nativa não é relida. |
+| OCR em página com texto nativo | Já recusado no código; **exceção em 26/09/2026:** camada de texto ilegível (fonte quebrada, > 2% de caracteres improváveis) | Inventa espaço e funde coluna — quando o texto nativo é legível. | Não, para texto legível. **OCR seletivo** em página que só tem carimbo eproc + imagem (contrato social digitalizado) ou + texto desenhado em vetor **não** é este item: a peça nativa não é relida. Veredito 3.0-E. |
 | VLM do Docling (`granite_docling`) | Fora | Pode alucinar célula numérica na CDA. | Não. |
 | Reconstrução fina da árvore eproc | Fora de escopo | Mapa completo de relações entre eventos. | Produto futuro. **Não** confundir com P3 (geografia). |
-| Geografia: âncora de página + evento descolado (consolidado §6.3, sem CDA) | **Autorizada na Métrica 1**, na folga, sem contaminar o piloto de capa | Sem isso a análise jurídica não aponta o lugar do trecho. PyMuPDF já tem página; o Docling padrão perde. Não é troca de extrator. | Na folga **agora** (não muda NER), ou em seguida ao aceite da capa (§10). Não mistura com troca de GLiNER. |
+| Geografia: âncora de página + evento descolado (consolidado §6.3, sem CDA) | **Autorizada na Métrica 1**, na folga, sem contaminar o piloto de capa. **26/09/2026:** âncora = folha física e evento pelos marcadores do PDF (`fast_extract`), sem regex no corpo. No caminho legado a regex de “evento descolado” só age em cabeçalho (25/09, commit 7e12ce0). | Sem isso a análise jurídica não aponta o lugar do trecho. PyMuPDF já tem página; o Docling padrão perde. | Veredito 3.0-E. |
 | Embelezar grade da CDA no Markdown | **Não priorizar** (P4) | CDA em regra não é sigilosa / não entra na análise anonimizada. | Só se um dia a CDA passar a ser o objeto da análise. |
 | Serialização “completa” do consolidado (CDA uma linha por lançamento + página + evento) | Recortar | Página/evento **sim**; CDA **não**. | Implementar só o recorte de geografia. |
-| Auditor PyMuPDF × Docling | **Autorizada**, útil para P3 e P5 | Página nativa é barata; se o Markdown perder bloco, alertar ou injetar trecho cru. | Junto com a geografia. Não substitui o documento inteiro. |
+| Auditor PyMuPDF × Docling | **Autorizada**, útil para P3 e P5. **Superada em 26/09/2026:** o auditor mediu 41% de folhas perdidas e o PyMuPDF passou a ser o extrator. | Página nativa é barata; se o Markdown perder bloco, alertar ou injetar trecho cru. | Veredito 3.0-E. A cobertura por folha (nativa/OCR/em branco/não lida) substitui o auditor. |
+| PyMuPDF por folha como extrator padrão (`fast_extract`) | **Aceito em 26/09/2026** | Âncora pela folha física, marcadores do eproc, sem teto de tempo, carimbo preservado; tabela com grade em Markdown, sem grade em colunas alinhadas. | Reabrir se uma folha nativa perder palavras em relação ao PDF ou se tabela Markdown desfigurar peça no lote real. |
 | Furniture: marcar `[CABECALHO]` / `[RODAPE]`, não apagar | Autorizada com folga | Apagar come evento. | Depois da geografia, se o rodapé ainda atrapalhar. |
-| Timeout / fatiamento para 100–200 MB (P5) | **Aberto como requisito** | Hoje: sem teto de MB; teto de 15 min no Docling. | Medir depois da geografia; não é troca de extrator. |
+| Timeout / fatiamento para 100–200 MB (P5) | **Aberto como requisito.** **26/09/2026:** o teto do Docling cortou 206 de 251 folhas sem aviso; com o PyMuPDF não há teto e o texto nativo leva segundos. O custo passa a ser o OCR (~2–9 s por folha sem texto). | Hoje: sem teto de MB. | Medir o OCR em processo de 2–3 mil folhas; paralelizar se preciso. |
 
 ### 8.4. Produto / UI / política (já estáveis)
 
@@ -509,6 +563,23 @@ Antes de gastar um ciclo em algo hoje descartado, responder por escrito (pode se
 ---
 
 ## 9. Próximos passos (ordem que vale)
+
+### Fila 3.x — estrutura primeiro (26/09/2026, vale sobre as filas abaixo)
+
+**Decisão do Operador (26/09/2026).** A estrutura vale mais que a perfeição da anonimização. A IA que recebe o exportável tem de conseguir analisar o caso com fidelidade: sem equívoco e sem perda de informação (folha, valor, data, tabela, evento, página). A anonimização está em nível aceitável (Veredito 2.1); o acabamento fino fica para uma passada do Operador em IA institucional. **Ajuste de recall está pausado.** Token que destrói conteúdo (come valor, data, código, termo jurídico, rótulo, referência a evento) é defeito de **estrutura**, não de anonimização: entra nesta fila.
+
+**Régua:** `tools/medir_estrutura.py <pasta dos PDFs> <pasta do lote>` (só contagens; compara PDF × texto extraído × exportável). Linha de base, lote eproc de 25/09 (`lote_20260926_083235`): 698/698 âncoras; 0 folhas não lidas; 0 folhas com extração fraca; valores em R$: 563 no PDF, **0 perdidos**; datas: 1.230, **10 perdidas na troca**; **31 tokens colados em número**; 1 token em cabeçalho de tabela; 0 título só-rótulo; 0 evento partindo frase. Anonimização (pausada, só para não regredir): `tools/medir_vazamento.py saidas/privados/gabaritos/<caso>.json <lotes...>` — o gabarito tem dados reais e fica só na pasta privada.
+
+| # | Item | Evidência (lote de 25/09) | Aceite |
+|---|---|---|---|
+| E1 | **Token que come conteúdo.** (a) CNPJ alfanumérico casou “CONTRIBUICAO” + espaços de coluna + dia da data (`[CNPJ_n]/09/2023`, 20×; são as 10 datas perdidas): exigir dígito na base e no máximo um espaço entre as partes. (b) Telefone dentro do protocolo CNIB (`[TELEFONE_n].…-IA-773`, 4×) e ID colado em código mais longo: descartar span encostado em `[.,/-]dígito`. (c) Endereço que atravessa célula `|` ou vão de coluna, ou termina no meio de número/código (`[ENDERECO_n],12`, `[ENDERECO_n].350`, `[ENDERECO_n].1-A-3`): higiene corta no limite. (d) Rótulo e referência trocados (“Tipo de Devedor”, “r. despacho Ev. 56”, prenome solto compartilhado): conferir no lote novo. | régua | 0 data e 0 valor perdidos na troca; 0 token colado em número; sem regressão no gabarito. |
+| E2 | **Página de separação do eproc.** Rótulos (“Tipo documento: / Evento: / Data: / Usuário:”) saem separados dos valores; a IA tem de adivinhar os pares. Renderizar como “Evento N — TIPO — data hora — usuário”. | leitura do exportável | metadado do evento em uma linha em toda folha de separação. |
+| E3 | **Índice do lote** (`INDICE.md` no exportável): por arquivo, eventos e documentos (marcadores do PDF) com faixa de folhas, folhas lidas por OCR, tabelas, e documento que continua de um PARTE para o outro. | marcadores já extraídos | índice bate com os marcadores; citação “evento, documento, página” localizável. |
+| E4 | **Fidelidade do OCR.** RapidOCR (modelo mobile) perdeu ~4 de 45 linhas numa folha de contrato. Medir perda de linha (referência: a 5ª alteração contratual existe vetorizada num PARTE e com texto nativo na execução fiscal, evento 10) e testar escala maior / modelo server / segunda leitura. | 1 folha auditada à mão | perda de linha medida por lote; meta ≤ 1%. |
+| E5 | **Legenda do elenco sem nomes** (`ELENCO.md`: token → tipo → nº de ocorrências → papel quando a capa diz: exequente, executado, requerido, advogado da parte). A IA de análise sabe quem é a executada sem saber o nome. | o pipeline LLM já grava; o local não | legenda no exportável; nenhum nome nela. |
+| E6 | **Escala (P5).** OCR é o custo (~6 s por folha sem texto): paralelizar por processo antes de 2–3 mil folhas. | 165 folhas de OCR em ~12 min | tempo por folha de OCR medido; lote de 3 mil folhas viável. |
+
+**3.0 com LLM (LangExtract), aguardando decisão do canal pelo Operador.** O código de descoberta já existe (`llm_discovery.py`, `pipeline_llm.py`, `tools/anonimizar_llm.py`). Falta: (L1) seletor de motor na interface (“Local 2.1” / “LLM”) com aviso do canal; (L2) guardar a chave fora do projeto (variável de ambiente ou Gerenciador de Credenciais do Windows), nunca em `config.json`, e registrar o canal usado na AUDITORIA e na linha de versão; (L3) tela de revisão do elenco (tipo, papel, ocorrências, trocar/manter); (L4) aceite no lote de 25/09 com as duas réguas. Alerta registrado: com LangExtract, o texto vai ao provedor com IDs mascarados, mas **nomes, fatos e valores em claro**; o que decide o tratamento é o canal da chave (gratuita: pode treinar e ter revisão humana; paga: não treina; Vertex AI institucional em São Paulo: contrato de nuvem).
 
 ### Ciclo 4 (02/09/2026) — concluído
 
@@ -622,6 +693,9 @@ Acrescentar em §11 uma linha: data, passou / abortou / passou com ressalva, e o
 | 20/09/2026 | Gemini **fora do app**: o operador lê original e MD tokenizado lá. Motor interno (`GeminiEngine`, checkbox, chave) **sai**. O app não envia arquivo nem `mapa.json`. 2.0-B passa a ser essa remoção, não pós-passada interna. |
 | 20/09/2026 (2.0-A/B no código) | Partícula de 1 palavra em empresa desligada. Lista persistida: acumulada 240+59 em `config.lista_acumulada_20260920.json`; recorte deste PDF (frase completa no cache) = 15 empresas + 18 pessoas. `GeminiEngine`/UI/chave/`tools/smoke_gemini.py` removidos. KEEP_TERMS permanece. Aceite = reprocessar o PARTE_1 + `AUDITORIA.txt` + §10. Intocado: GLiNER, limiar 0,75, Docling. |
 | 20/09/2026 (lote 222815) | Mesmo PARTE_1, cache `docling-ocr` 02/09. **Medido.** `[EMPRESA]` 482→141 ocorrências, 35→**5** IDs (gabarito 169/5). CTN 12 e CNAE 4 em claro; `fundo de comércio` 1; União 7 / `R$` 66 / SisbaJud 1; Paraná/Campo/casado/sistemas = 0 no mapa. Capa: `[EMPRESA]` 1 (sem partícula). 129 âncoras. `gemini_used` falso. Suíte 299 OK (não substitui este lote). |
+| 25–26/09/2026 (lote eproc 192945) | Primeiro lote completo de um IDPJ + execução fiscal (11 PDFs, 698 folhas). Medido contra o PDF: **289 folhas (41%) sem conteúdo**, âncoras deslocadas em dois PARTEs, cada parte dividida em 4 a 8 tokens. Ver Veredito 3.0-E. |
+| 26/09/2026 (Veredito 3.0-E, lote 034316) | **Passou com ressalva.** PyMuPDF por folha como extrator padrão; OCR em escaneada, vetorial e fonte quebrada; tabela por grade, colunas alinhadas e tabela por camada; cobertura com trava de envio; geografia pelos marcadores do PDF, sem regex no corpo. 698/698 folhas, 0 não lidas. Regressão de anonimização achada (sucessora 3 → 213) e corrigida no extrator (→ 4); resíduo de ~17 menções nas folhas antigas. Libera: propagação de nome e ID já detectados (3.0 sem LLM). Suíte 369 OK. |
+| 26/09/2026 (Veredito 2.1, lote 083235) | **Passou.** Propagação do lote em duas fases: elenco das grafias por entidade, busca em todo o texto só nas lacunas, um token por entidade, IDs e raiz de CNPJ pelo valor exato. Nenhuma entidade do gabarito com mais menções em claro que no lote de 25/09; juízes iguais; partes com 1 token (sócio A com 2). Falso positivo “pessoa jurídica” achado na primeira rodada e corrigido. Versão visível na janela e em cada lote (0.4.0). Suíte 390 OK. |
 
 ---
 
@@ -712,7 +786,14 @@ A remoção não pode deixar um caminho que ainda poste o original. `mapa.json` 
 | Formulário Receita (nascimento/título/filiação) | `src/anonimizador_app/form_fields.py` |
 | Código eproc de procurador | `src/anonimizador_app/eproc_codes.py` |
 | Índice CNPJ | `src/anonimizador_app/cnpj_index.py` / `cnpj_lookup.py` / `tools/importar_cnpj_sul.py` |
-| Geografia | `src/anonimizador_app/geography.py` |
+| Extração padrão (PyMuPDF por folha, tabelas, cobertura) | `src/anonimizador_app/fast_extract.py` |
+| OCR seletivo (escaneada, vetorial, fonte quebrada) | `src/anonimizador_app/ocr_pages.py` |
+| Cobertura por folha e trava de envio | `src/anonimizador_app/coverage.py`, `pipeline.py` (`build_job_result`) |
+| Propagação do lote (elenco, um token por entidade) | `src/anonimizador_app/batch_propagation.py`, `pipeline.py` (`prepare_file`/`finish_file`) |
+| Versão em uso (janela, AUDITORIA, LEIA-ME) | `src/anonimizador_app/version.py` |
+| Régua de estrutura (PDF × extraído × exportável) | `tools/medir_estrutura.py` |
+| Régua de vazamento (gabarito privado) | `tools/medir_vazamento.py` + `saidas/privados/gabaritos/` (fora do git) |
+| Geografia (só caminho legado Docling) | `src/anonimizador_app/geography.py` |
 | Auto-auditoria | `src/anonimizador_app/audit.py` |
 | Higiene de span | `src/anonimizador_app/span_hygiene.py` |
 | Janela / atalho | `src/anonimizador_app/desktop.py`, `iniciar_app.vbs` |

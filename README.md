@@ -52,13 +52,37 @@ Cada lote tem o mesmo identificador (`lote_AAAAMMDD_HHMMSS`) em dois lugares:
 Pode escolher varios PDFs de uma vez (por exemplo PARTES de ~10 MB); o app
 processa um apos o outro e reutiliza os mesmos tokens no lote.
 
-O laboratorio Docling (`converter_docling.py`, `entrada`, `saida`) foi
-preservado. O app usa o Docling como extrator padrao de PDF: OCR so e ligado
-se alguma pagina nao tiver texto nativo util; se o Docling falhar, o PyMuPDF
-assume.
+Extracao de PDF (desde 26/09/2026, ver `GOVERNANCA.md`, Veredito 3.0-E): o
+texto sai folha a folha pelo PyMuPDF, sem reescrita. Cada folha leva a ancora
+`<!-- pagina-origem: N -->` da folha fisica do PDF, e os marcadores do eproc
+(evento, documento, pagina) viram titulos. Tabela com grade vira tabela
+Markdown no lugar dela. OCR (RapidOCR, local) so em folha sem texto legivel:
+digitalizada, com o texto desenhado em vetor ou com fonte quebrada. O topo de
+cada Markdown traz a cobertura (quantas folhas vieram do texto nativo, do OCR,
+em branco); folha que nao pode ser lida fica marcada no texto, aparece na
+`AUDITORIA.txt` e bloqueia o envio.
+
+O Docling saiu do caminho padrao (estourava 15 min em autos grandes e
+devolvia o documento pela metade; numerava as paginas errado). O laboratorio
+Docling (`converter_docling.py`, `entrada`, `saida`) foi preservado.
 
 O motor local (GLiNER, com spaCy em portugues de reserva) detecta nomes
-completos, empresas privadas e logradouros nesta maquina. O Gemini nao
+completos, empresas privadas e logradouros nesta maquina.
+
+Deteccao 2.1 (propagacao do lote): o lote roda em duas fases. Primeiro todos
+os arquivos sao lidos e detectados; depois, o que foi detectado em qualquer
+arquivo vale para todos. A mesma pessoa ou empresa recebe o mesmo token em
+todas as grafias ("Fulano Tal" e o nome completo; a razao social com e sem
+LTDA), e as ocorrencias que a deteccao nao pegou (nome partido em duas linhas,
+tabela, lista) sao trocadas tambem. Placa, chassi, RENAVAM, e-mail e a raiz de
+CNPJ ja mapeados seguem pelo valor exato. Juiz e servidor (cargo colado ao
+nome), rotulo de tabela e termo juridico ("pessoa juridica") nao se propagam.
+A `AUDITORIA.txt` conta, por arquivo, quantas ocorrencias a propagacao
+acrescentou.
+
+A versao em uso aparece no cabecalho da janela ("v0.4.0 · codigo ...") e no
+topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
+um codigo diferente do esperado, feche o app e abra de novo. O Gemini nao
 roda no app: a leitura de original e Markdown tokenizado, se houver,
 fica fora. O mapa reversivel permanece so nesta maquina.
 

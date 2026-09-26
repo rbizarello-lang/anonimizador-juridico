@@ -11,8 +11,13 @@ from anonimizador_juridico.validators import normalize_cnpj, only_digits
 from .gemini_detector import is_kept_term, is_legal_nature, is_too_generic
 
 _TARGET_RECOGNIZER = "ListaDeAlvos"
+# Propagacao do lote (deteccao 2.1): a entidade ja foi julgada no elenco (cargo colado
+# ao nome em qualquer arquivo tira a entidade da propagacao); a ocorrencia propagada nao
+# repete as regras amplas de contexto (juiz/PFN por perto, parte de precedente, nome banal).
+_PROPAGATION_RECOGNIZER = "PropagacaoLote"
+_ENTITY_LEVEL_RECOGNIZERS = frozenset({_TARGET_RECOGNIZER, _PROPAGATION_RECOGNIZER})
 _ANCHORED_PERSON_RECOGNIZERS = frozenset(
-    {"ListaDeAlvos", "HeaderHeuristic", "FormFields"}
+    {"ListaDeAlvos", "HeaderHeuristic", "FormFields", _PROPAGATION_RECOGNIZER}
 )
 _CONTEXTUAL_TYPES = frozenset({"PERSON", "ORGANIZATION", "LOCATION"})
 CAPA_CHARS = 4500
@@ -227,7 +232,7 @@ def drop_protected_spans(
             continue
         if (
             span.entity_type == "PERSON"
-            and span.recognizer != _TARGET_RECOGNIZER
+            and span.recognizer not in _ENTITY_LEVEL_RECOGNIZERS
             and (
                 is_magistrate_or_citation(text, span.start, span.end)
                 or is_pfn_officer(text, span.start, span.end)
@@ -242,7 +247,7 @@ def drop_protected_spans(
             continue
         if (
             span.entity_type == "ORGANIZATION"
-            and span.recognizer != _TARGET_RECOGNIZER
+            and span.recognizer not in _ENTITY_LEVEL_RECOGNIZERS
             and is_precedent_party(text, span.start, span.end)
         ):
             if stats is not None:

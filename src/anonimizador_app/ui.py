@@ -31,14 +31,18 @@ from .ner_cache import default_ner_cache_dir
 from .branding import apply_taskbar_icon, ensure_icon, install_native_icon_hook, png_path
 from .desktop import APP_PORT, APP_URL, install_windows_shortcuts, bootstrap_instance, wants_browser
 from .extractors import SUPPORTED_SUFFIXES
+from .batch_propagation import BatchRoster
 from .pipeline import (
     FileOutcome,
     JobResult,
+    PreparedFile,
     build_job_result,
     default_export_dir,
     default_private_dir,
+    finish_file,
+    known_ids,
     new_job_id,
-    process_file,
+    prepare_file,
     resolve_lote_dirs,
     build_audit_notes,
     write_lote_guides,
@@ -47,6 +51,7 @@ from .rules import InvalidRuleError, build_recognizers, slug_entity_type, valida
 from .settings import CustomRule, load_settings, save_settings
 from .spreadsheet_targets import merge_unique, parse_target_spreadsheet
 from .target_ids import parse_target_ids
+from .version import version_info
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESOURCES_URL = "/recursos"
@@ -101,6 +106,7 @@ body { color: var(--aj-ink); font-family: var(--aj-sans); font-size: 15px; -webk
 .aj-mark { width: 34px; height: 34px; flex: none; display: block; }
 .aj-brand { font-family: var(--aj-serif); font-weight: 600; font-size: 19px; color: #fff; line-height: 1.1; }
 .aj-brand-sub { font-size: 12.5px; color: #c9d3e6; line-height: 1.25; }
+.aj-version { font-size: 11px; color: #9fb0cf; line-height: 1.2; letter-spacing: .02em; cursor: default; }
 .aj-nav .q-tab { color: #c9d3e6; min-height: 64px; padding: 0 16px; font-weight: 600; font-size: 15px; }
 .aj-nav .q-tab--active { color: #fff; }
 .aj-nav .q-tab__indicator { height: 4px; border-radius: 3px 3px 0 0; background: var(--aj-ochre) !important; }
@@ -484,6 +490,10 @@ def _build_page(session: Session) -> None:
             with ui.column().classes("gap-0"):
                 ui.label("Anonimizador Jurídico").classes("aj-brand")
                 ui.label("Pseudonimização local de peças").classes("aj-brand-sub")
+                # Versao do codigo carregado: confere com a AUDITORIA.txt de cada lote.
+                ui.label(version_info().short()).classes("aj-version").tooltip(
+                    version_info().line()
+                )
             ui.space()
             with ui.tabs().props("no-caps inline-label dense").classes("aj-nav") as tabs:
                 lote_tab = ui.tab("lote", label="Lote", icon="folder_copy")
@@ -831,19 +841,39 @@ def _build_lote_tab(
         total = len(sources)
 
         try:
+            # Fase 1: le e detecta todos os arquivos; o elenco e do lote inteiro.
+            roster = BatchRoster(session.settings.exclusions)
+            prepared: list[PreparedFile] = []
             for index, source in enumerate(sources):
-                status.text = f"Extraindo {source.name} ({index + 1} de {total})"
-                progress.value = index / total
-                outcome = await run.io_bound(
-                    process_file,
+                status.text = f"Lendo e detectando {source.name} ({index + 1} de {total})"
+                progress.value = 0.8 * index / total
+                item = await run.io_bound(
+                    prepare_file,
                     source,
-                    export_dir=export_dir,
                     detector=detector,
-                    mapping=mapping,
+                    known_ids=known_ids(mapping, roster),
                     contextual=contextual,
                     exclusions=session.settings.exclusions,
                     use_cache=True,
                     cache_dir=session.private_dir / "cache_extracao",
+                )
+                prepared.append(item)
+                if item.ok:
+                    roster.add(item.text, item.entities)
+            status.text = "Montando o elenco do lote"
+            progress.value = 0.8
+            await run.io_bound(roster.review, [item.text for item in prepared if item.ok])
+            # Fase 2: mesma entidade, mesmo token, em todos os arquivos.
+            for index, item in enumerate(prepared):
+                status.text = f"Trocando e gravando {item.source.name} ({index + 1} de {total})"
+                progress.value = 0.8 + 0.17 * index / total
+                outcome = await run.io_bound(
+                    finish_file,
+                    item,
+                    export_dir=export_dir,
+                    mapping=mapping,
+                    roster=roster,
+                    contextual=contextual,
                 )
                 outcomes.append(outcome)
 
@@ -1307,10 +1337,21 @@ def _build_help_dialog():
         ).classes("w-full")
         ui.html(
             "<h3>Extração de PDF</h3>"
-            "<p>O Docling é o extrator padrão. OCR só entra se alguma página não tiver texto "
-            "nativo suficiente. Se o Docling falhar, o PyMuPDF assume.</p>"
+            "<p>O texto sai do PDF folha a folha (PyMuPDF): cada folha leva a sua âncora e "
+            "os marcadores do eproc (evento, documento, página) viram títulos. Tabela com "
+            "linhas vira tabela. OCR só em folha sem texto legível: digitalizada, com o texto "
+            "desenhado em vetor ou com fonte quebrada. Folha que não pôde ser lida fica "
+            "marcada no texto, aparece na AUDITORIA e bloqueia o envio.</p>"
         ).classes("w-full")
         ui.html(f"<h3>Leitura externa</h3><p>{html.escape(GEMINI_POLICY)}</p>").classes("w-full")
+        ui.html(
+            "<h3>Versão em uso</h3>"
+            f"<p><code>{html.escape(version_info().line())}</code></p>"
+            "<p>O “código” muda com qualquer alteração do app, mesmo sem commit. A mesma "
+            "linha vai para a AUDITORIA.txt e o LEIA-ME.txt de cada lote: é assim que se "
+            "confere qual versão gerou cada texto. Se a janela mostrar um código antigo, "
+            "feche o app e abra de novo.</p>"
+        ).classes("w-full")
         ui.label(f"Endereço local deste app: {APP_URL}").classes("aj-card-note")
     return dialog
 

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from anonimizador_juridico import (
+    EntitySpan,
     PseudonymMap,
     StructuredDetector,
     propagate_mapped_ids,
@@ -21,8 +22,11 @@ from .audit import (
     fidelity_preservation_notes,
     write_audit_report,
 )
+from .batch_propagation import RECOGNIZER as PROPAGATION_RECOGNIZER
+from .batch_propagation import BatchRoster
 from .catalog import EXPORT_BLOCKED_REASON
-from .extraction_cache import default_cache_dir, load_or_extract
+from .coverage import pages_label, unread_pages
+from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import UnsupportedDocumentError
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .gemini_detector import ContextualEngine
@@ -48,6 +52,10 @@ class FileOutcome:
     extraction_cached: bool = False
     extraction_note: str = ""
     fidelity_drops: FidelityDropStats = field(default_factory=FidelityDropStats)
+    # Folhas que nem o texto nativo nem o OCR leram: marcadas no Markdown, bloqueiam o envio.
+    unread_pages: tuple[int, ...] = ()
+    # Ocorrencias acrescentadas pela propagacao do lote (nome ou ID ja detectado em outro ponto).
+    propagated: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,13 +129,17 @@ def write_lote_guides(
 ) -> None:
     """Grava um LEIA-ME em cada pasta do lote: textos anonimizados vs mapa."""
 
+    from .version import version_info
+
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
+    generated_by = f"Gerado por: {version_info().line()}\n"
     export_dir.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
     (export_dir / "LEIA-ME.txt").write_text(
         (
             f"LOTE {job_id}\n"
-            "\n"
+            + generated_by
+            + "\n"
             "Esta pasta contem os TEXTOS ANONIMIZADOS (.md).\n"
             "Sao os arquivos que voce le, copia ou envia para analise.\n"
             "\n"
@@ -148,7 +160,8 @@ def write_lote_guides(
     (map_path.parent / "LEIA-ME.txt").write_text(
         (
             f"LOTE {job_id}\n"
-            "\n"
+            + generated_by
+            + "\n"
             "Esta pasta contem o MAPA PRIVADO (a chave dos tokens).\n"
             "Arquivo: mapa.json\n"
             "\n"
@@ -195,25 +208,47 @@ def run_job(
     detector = StructuredDetector(recognizers=build_recognizers(active))
     mapping = PseudonymMap(token_labels=active.token_labels())
     cache_dir = default_cache_dir(private_root) if use_cache else None
-    outcomes: list[FileOutcome] = []
     total = len(sources)
 
+    # Fase 1: le e detecta todos os arquivos; o elenco e do lote inteiro.
+    roster = BatchRoster(active.exclusions)
+    prepared: list[PreparedFile] = []
     for index, source in enumerate(sources):
         _report(
             on_progress,
-            f"Extraindo {source.name} ({index + 1} de {total})",
-            index / total,
+            f"Lendo e detectando {source.name} ({index + 1} de {total})",
+            0.8 * index / total,
+        )
+        item = prepare_file(
+            source,
+            detector=detector,
+            known_ids=known_ids(mapping, roster),
+            contextual=contextual,
+            exclusions=active.exclusions,
+            use_cache=use_cache,
+            cache_dir=cache_dir,
+        )
+        prepared.append(item)
+        if item.ok:
+            roster.add(item.text, item.entities)
+    _report(on_progress, "Montando o elenco do lote", 0.8)
+    roster.review(item.text for item in prepared if item.ok)
+
+    # Fase 2: mesma entidade, mesmo token, em todos os arquivos.
+    outcomes: list[FileOutcome] = []
+    for index, item in enumerate(prepared):
+        _report(
+            on_progress,
+            f"Trocando e gravando {item.source.name} ({index + 1} de {total})",
+            0.8 + 0.17 * index / total,
         )
         outcomes.append(
-            process_file(
-                source,
+            finish_file(
+                item,
                 export_dir=export_dir,
-                detector=detector,
                 mapping=mapping,
+                roster=roster,
                 contextual=contextual,
-                exclusions=active.exclusions,
-                use_cache=use_cache,
-                cache_dir=cache_dir,
             )
         )
 
@@ -242,6 +277,119 @@ def run_job(
     )
 
 
+@dataclass(slots=True)
+class PreparedFile:
+    """Arquivo lido e detectado (fase 1), ainda sem troca."""
+
+    source: Path
+    cached: CachedExtraction | None = None
+    entities: list[EntitySpan] = field(default_factory=list)
+    stats: FidelityDropStats = field(default_factory=FidelityDropStats)
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error and self.cached is not None
+
+    @property
+    def text(self) -> str:
+        return self.cached.document.markdown if self.cached is not None else ""
+
+
+class _KnownIds:
+    """CPF/CNPJ ja vistos (mapa + lote): o alias de OCR de um arquivo acha o do outro."""
+
+    def __init__(self, *sources: object) -> None:
+        self._sources = sources
+
+    @property
+    def records(self) -> tuple:
+        return tuple(record for source in self._sources for record in getattr(source, "records", ()))
+
+
+def known_ids(mapping: PseudonymMap, roster: BatchRoster) -> _KnownIds:
+    return _KnownIds(mapping, roster)
+
+
+def prepare_file(
+    source: Path,
+    *,
+    detector: StructuredDetector,
+    known_ids: object | None = None,
+    contextual: ContextualEngine | None = None,
+    exclusions: Iterable[str] = (),
+    use_cache: bool = True,
+    cache_dir: Path | None = None,
+) -> PreparedFile:
+    """Fase 1: extrai e detecta, sem trocar.
+
+    Encadeamento (fidelidade vence recall): IDs estruturados → filial/alias
+    de CPF/CNPJ já vistos → lista de alvos / eproc / capa / tabela / formulário
+    / endereço → NER → drop de órgão/juiz/ministro/PFN e de nome só banal →
+    higiene de span.
+    """
+    try:
+        cached = load_or_extract(source, cache_dir=cache_dir, use_cache=use_cache)
+        text = cached.document.markdown
+        structured = detector.detect(text)
+        structured = propagate_mapped_ids(text, structured, mapping=known_ids)
+        contextual_spans = contextual.detect(text) if contextual else []
+        entities = resolve_overlaps([*structured, *contextual_spans])
+        stats = FidelityDropStats()
+        entities = drop_protected_spans(
+            text, entities, exclusions, source_name=source.name, stats=stats
+        )
+        entities = sanitize_spans(text, entities, stats=stats)
+        return PreparedFile(source=source, cached=cached, entities=entities, stats=stats)
+    except UnsupportedDocumentError as exc:
+        return PreparedFile(source=source, error=str(exc))
+    except Exception as exc:  # noqa: BLE001 - a UI precisa da mensagem por arquivo
+        return PreparedFile(source=source, error=str(exc) or type(exc).__name__)
+
+
+def finish_file(
+    prepared: PreparedFile,
+    *,
+    export_dir: Path,
+    mapping: PseudonymMap,
+    roster: BatchRoster | None = None,
+    contextual: ContextualEngine | None = None,
+) -> FileOutcome:
+    """Fase 2: aplica o elenco do lote (mesmo token por entidade; ocorrências que
+    a detecção não pegou), troca e grava."""
+
+    if not prepared.ok or prepared.cached is None:
+        return FileOutcome(source=prepared.source, ok=False, error=prepared.error or "Falha na leitura.")
+    try:
+        text = prepared.text
+        entities = prepared.entities
+        if roster is not None:
+            entities = roster.apply(text, entities, source_name=prepared.source.name)
+        result = pseudonymize(text, entities, mapping=mapping)
+        residual = tuple(contextual.scan_residual(result.text)) if contextual else ()
+        markdown_path = _unique_path(export_dir, prepared.source.stem, ".md")
+        markdown_path.write_text(result.text, encoding="utf-8")
+        counts = Counter(entity.entity_type for entity in entities)
+        extracted = prepared.cached.document
+        return FileOutcome(
+            source=prepared.source,
+            ok=True,
+            markdown_path=markdown_path,
+            replacements=result.replacements,
+            entity_counts=dict(counts),
+            page_count=extracted.page_count,
+            extractor=extracted.extractor,
+            residual_hits=residual,
+            extraction_cached=prepared.cached.cached,
+            extraction_note=prepared.cached.audit_line() or "",
+            fidelity_drops=prepared.stats,
+            unread_pages=unread_pages(text),
+            propagated=sum(1 for entity in entities if entity.recognizer == PROPAGATION_RECOGNIZER),
+        )
+    except Exception as exc:  # noqa: BLE001 - a UI precisa da mensagem por arquivo
+        return FileOutcome(source=prepared.source, ok=False, error=str(exc) or type(exc).__name__)
+
+
 def process_file(
     source: Path,
     *,
@@ -253,56 +401,24 @@ def process_file(
     use_cache: bool = True,
     cache_dir: Path | None = None,
 ) -> FileOutcome:
-    """Extrai, detecta e tokeniza um arquivo.
+    """Um arquivo só: as duas fases com o elenco do próprio arquivo (``run_job`` usa o do lote)."""
 
-    Encadeamento (fidelidade vence recall): IDs estruturados → filial/alias
-    de CPF/CNPJ já mapeados → lista de alvos / eproc / capa / tabela / formulário
-    / endereço → NER → drop de órgão/juiz/ministro/PFN e de nome só banal →
-    higiene de span → troca.
-    """
-    try:
-        cached = load_or_extract(source, cache_dir=cache_dir, use_cache=use_cache)
-        extracted = cached.document
-        structured = detector.detect(extracted.markdown)
-        structured = propagate_mapped_ids(
-            extracted.markdown, structured, mapping=mapping
-        )
-        contextual_spans = contextual.detect(extracted.markdown) if contextual else []
-        entities = resolve_overlaps([*structured, *contextual_spans])
-        fidelity_stats = FidelityDropStats()
-        entities = drop_protected_spans(
-            extracted.markdown,
-            entities,
-            exclusions,
-            source_name=source.name,
-            stats=fidelity_stats,
-        )
-        entities = sanitize_spans(
-            extracted.markdown, entities, stats=fidelity_stats
-        )
-        result = pseudonymize(extracted.markdown, entities, mapping=mapping)
-        residual = tuple(contextual.scan_residual(result.text)) if contextual else ()
-        markdown_path = _unique_path(export_dir, source.stem, ".md")
-        markdown_path.write_text(result.text, encoding="utf-8")
-        counts = Counter(entity.entity_type for entity in entities)
-        note = cached.audit_line() or ""
-        return FileOutcome(
-            source=source,
-            ok=True,
-            markdown_path=markdown_path,
-            replacements=result.replacements,
-            entity_counts=dict(counts),
-            page_count=extracted.page_count,
-            extractor=extracted.extractor,
-            residual_hits=residual,
-            extraction_cached=cached.cached,
-            extraction_note=note,
-            fidelity_drops=fidelity_stats,
-        )
-    except UnsupportedDocumentError as exc:
-        return FileOutcome(source=source, ok=False, error=str(exc))
-    except Exception as exc:  # noqa: BLE001 - a UI precisa da mensagem por arquivo
-        return FileOutcome(source=source, ok=False, error=str(exc))
+    roster = BatchRoster(exclusions)
+    prepared = prepare_file(
+        source,
+        detector=detector,
+        known_ids=known_ids(mapping, roster),
+        contextual=contextual,
+        exclusions=exclusions,
+        use_cache=use_cache,
+        cache_dir=cache_dir,
+    )
+    if prepared.ok:
+        roster.add(prepared.text, prepared.entities)
+        roster.review([prepared.text])
+    return finish_file(
+        prepared, export_dir=export_dir, mapping=mapping, roster=roster, contextual=contextual
+    )
 
 
 def build_job_result(
@@ -320,10 +436,22 @@ def build_job_result(
         hit for outcome in outcomes if outcome.ok for hit in outcome.residual_hits
     )
     failed = any(not outcome.ok for outcome in outcomes)
+    unread = [
+        (outcome.source.name, outcome.unread_pages)
+        for outcome in outcomes
+        if outcome.ok and outcome.unread_pages
+    ]
     warning = extra_warning.strip()
     if failed:
         allowed = False
         reason = "Há arquivos com erro. Corrija o lote antes de copiar o resultado."
+    elif unread:
+        allowed = False
+        listed = "; ".join(f"{name}: páginas {pages_label(pages)}" for name, pages in unread)
+        reason = (
+            "Há folhas que não puderam ser lidas (" + listed + "). Estão marcadas no "
+            "texto e na AUDITORIA. Confira no PDF original antes de enviar."
+        )
     elif not contextual_used:
         allowed = False
         reason = EXPORT_BLOCKED_REASON
@@ -375,6 +503,10 @@ def _file_audit_notes(outcome: FileOutcome, text: str) -> list[str]:
     notes = [extractor_note(outcome.extractor)]
     if outcome.extraction_note:
         notes.append(outcome.extraction_note)
+    notes.append(
+        f"Propagacao do lote: {outcome.propagated} ocorrencia(s) acrescentada(s) "
+        "(nome ou ID ja detectado em outro ponto do lote)"
+    )
     notes.extend(audit_markdown(text))
     notes.extend(fidelity_preservation_notes(outcome.fidelity_drops))
     return notes
