@@ -1307,8 +1307,11 @@ def _build_help_dialog():
         ).classes("w-full")
         ui.html(
             "<h3>Extração de PDF</h3>"
-            "<p>O Docling é o extrator padrão. OCR só entra se alguma página não tiver texto "
-            "nativo suficiente. Se o Docling falhar, o PyMuPDF assume.</p>"
+            "<p>O texto sai do PDF folha a folha (PyMuPDF): cada folha leva a sua âncora e "
+            "os marcadores do eproc (evento, documento, página) viram títulos. Tabela com "
+            "linhas vira tabela. OCR só em folha sem texto legível: digitalizada, com o texto "
+            "desenhado em vetor ou com fonte quebrada. Folha que não pôde ser lida fica "
+            "marcada no texto, aparece na AUDITORIA e bloqueia o envio.</p>"
         ).classes("w-full")
         ui.html(f"<h3>Leitura externa</h3><p>{html.escape(GEMINI_POLICY)}</p>").classes("w-full")
         ui.label(f"Endereço local deste app: {APP_URL}").classes("aj-card-note")

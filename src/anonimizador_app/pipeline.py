@@ -22,6 +22,7 @@ from .audit import (
     write_audit_report,
 )
 from .catalog import EXPORT_BLOCKED_REASON
+from .coverage import pages_label, unread_pages
 from .extraction_cache import default_cache_dir, load_or_extract
 from .extractors import UnsupportedDocumentError
 from .fidelity import FidelityDropStats, drop_protected_spans
@@ -48,6 +49,8 @@ class FileOutcome:
     extraction_cached: bool = False
     extraction_note: str = ""
     fidelity_drops: FidelityDropStats = field(default_factory=FidelityDropStats)
+    # Folhas que nem o texto nativo nem o OCR leram: marcadas no Markdown, bloqueiam o envio.
+    unread_pages: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +301,7 @@ def process_file(
             extraction_cached=cached.cached,
             extraction_note=note,
             fidelity_drops=fidelity_stats,
+            unread_pages=unread_pages(extracted.markdown),
         )
     except UnsupportedDocumentError as exc:
         return FileOutcome(source=source, ok=False, error=str(exc))
@@ -320,10 +324,22 @@ def build_job_result(
         hit for outcome in outcomes if outcome.ok for hit in outcome.residual_hits
     )
     failed = any(not outcome.ok for outcome in outcomes)
+    unread = [
+        (outcome.source.name, outcome.unread_pages)
+        for outcome in outcomes
+        if outcome.ok and outcome.unread_pages
+    ]
     warning = extra_warning.strip()
     if failed:
         allowed = False
         reason = "Há arquivos com erro. Corrija o lote antes de copiar o resultado."
+    elif unread:
+        allowed = False
+        listed = "; ".join(f"{name}: páginas {pages_label(pages)}" for name, pages in unread)
+        reason = (
+            "Há folhas que não puderam ser lidas (" + listed + "). Estão marcadas no "
+            "texto e na AUDITORIA. Confira no PDF original antes de enviar."
+        )
     elif not contextual_used:
         allowed = False
         reason = EXPORT_BLOCKED_REASON

@@ -52,10 +52,19 @@ Cada lote tem o mesmo identificador (`lote_AAAAMMDD_HHMMSS`) em dois lugares:
 Pode escolher varios PDFs de uma vez (por exemplo PARTES de ~10 MB); o app
 processa um apos o outro e reutiliza os mesmos tokens no lote.
 
-O laboratorio Docling (`converter_docling.py`, `entrada`, `saida`) foi
-preservado. O app usa o Docling como extrator padrao de PDF: OCR so e ligado
-se alguma pagina nao tiver texto nativo util; se o Docling falhar, o PyMuPDF
-assume.
+Extracao de PDF (desde 26/09/2026, ver `GOVERNANCA.md`, Veredito 3.0-E): o
+texto sai folha a folha pelo PyMuPDF, sem reescrita. Cada folha leva a ancora
+`<!-- pagina-origem: N -->` da folha fisica do PDF, e os marcadores do eproc
+(evento, documento, pagina) viram titulos. Tabela com grade vira tabela
+Markdown no lugar dela. OCR (RapidOCR, local) so em folha sem texto legivel:
+digitalizada, com o texto desenhado em vetor ou com fonte quebrada. O topo de
+cada Markdown traz a cobertura (quantas folhas vieram do texto nativo, do OCR,
+em branco); folha que nao pode ser lida fica marcada no texto, aparece na
+`AUDITORIA.txt` e bloqueia o envio.
+
+O Docling saiu do caminho padrao (estourava 15 min em autos grandes e
+devolvia o documento pela metade; numerava as paginas errado). O laboratorio
+Docling (`converter_docling.py`, `entrada`, `saida`) foi preservado.
 
 O motor local (GLiNER, com spaCy em portugues de reserva) detecta nomes
 completos, empresas privadas e logradouros nesta maquina. O Gemini nao

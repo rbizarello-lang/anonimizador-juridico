@@ -32,6 +32,26 @@ class ExtractionCacheTests(unittest.TestCase):
             self.assertEqual(first.document.markdown, second.document.markdown)
             self.assertEqual(second.document.extractor, "txt")
 
+    def test_default_extractor_is_pymupdf_by_page_with_coverage(self) -> None:
+        import pymupdf
+
+        from anonimizador_app.fast_extract import FAST_EXTRACTOR_VERSION
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "autos.pdf"
+            with pymupdf.open() as document:
+                document.new_page().insert_text((72, 72), "Peticao da Uniao, SISBAJUD e R$ 10,00.")
+                document.save(source)
+            cache_dir = root / "cache"
+            first = load_or_extract(source, cache_dir=cache_dir)
+            key = cache_key(source.read_bytes(), FAST_EXTRACTOR_VERSION)
+            meta = json.loads((cache_dir / f"{key}.json").read_text(encoding="utf-8"))
+        self.assertEqual(first.document.extractor, "pymupdf")
+        self.assertEqual(meta["versao"], FAST_EXTRACTOR_VERSION)
+        self.assertEqual(meta["cobertura"]["nao_lidas"], [])
+        self.assertTrue(first.document.markdown.startswith("<!-- cobertura: paginas=1;"))
+
     def test_version_change_invalidates_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

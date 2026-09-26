@@ -37,6 +37,7 @@ from anonimizador_juridico import (
 from anonimizador_juridico.pseudonymizer import PseudonymizationResult
 
 from .audit import audit_map_records, audit_markdown, write_audit_report
+from .coverage import unread_pages as extraction_unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import ExtractedDocument, UnsupportedDocumentError
 from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
@@ -222,6 +223,7 @@ def run_llm_job(
             extraction_cached=state.cached.cached,
             extraction_note=state.cached.audit_line() or "",
             fidelity_drops=state.stats,
+            unread_pages=extraction_unread_pages(state.cached.document.markdown),
         )
         outcomes.append(outcome)
         reports[source.name] = state.report
