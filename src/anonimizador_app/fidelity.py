@@ -213,6 +213,8 @@ class FidelityDropStats:
     higiene_rotulo: int = 0
     higiene_fusao: int = 0
     higiene_tamanho: int = 0
+    # Endereco cortado no limite: celula/coluna, parentese nao fechado, numero cortado ao meio.
+    higiene_limite: int = 0
 
 
 def drop_protected_spans(
@@ -264,6 +266,10 @@ def drop_protected_spans(
         if span.entity_type in {"BR_CPF", "BR_PHONE"} and is_blocked_numeric_context(
             text, span.start, span.end
         ):
+            if stats is not None:
+                stats.nire_protocolo += 1
+            continue
+        if span.entity_type == "BR_PHONE" and is_code_fragment(text, span.start, span.end):
             if stats is not None:
                 stats.nire_protocolo += 1
             continue
@@ -343,6 +349,22 @@ def is_blocked_numeric_context(text: str, start: int, end: int) -> bool:
         return False
     compact = _fold_compact(raw)
     return bool(_ID_CONTEXT_MARKERS.search(raw) or _ID_CONTEXT_COMPACT.search(compact))
+
+
+_CODE_BEFORE = re.compile(r"\d[.,/-]?\Z")
+_CODE_AFTER = re.compile(r"[.,/-]?\d")
+
+
+def is_code_fragment(text: str, start: int, end: int) -> bool:
+    """Numero sem DV cujos digitos continuam, por [.,/-], em outro digito: e pedaco de
+    codigo mais longo (protocolo CNIB "dddddd.dddd.dddddddd-IA-nnn"), nao telefone."""
+
+    value = text[start:end]
+    before = text[max(0, start - 2) : start]
+    return bool(
+        (value[:1].isdigit() and _CODE_BEFORE.search(before))
+        or (value[-1:].isdigit() and _CODE_AFTER.match(text, end))
+    )
 
 
 def is_unlabeled_compact_phone(text: str, start: int, end: int) -> bool:

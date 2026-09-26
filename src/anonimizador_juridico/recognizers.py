@@ -5,6 +5,7 @@ import re
 from presidio_analyzer import Pattern, PatternRecognizer, RecognizerResult
 
 from .validators import (
+    CNPJ_PATTERN,
     is_valid_cnpj,
     is_valid_cnj_number,
     is_valid_cpf,
@@ -132,7 +133,11 @@ class BrCpfRecognizer(PatternRecognizer):
 
 
 class LabeledCpfFallbackRecognizer(PatternRecognizer):
-    """CPF com rotulo, tolerante a OCR. Sem rotulo nao entra (P10)."""
+    """CPF com rotulo, tolerante a OCR. Sem rotulo nao entra (P10).
+
+    Aceita o DV na notacao antiga ("C.P.F. 123456789/01"): sem ele o token parava antes
+    da barra e o DV sobrava colado ("[CPF_n]/01").
+    """
 
     def __init__(self) -> None:
         super().__init__(
@@ -142,7 +147,7 @@ class LabeledCpfFallbackRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="cpf_rotulado_ocr",
-                    regex=rf"\b{_CPF_LABEL}(?:\d{_SEP}*){{8,13}}\d(?!\d)",
+                    regex=rf"\b{_CPF_LABEL}(?:\d{_SEP}*){{8,13}}\d(?:/\d{{2}})?(?!\d)",
                     score=0.55,
                 )
             ],
@@ -189,12 +194,7 @@ class BrCnpjRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="cnpj_numerico_ou_alfanumerico",
-                    regex=(
-                        r"(?<![0-9A-Z])"
-                        r"[0-9A-Z]{2}[.,\s]?[0-9A-Z]{3}[.,\s]?[0-9A-Z]{3}"
-                        r"[/\s]?[0-9A-Z]{4}[.\-\s]?\s*\d{2}"
-                        r"(?![0-9A-Z])"
-                    ),
+                    regex=CNPJ_PATTERN,
                     score=0.75,
                 )
             ],

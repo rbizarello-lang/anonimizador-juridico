@@ -98,6 +98,14 @@ class Ciclo2PropagationTests(unittest.TestCase):
         self.assertNotIn(filial, result.text)
         self.assertGreaterEqual(result.text.count("[CNPJ_1]"), 2)
 
+    def test_table_word_is_not_a_filial_of_known_root(self) -> None:
+        # Lote de 25/09: "CONTRIBUICAO" + dia virou CNPJ e cada outro dia virou "filial".
+        mapping = PseudonymMap()
+        mapping.resolve("BR_CNPJ", "CONTRIBUICAO23")
+        text = "CONTRIBUICAO                    20/06/2023     01/07/2023"
+        spans = propagate_mapped_ids(text, StructuredDetector().detect(text), mapping=mapping)
+        self.assertEqual([span for span in spans if span.entity_type == "BR_CNPJ"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

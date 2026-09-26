@@ -57,9 +57,9 @@ def fidelity_preservation_notes(stats: FidelityDropStats | None) -> list[str]:
         f"natureza jurídica: {stats.natureza_juridica}",
         f"parte de precedente: {stats.parte_precedente}",
         f"processo de precedente: {stats.processo_precedente}",
-        f"higiene HTML/rotulo/fusao/tamanho: "
+        f"higiene HTML/rotulo/fusao/tamanho/limite: "
         f"{stats.higiene_html}/{stats.higiene_rotulo}/"
-        f"{stats.higiene_fusao}/{stats.higiene_tamanho}",
+        f"{stats.higiene_fusao}/{stats.higiene_tamanho}/{stats.higiene_limite}",
     ]
 
 

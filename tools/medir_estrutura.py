@@ -10,7 +10,8 @@ privado, antes da troca) e o Markdown exportavel (depois da troca):
 - extracao: folha nativa cujo texto no cache perdeu mais de 10% das palavras do PDF;
 - valores em R$ e datas de folha nativa: quantos sumiram na extracao e quantos sumiram
   na troca (token que comeu valor/data; folha com [NASCIMENTO_n] nao conta);
-- tokens colados em numero ("[X_n],12") e token no cabecalho de tabela (rotulo trocado);
+- tokens colados em numero ("[X_n],12"; digito colado a letra, "C1.[X_n]", nao conta) e token
+  no cabecalho de tabela (rotulo trocado);
 - titulos so com rotulo ("## Evento:") e "## Evento N" partindo frase.
 
 E a regua da fase "estrutura primeiro" (GOVERNANCA, fila 3.x): perda de informacao
@@ -37,7 +38,9 @@ TOKEN = re.compile(r"\[[A-Z_]+_\d+\]")
 STAMP = re.compile(r"Processo\s+[\d.\-/A-Z]+,\s*Evento\s+\d+\s*,\s*\S+\s*,\s*P.gina\s+\d+", re.I)
 MONEY = re.compile(r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}")
 DATE = re.compile(r"(?<!\d)\d{2}/\d{2}/\d{4}(?!\d)")
-TOKEN_ON_DIGIT = re.compile(r"\[[A-Z_]+_\d+\][.,/]?\d|\d[.,/-]?\[[A-Z_]+_\d+\]")
+# Digito de palavra antes do token nao e numero: "C1.[RG_n]" e OCR de "CI." (Cedula de
+# Identidade) antes do rotulo "RG", nada comido.
+TOKEN_ON_DIGIT = re.compile(r"\[[A-Z_]+_\d+\][.,/]?\d|(?<![^\W\d_])\d[.,/-]?\[[A-Z_]+_\d+\]")
 LABEL_HEADING = re.compile(r"^#+ [^\n]{1,25}:\s*$", re.M)
 SPLIT_EVENT = re.compile(r"\n\n## Evento \d+\n\n[,a-zà-ú]")
 

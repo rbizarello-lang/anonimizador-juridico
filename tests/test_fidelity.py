@@ -8,6 +8,7 @@ from anonimizador_juridico import EntitySpan
 from anonimizador_app.fidelity import (
     drop_protected_spans,
     is_blocked_numeric_context,
+    is_code_fragment,
     is_magistrate_or_citation,
     is_pfn_officer,
     is_precedent_party,
@@ -360,6 +361,27 @@ class Ciclo2FidelityTests(unittest.TestCase):
             recognizer="BrPhoneRecognizer",
         )
         self.assertEqual(drop_protected_spans(text, [span]), [])
+
+    def test_phone_inside_longer_code_is_dropped(self) -> None:
+        # Protocolo CNIB: o comeco do numero casava telefone e o resto sobrava colado.
+        text = "Protocolo de Indisponibilidade n° 202605.2912.12345678-IA-773, de 29/05/2026"
+        start = text.index("202605.2912")
+        self.assertTrue(is_code_fragment(text, start, start + 11))
+        span = EntitySpan(
+            start=start,
+            end=start + 11,
+            entity_type="BR_PHONE",
+            score=0.8,
+            recognizer="BrPhoneRecognizer",
+        )
+        self.assertEqual(drop_protected_spans(text, [span]), [])
+
+    def test_phone_ending_the_number_stays(self) -> None:
+        text = "Tel. (43) 3339-3132, no rodape. Fone 43 3339.3132."
+        for value in ("(43) 3339-3132", "43 3339.3132"):
+            start = text.index(value)
+            with self.subTest(value=value):
+                self.assertFalse(is_code_fragment(text, start, start + len(value)))
 
     def test_labeled_compact_phone_stays(self) -> None:
         text = "Tel. 11987654321 no rodape da peticao."

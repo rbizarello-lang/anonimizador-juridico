@@ -26,6 +26,18 @@ _OCR_TO_DIGIT = str.maketrans(
 _PIS_WEIGHTS = (3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
 _TITULO_UF_MAX = 28
 
+# CNPJ numerico ou alfanumerico (12 posicoes alfanumericas + 2 DV numericos). Uma fonte so
+# para o reconhecedor e para a propagacao de filial. A base tem ao menos um digito: 12 letras
+# + 2 digitos e palavra de tabela ("CONTRIBUICAO" + dia da data ao lado), nao CNPJ. No maximo
+# um espaco entre as partes: vao de coluna nao separa CNPJ.
+CNPJ_PATTERN = (
+    r"(?<![0-9A-Z])"
+    r"(?![A-Z]{2}[.,\s]?[A-Z]{3}[.,\s]?[A-Z]{3}[/\s]?[A-Z]{4})"
+    r"[0-9A-Z]{2}[.,\s]?[0-9A-Z]{3}[.,\s]?[0-9A-Z]{3}"
+    r"[/\s]?[0-9A-Z]{4}[.\-]?\s?\d{2}"
+    r"(?![0-9A-Z])"
+)
+
 
 def only_digits(value: str) -> str:
     return _NON_DIGITS.sub("", value)

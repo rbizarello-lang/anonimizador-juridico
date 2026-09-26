@@ -117,6 +117,28 @@ class AddressHeuristicTests(unittest.TestCase):
         self.assertIn("address", providers)
         self.assertLess(providers.index("header"), providers.index("address"))
 
+    def test_bare_r_needs_a_word(self) -> None:
+        # "R" sem ponto so abrevia Rua antes de palavra: cabecalho espacado e celula de CDA.
+        for text in (
+            "R E G I S T R O    D E    I M Ó V E I S    D A    8°    C I R C U N S C R I Ç Ã O",
+            "         1475   R D ATIVA -MULTA SOBRE ALGO- LEI NA               242,12      48,42",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(AddressHeuristicEngine().detect(text), [])
+        text = "Sede na R Marechal Deodoro, 500 - Centro."
+        values = [text[span.start : span.end] for span in AddressHeuristicEngine().detect(text)]
+        self.assertEqual(values, ["R Marechal Deodoro, 500"])
+
+    def test_house_number_with_thousands_is_whole(self) -> None:
+        text = "Cartorio na Av. Pres. Getulio Vargas, 2.350 - Cj. 3 a 9 - Centro."
+        values = [text[span.start : span.end] for span in AddressHeuristicEngine().detect(text)]
+        self.assertEqual(values, ["Av. Pres. Getulio Vargas, 2.350"])
+
+    def test_street_name_does_not_cross_table_cell(self) -> None:
+        text = "| Rua das Flores | Centro 123 | 80.000-000 |"
+        values = [text[span.start : span.end] for span in AddressHeuristicEngine().detect(text)]
+        self.assertFalse(any("|" in value for value in values))
+
     def test_ave_abbreviation_is_a_street(self) -> None:
         text = "Sediada à AVE CAPITAO INDIO BANDEIRA, 2400, Centro."
         values = {

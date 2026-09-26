@@ -73,6 +73,30 @@ class Ciclo2LabeledOcrTests(unittest.TestCase):
     def test_unlabeled_invalid_cnpj_not_detected(self) -> None:
         self.assertEqual(self.detector.detect("12.345.678/0001-90"), [])
 
+    def test_table_word_and_day_are_not_alphanumeric_cnpj(self) -> None:
+        # "CONTRIBUICAO" tem 12 letras; com o dia da data da coluna ao lado, o DV fechava
+        # e o token comia a data ("[CNPJ_n]/12/2022").
+        for text in (
+            "CONTRIBUICAO                    23/12/2022     01/01/2023",
+            "CONTRIBUICAO\n23/06/2023\n01/07/2023",
+        ):
+            with self.subTest(text=text):
+                self.assertNotIn("BR_CNPJ", self._types(text))
+
+    def test_alphanumeric_cnpj_with_digit_in_base_is_detected(self) -> None:
+        values = self._values("sede 12.ABC.345/01DE-35 da empresa", "BR_CNPJ")
+        self.assertEqual(values, ["12.ABC.345/01DE-35"])
+
+    def test_cnpj_does_not_cross_column_gap(self) -> None:
+        text = "01.294.953/0001        72/06/2023 na coluna"
+        self.assertNotIn("BR_CNPJ", self._types(text))
+
+    def test_labeled_cpf_old_check_digit_notation(self) -> None:
+        # DV depois da barra (notacao antiga): o token leva o DV, nao deixa "/25" colado.
+        text = "MATRICULA\nC.P.F. 529982247/25\nAPARTAMENTO"
+        self.assertEqual(self._values(text, "BR_CPF"), ["C.P.F. 529982247/25"])
+        self.assertEqual(canonicalize("BR_CPF", "C.P.F. 529982247/25"), "52998224725")
+
     def test_rg_graphies(self) -> None:
         samples = [
             "RG. 1476.757-SSP-PR",

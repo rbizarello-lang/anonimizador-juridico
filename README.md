@@ -80,6 +80,12 @@ nome), rotulo de tabela e termo juridico ("pessoa juridica") nao se propagam.
 A `AUDITORIA.txt` conta, por arquivo, quantas ocorrencias a propagacao
 acrescentou.
 
+Deteccao 2.2 (limites do token): o token nao come conteudo vizinho. Palavra
+de tabela com 12 letras nao vira mais CNPJ (comia o dia da data ao lado);
+numero de protocolo nao vira telefone; endereco para na celula ou na coluna
+da tabela e antes de parentese nao fechado, e nao corta numero ao meio. O
+CPF na notacao antiga (DV depois da barra) sai inteiro no token.
+
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia
