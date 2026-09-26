@@ -80,9 +80,11 @@ nome), rotulo de tabela e termo juridico ("pessoa juridica") nao se propagam.
 A `AUDITORIA.txt` conta, por arquivo, quantas ocorrencias a propagacao
 acrescentou.
 
-A versao em uso aparece no cabecalho da janela ("v0.4.0 · codigo ...") e no
+A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
-um codigo diferente do esperado, feche o app e abra de novo. O Gemini nao
+um codigo diferente do esperado, feche o app e abra de novo. Se uma copia
+anterior tiver travado ao fechar (viva, sem janela), o proximo clique a
+encerra e abre outra; nao e preciso o Gerenciador de Tarefas. O Gemini nao
 roda no app: a leitura de original e Markdown tokenizado, se houver,
 fica fora. O mapa reversivel permanece so nesta maquina.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anonimizador-juridico"
-version = "0.4.0"
+version = "0.4.1"
 description = "App local de pseudonimizacao de documentos juridicos brasileiros"
 requires-python = ">=3.11"
 dependencies = [

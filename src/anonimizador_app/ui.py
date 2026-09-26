@@ -464,6 +464,9 @@ def run_app() -> None:
         "reload": False,
         "show": not native,
         "language": "pt-BR",
+        # Ao fechar, o uvicorn espera as conexoes terminarem; sem limite, uma conexao presa
+        # deixava o processo vivo, sem janela e com a trava de instancia unica (ver compat.py).
+        "timeout_graceful_shutdown": 5,
     }
     if native:
         kwargs["native"] = True

@@ -20,8 +20,12 @@ APP_HOST = "127.0.0.1"
 APP_PORT = 8765
 APP_URL = f"http://{APP_HOST}:{APP_PORT}"
 MUTEX_NAME = "Local\\Roger.AnonimizadorJuridico"
+# Uma copia abre a porta em ~15-40 s. Viva ha mais que isto e sem porta, travou (26/09/2026:
+# ficou presa ao fechar a janela, segurando a trava, e todo clique seguinte desistia).
+STALE_AFTER_SECONDS = 120
 
 _CREATE_NO_WINDOW = 0x08000000
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STARTF_USESHOWWINDOW = 0x00000001
 _HANDLE_FLAG_INHERIT = 0x00000001
 _ERROR_ALREADY_EXISTS = 183
@@ -58,8 +62,13 @@ def launch_plan(
     port_busy: bool,
     owns_mutex: bool,
     force: bool,
+    stale: bool = False,
 ) -> str:
-    """Decisao pura: continue | focus | wait_focus | reclaim | start."""
+    """Decisao pura: continue | focus | wait_focus | reclaim | start.
+
+    ``stale``: a copia que segura a trava nasceu ha mais de STALE_AFTER_SECONDS e nao serve a
+    porta. Nao esta abrindo: travou e e substituida, em vez de o clique esperar e desistir.
+    """
 
     if worker:
         return "continue"
@@ -68,7 +77,7 @@ def launch_plan(
     if has_window and port_busy:
         return "focus"
     if not owns_mutex:
-        return "wait_focus"
+        return "reclaim" if stale and not port_busy else "wait_focus"
     if port_busy or has_window:
         return "reclaim"
     return "start"
@@ -94,14 +103,17 @@ def bootstrap_instance(project_root: Path) -> None:
 
     force = wants_takeover()
     owns_mutex = _try_mutex()
+    listening = is_app_listening()
+    stale = not owns_mutex and not listening and holder_is_stale(_other_copy_ages(project_root))
     plan = launch_plan(
         worker=False,
         has_window=window_is_open(),
-        port_busy=is_app_listening(),
+        port_busy=listening,
         owns_mutex=owns_mutex,
         force=force,
+        stale=stale,
     )
-    log_event(project_root, f"plan={plan} mutex={int(owns_mutex)} listening={int(is_app_listening())}")
+    log_event(project_root, f"plan={plan} mutex={int(owns_mutex)} listening={int(listening)} stale={int(stale)}")
 
     if plan == "focus":
         focus_app_window()
@@ -113,26 +125,30 @@ def bootstrap_instance(project_root: Path) -> None:
             log_event(project_root, "focus after wait")
             raise SystemExit(0)
         if not _try_mutex():
-            log_event(project_root, "still starting; not killing")
-            _notify(
-                "O Anonimizador ainda esta abrindo.\n"
-                "Espere a janela aparecer; um segundo clique so a traz para frente."
-            )
-            raise SystemExit(0)
-        log_event(project_root, "previous starter gone; continuing")
-        if is_app_listening():
-            _reclaim_port(project_root)
-            if is_app_listening():
-                leftover, _ = _occupants(project_root)
+            if is_app_listening() or not holder_is_stale(_other_copy_ages(project_root)):
+                log_event(project_root, "still starting; not killing")
                 _notify(
-                    "Nao consegui liberar a porta 8765.\n\n"
-                    f"{leftover or 'Processo nao identificado.'}\n\n"
-                    "No Gerenciador de Tarefas, aba Detalhes, encerre python.exe / pythonw.exe "
-                    "e abra de novo."
+                    "O Anonimizador ainda esta abrindo.\n"
+                    "Espere a janela aparecer; um segundo clique so a traz para frente."
                 )
-                raise SystemExit(1)
-        _bootstrapped = True
-        return
+                raise SystemExit(0)
+            log_event(project_root, "holder never served the port; reclaiming")
+            plan = "reclaim"
+        else:
+            log_event(project_root, "previous starter gone; continuing")
+            if is_app_listening():
+                _reclaim_port(project_root)
+                if is_app_listening():
+                    leftover, _ = _occupants(project_root)
+                    _notify(
+                        "Nao consegui liberar a porta 8765.\n\n"
+                        f"{leftover or 'Processo nao identificado.'}\n\n"
+                        "No Gerenciador de Tarefas, aba Detalhes, encerre python.exe / pythonw.exe "
+                        "e abra de novo."
+                    )
+                    raise SystemExit(1)
+            _bootstrapped = True
+            return
 
     if plan == "reclaim":
         _reclaim_port(project_root)
@@ -145,7 +161,7 @@ def bootstrap_instance(project_root: Path) -> None:
                 "e abra de novo."
             )
             raise SystemExit(1)
-        if not owns_mutex and not _try_mutex():
+        if not owns_mutex and not _acquire_mutex():
             _notify(
                 "Nao consegui encerrar a copia antiga.\n"
                 "Feche python.exe / pythonw.exe no Gerenciador de Tarefas e abra de novo."
@@ -238,12 +254,18 @@ def merge_pids(*groups: list[int]) -> list[int]:
 
 
 def stop_stale_instance(project_root: Path | None = None) -> bool:
-    """Libera a porta 8765 e encerra copias deste app.py."""
+    """Libera a porta 8765 e encerra copias deste app.py mais antigas que esta.
 
-    pids = merge_pids(_listener_pids(APP_PORT), _our_app_pids(project_root))
+    Nunca esta copia nem o lancador da .venv que a abriu (o taskkill /T nele levaria esta
+    junto). Copias mais novas sao cliques posteriores e decidem sozinhas: com dois cliques
+    sobre uma copia travada, a mais nova fica e nenhuma derruba a outra em cruz.
+    """
+
+    own = _own_pids()
+    pids = merge_pids(_listener_pids(APP_PORT), _older_copies(project_root))
     killed = False
     for pid in pids:
-        if pid <= 0 or pid == os.getpid():
+        if pid <= 0 or pid in own:
             continue
         if _terminate_pid(pid):
             killed = True
@@ -376,6 +398,73 @@ def _wait_and_focus(*, attempts: int = 240, delay: float = 0.5) -> bool:
     return window_is_open() and is_app_listening() and focus_app_window()
 
 
+def holder_is_stale(ages: list[float], limit: float = STALE_AFTER_SECONDS) -> bool:
+    """Decisao pura: alguma outra copia ja devia ter aberto a porta e nao abriu."""
+
+    return any(age >= limit for age in ages)
+
+
+def _own_pids() -> set[int]:
+    return {os.getpid(), os.getppid()}
+
+
+def _other_copy_ages(project_root: Path) -> list[float]:
+    own = _own_pids()
+    ages: list[float] = []
+    for pid in _our_app_pids(project_root):
+        if pid in own:
+            continue
+        age = _process_age(pid)
+        if age is not None:
+            ages.append(age)
+    return ages
+
+
+def _older_copies(project_root: Path | None) -> list[int]:
+    own_age = _process_age(os.getpid())
+    older: list[int] = []
+    for pid in _our_app_pids(project_root):
+        age = _process_age(pid)
+        # Idade desconhecida: trata como antiga (o comportamento de antes).
+        if own_age is None or age is None or age > own_age:
+            older.append(pid)
+    return older
+
+
+def _process_age(pid: int) -> float | None:
+    """Segundos desde que o processo nasceu; None se o Windows nao disser."""
+
+    if os.name != "nt" or pid <= 0:
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            created, exited, kernel, user, now = (ctypes.c_ulonglong() for _ in range(5))
+            if not kernel32.GetProcessTimes(
+                handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+            ):
+                return None
+            kernel32.GetSystemTimeAsFileTime(ctypes.byref(now))
+            return max(0.0, (now.value - created.value) / 10_000_000)  # FILETIME: passos de 100 ns
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError):
+        return None
+
+
+def _acquire_mutex(*, attempts: int = 20, delay: float = 0.25) -> bool:
+    """A trava some com o dono, mas o Windows pode levar um instante para fecha-la."""
+
+    for _ in range(attempts):
+        if _try_mutex():
+            return True
+        time.sleep(delay)
+    return _try_mutex()
+
+
 def _try_mutex() -> bool:
     global _mutex_handle
     if os.name != "nt":
@@ -448,7 +537,8 @@ def _install_excepthook(project_root: Path) -> None:
 def _notify(message: str) -> None:
     if os.name == "nt":
         try:
-            ctypes.windll.user32.MessageBoxW(0, message, APP_NAME, 0x40 | _MB_SETFOREGROUND)
+            # Titulo proprio: com o nome da janela do app, o aviso passava por ela em window_is_open().
+            ctypes.windll.user32.MessageBoxW(0, message, f"{APP_NAME} - aviso", 0x40 | _MB_SETFOREGROUND)
             return
         except (AttributeError, OSError):
             pass

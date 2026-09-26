@@ -1,8 +1,8 @@
 # Governança do desenvolvimento — Anonimizador Jurídico
 
-**Versão do app:** 0.4.0 (indicador na janela e em cada lote)  
+**Versão do app:** 0.4.1 (indicador na janela e em cada lote)  
 **Data deste mapa:** 29/08/2026  
-**Atualizado:** 26/09/2026 (Veredito 3.0-E: PyMuPDF por folha como extrator padrão; Veredito 2.1: propagação do lote; aceite = lote eproc de 25/09).  
+**Atualizado:** 26/09/2026 (Veredito 3.0-E: PyMuPDF por folha como extrator padrão; Veredito 2.1: propagação do lote; aceite = lote eproc de 25/09; 0.4.1: cópia travada ao fechar não impede mais o app de abrir).  
 **Para quem:** Roger (uso do app) e quem voltar a este projeto daqui a semanas ou meses.  
 **O que este arquivo é:** o mapa único do produto — o que se quis, o que se mediu, o que se fez, o que se recusou e **em que condição** cada recusa pode ser revista.  
 **O que este arquivo não é:** ordem de código, manual do usuário, nem ata de um lote específico.
@@ -696,6 +696,7 @@ Acrescentar em §11 uma linha: data, passou / abortou / passou com ressalva, e o
 | 25–26/09/2026 (lote eproc 192945) | Primeiro lote completo de um IDPJ + execução fiscal (11 PDFs, 698 folhas). Medido contra o PDF: **289 folhas (41%) sem conteúdo**, âncoras deslocadas em dois PARTEs, cada parte dividida em 4 a 8 tokens. Ver Veredito 3.0-E. |
 | 26/09/2026 (Veredito 3.0-E, lote 034316) | **Passou com ressalva.** PyMuPDF por folha como extrator padrão; OCR em escaneada, vetorial e fonte quebrada; tabela por grade, colunas alinhadas e tabela por camada; cobertura com trava de envio; geografia pelos marcadores do PDF, sem regex no corpo. 698/698 folhas, 0 não lidas. Regressão de anonimização achada (sucessora 3 → 213) e corrigida no extrator (→ 4); resíduo de ~17 menções nas folhas antigas. Libera: propagação de nome e ID já detectados (3.0 sem LLM). Suíte 369 OK. |
 | 26/09/2026 (Veredito 2.1, lote 083235) | **Passou.** Propagação do lote em duas fases: elenco das grafias por entidade, busca em todo o texto só nas lacunas, um token por entidade, IDs e raiz de CNPJ pelo valor exato. Nenhuma entidade do gabarito com mais menções em claro que no lote de 25/09; juízes iguais; partes com 1 token (sócio A com 2). Falso positivo “pessoa jurídica” achado na primeira rodada e corrigido. Versão visível na janela e em cada lote (0.4.0). Suíte 390 OK. |
+| 26/09/2026 (0.4.1, iniciador) | **App não abria.** A cópia aberta às 06:51 ficou viva sem janela e sem porta, segurando a trava de instância única; cada clique esperava 2 min e desistia com “ainda está abrindo”. Causa, vista dentro do processo: conexão derrubada pela outra ponta (WinError 10054) no `shutdown()` do asyncio do Python 3.14 no Windows pula a liberação da conexão → `Server.wait_closed()` nunca termina → o uvicorn não encerra → o NiceGUI não sai. Três camadas: ajuste do asyncio (`compat.py`); limite de 5 s no encerramento do uvicorn; o iniciador substitui cópia com mais de 2 min sem porta (só as mais antigas que ele; nunca o próprio lançador da `.venv`, que o `taskkill /T` levaria junto). Suíte 397 OK; ponta a ponta isolado (outra porta e trava): cópia travada substituída na hora, cópia nova esperada, cópia servindo a porta preservada. |
 
 ---
 
@@ -796,7 +797,7 @@ A remoção não pode deixar um caminho que ainda poste o original. `mapa.json` 
 | Geografia (só caminho legado Docling) | `src/anonimizador_app/geography.py` |
 | Auto-auditoria | `src/anonimizador_app/audit.py` |
 | Higiene de span | `src/anonimizador_app/span_hygiene.py` |
-| Janela / atalho | `src/anonimizador_app/desktop.py`, `iniciar_app.vbs` |
+| Janela / atalho (instância única, cópia travada) | `src/anonimizador_app/desktop.py`, `iniciar_app.vbs`; ajuste do asyncio no Windows em `src/anonimizador_app/compat.py` |
 | Teste sintético da capa | `tests/test_header_heuristic.py` |
 
 Relatórios externos (não versionados neste repositório, salvo se você os copiar):

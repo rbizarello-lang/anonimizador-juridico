@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 DETECTION_VERSION = "2.1"
 
 _SRC = Path(__file__).resolve().parents[1]
