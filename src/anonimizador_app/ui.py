@@ -31,14 +31,18 @@ from .ner_cache import default_ner_cache_dir
 from .branding import apply_taskbar_icon, ensure_icon, install_native_icon_hook, png_path
 from .desktop import APP_PORT, APP_URL, install_windows_shortcuts, bootstrap_instance, wants_browser
 from .extractors import SUPPORTED_SUFFIXES
+from .batch_propagation import BatchRoster
 from .pipeline import (
     FileOutcome,
     JobResult,
+    PreparedFile,
     build_job_result,
     default_export_dir,
     default_private_dir,
+    finish_file,
+    known_ids,
     new_job_id,
-    process_file,
+    prepare_file,
     resolve_lote_dirs,
     build_audit_notes,
     write_lote_guides,
@@ -837,19 +841,39 @@ def _build_lote_tab(
         total = len(sources)
 
         try:
+            # Fase 1: le e detecta todos os arquivos; o elenco e do lote inteiro.
+            roster = BatchRoster(session.settings.exclusions)
+            prepared: list[PreparedFile] = []
             for index, source in enumerate(sources):
-                status.text = f"Extraindo {source.name} ({index + 1} de {total})"
-                progress.value = index / total
-                outcome = await run.io_bound(
-                    process_file,
+                status.text = f"Lendo e detectando {source.name} ({index + 1} de {total})"
+                progress.value = 0.8 * index / total
+                item = await run.io_bound(
+                    prepare_file,
                     source,
-                    export_dir=export_dir,
                     detector=detector,
-                    mapping=mapping,
+                    known_ids=known_ids(mapping, roster),
                     contextual=contextual,
                     exclusions=session.settings.exclusions,
                     use_cache=True,
                     cache_dir=session.private_dir / "cache_extracao",
+                )
+                prepared.append(item)
+                if item.ok:
+                    roster.add(item.text, item.entities)
+            status.text = "Montando o elenco do lote"
+            progress.value = 0.8
+            await run.io_bound(roster.review, [item.text for item in prepared if item.ok])
+            # Fase 2: mesma entidade, mesmo token, em todos os arquivos.
+            for index, item in enumerate(prepared):
+                status.text = f"Trocando e gravando {item.source.name} ({index + 1} de {total})"
+                progress.value = 0.8 + 0.17 * index / total
+                outcome = await run.io_bound(
+                    finish_file,
+                    item,
+                    export_dir=export_dir,
+                    mapping=mapping,
+                    roster=roster,
+                    contextual=contextual,
                 )
                 outcomes.append(outcome)
 

@@ -2,7 +2,7 @@
 
 **Versão do app:** 0.4.0 (indicador na janela e em cada lote)  
 **Data deste mapa:** 29/08/2026  
-**Atualizado:** 26/09/2026 (Veredito 3.0-E: PyMuPDF por folha como extrator padrão; aceite = lote eproc de 25/09).  
+**Atualizado:** 26/09/2026 (Veredito 3.0-E: PyMuPDF por folha como extrator padrão; Veredito 2.1: propagação do lote; aceite = lote eproc de 25/09).  
 **Para quem:** Roger (uso do app) e quem voltar a este projeto daqui a semanas ou meses.  
 **O que este arquivo é:** o mapa único do produto — o que se quis, o que se mediu, o que se fez, o que se recusou e **em que condição** cada recusa pode ser revista.  
 **O que este arquivo não é:** ordem de código, manual do usuário, nem ata de um lote específico.
@@ -78,6 +78,23 @@ O Docling fica como caminho legado (`load_or_extract(prefer_docling=True)`), sem
 **Aceite (mesmo lote, mesma `config.json`; só o extrator muda).** Estrutura: **698 de 698 folhas** com âncora na folha física; **0 não lidas**; 165 por OCR (48 escaneadas, 104 vetoriais, 13 com fonte quebrada); tabelas: grade Markdown onde há grade, 93 folhas em colunas alinhadas, 22 com camadas sobrepostas (rastreador CNIS, extratos RENAJUD) remontadas em tabela por camada; carimbo eproc em todas as folhas; documentos que faltavam (4ª e 5ª alterações contratuais, decisão inicial da execução, recibos de transação, relatório SERPRO) presentes. Extração do lote inteiro em ~12 min (antes: ~40 min de Docling com 41% de perda).
 
 Anonimização (detecção intocada; gabarito local de ~35 entidades montado dos relatórios do Operador; só contagens). A primeira rodada acusou **regressão**: a razão social da sucessora em claro 3 → 213 vezes, toda no rastreador CNIS, onde o GLiNER fica no limiar (0,69 em lista vertical, 0,73 em linha corrida, 0,78 em linha de tabela Markdown; corte 0,75). Corrigido dentro do extrator (tabela por camada): 3 → 4. Resíduo nas folhas que já existiam: cerca de 17 menções a mais (nome partido por quebra de linha na prosa, tabela de um veículo só no RENAJUD, consulta DETRAN sem grade), todas de entidades que o mesmo lote tokeniza em outras folhas. Nas 289 folhas recuperadas as partes saem tokenizadas; endereços de contrato lido por OCR vazam mais (conteúdo novo, não regressão). **Próximo fator:** propagar o que já foi detectado (nome e ID) a todas as ocorrências do lote, a peça central do 3.0 sem LLM. Lote de aceite: `lote_20260926_034316`.
+
+### Veredito 2.1 — propagação do lote (26/09/2026)
+
+Sem canal institucional para LLM, o 3.0 anda sem ele: a peça central do desenho (elenco do processo inteiro + propagação determinística + um token por entidade) entra alimentada pela detecção local que já existe.
+
+**Decisão.** O lote passa a rodar em duas fases (`pipeline.prepare_file` → `BatchRoster` → `pipeline.finish_file`; o mesmo na interface):
+
+1. detecção em todos os arquivos, como antes;
+2. elenco do lote (`batch_propagation.py`): as grafias de pessoa e empresa se juntam por entidade (mesma forma dobrada; empresa sem sufixo societário; prefixo com 2+ palavras que só aponta para uma entidade; pessoa com o mesmo primeiro e último nome; 1–2 letras de diferença por OCR). Ambíguo em pessoa não junta;
+3. cada grafia com 2+ palavras de conteúdo é buscada no texto inteiro (maiúscula, acento, quebra de linha) e só preenche lacuna: o que a detecção já marcou não muda. Toda grafia da entidade leva o mesmo token;
+4. IDs já mapeados (placa, chassi, RENAVAM, e-mail) e a raiz de CNPJ privado já mapeado seguem pelo valor exato, com o token do próprio ID (não é regex sem rótulo: é o valor que a detecção achou com rótulo).
+
+Travas: entidade com cargo colado ao nome em qualquer arquivo (“assinado por NOME”, “NOME, Juiz Federal”, “protocolado por (NOME)”) não se propaga (item H); rótulo tomado por nome (“Tipo de Devedor”) e estrutura jurídica (“pessoa jurídica de direito privado”) não se propagam; “pessoa jurídica/física” viraram termo protegido. A ocorrência propagada passa por termo protegido, termo genérico e higiene, mas **não** repete as regras amplas por ocorrência (juiz/PFN em até 160 caracteres, parte de precedente, nome banal): a entidade é julgada uma vez, no elenco, como já valia para nome completo da lista de alvos. Endereço fica fora: a detecção de endereço engole trecho de cláusula e propagar espalharia o estrago.
+
+**Respostas do §8.8.** (1) Medido: 4 a 8 tokens por parte; o mesmo nome trocado numa folha e em claro noutra; ~500 raízes de CNPJ em claro. (2) Métrica 1: só propaga o que a detecção já aceitou; travas acima. (3) Um fator: a propagação (extração fixa na 3.0-E; GLiNER, limiar, lista, capa e regras de detecção iguais). (4) Aborto: token novo em órgão, `R$`, data, evento, sistema ou termo jurídico; juiz que deixa de ficar em claro; entidade do gabarito com mais menções em claro que no lote antigo. (5) Condição: AVALIACAO-2026-09 (plano B do 3.0) e Veredito 3.0-E.
+
+**Aceite (mesmo lote e config; `lote_20260926_083235`).** Folhas que já existiam, contra o lote de 25/09: devedora 4 → 0 em claro, sucessora 3 → 0, antiga razão social 7 → 0, sócio A 7 → 2, sócio C 7 → 5, placas 3 → 1, raiz de CNPJ ~500 → 0; juízes iguais (item H); nenhum alerta novo na AUDITORIA. Um token por entidade: sócio C, devedora e sucessora 1 cada (eram 2, 5 e 4); sócio A 2 (eram 8; a grafia sem o prenome fica à parte: sem LLM, juntar arrisca homônimo). A primeira rodada espalhou um falso positivo antigo (“pessoa jurídica” como empresa, 15 → 80 trocas): corrigido com as travas acima (→ 0). Sem mudança (a detecção não os acha, não há o que propagar): ex-sócia, um empregado, sobrenome dos advogados, perito, endereços de contrato lido por OCR. Pré-existente e só ampliado: juíza na coluna “Juiz solicitante” do SISBAJUD e secretário-geral da Junta já eram tokenizados (o cargo está no cabeçalho da coluna, não colado ao nome).
 
 ---
 
@@ -661,6 +678,7 @@ Acrescentar em §11 uma linha: data, passou / abortou / passou com ressalva, e o
 | 20/09/2026 (lote 222815) | Mesmo PARTE_1, cache `docling-ocr` 02/09. **Medido.** `[EMPRESA]` 482→141 ocorrências, 35→**5** IDs (gabarito 169/5). CTN 12 e CNAE 4 em claro; `fundo de comércio` 1; União 7 / `R$` 66 / SisbaJud 1; Paraná/Campo/casado/sistemas = 0 no mapa. Capa: `[EMPRESA]` 1 (sem partícula). 129 âncoras. `gemini_used` falso. Suíte 299 OK (não substitui este lote). |
 | 25–26/09/2026 (lote eproc 192945) | Primeiro lote completo de um IDPJ + execução fiscal (11 PDFs, 698 folhas). Medido contra o PDF: **289 folhas (41%) sem conteúdo**, âncoras deslocadas em dois PARTEs, cada parte dividida em 4 a 8 tokens. Ver Veredito 3.0-E. |
 | 26/09/2026 (Veredito 3.0-E, lote 034316) | **Passou com ressalva.** PyMuPDF por folha como extrator padrão; OCR em escaneada, vetorial e fonte quebrada; tabela por grade, colunas alinhadas e tabela por camada; cobertura com trava de envio; geografia pelos marcadores do PDF, sem regex no corpo. 698/698 folhas, 0 não lidas. Regressão de anonimização achada (sucessora 3 → 213) e corrigida no extrator (→ 4); resíduo de ~17 menções nas folhas antigas. Libera: propagação de nome e ID já detectados (3.0 sem LLM). Suíte 369 OK. |
+| 26/09/2026 (Veredito 2.1, lote 083235) | **Passou.** Propagação do lote em duas fases: elenco das grafias por entidade, busca em todo o texto só nas lacunas, um token por entidade, IDs e raiz de CNPJ pelo valor exato. Nenhuma entidade do gabarito com mais menções em claro que no lote de 25/09; juízes iguais; partes com 1 token (sócio A com 2). Falso positivo “pessoa jurídica” achado na primeira rodada e corrigido. Versão visível na janela e em cada lote (0.4.0). Suíte 390 OK. |
 
 ---
 
@@ -754,6 +772,8 @@ A remoção não pode deixar um caminho que ainda poste o original. `mapa.json` 
 | Extração padrão (PyMuPDF por folha, tabelas, cobertura) | `src/anonimizador_app/fast_extract.py` |
 | OCR seletivo (escaneada, vetorial, fonte quebrada) | `src/anonimizador_app/ocr_pages.py` |
 | Cobertura por folha e trava de envio | `src/anonimizador_app/coverage.py`, `pipeline.py` (`build_job_result`) |
+| Propagação do lote (elenco, um token por entidade) | `src/anonimizador_app/batch_propagation.py`, `pipeline.py` (`prepare_file`/`finish_file`) |
+| Versão em uso (janela, AUDITORIA, LEIA-ME) | `src/anonimizador_app/version.py` |
 | Geografia (só caminho legado Docling) | `src/anonimizador_app/geography.py` |
 | Auto-auditoria | `src/anonimizador_app/audit.py` |
 | Higiene de span | `src/anonimizador_app/span_hygiene.py` |

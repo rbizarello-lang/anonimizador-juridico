@@ -2,7 +2,7 @@
 
 - ``APP_VERSION``: versao do app (a mesma do ``pyproject.toml``).
 - extrator: ``FAST_EXTRACTOR_VERSION`` (muda quando a leitura do PDF muda; invalida o cache).
-- ``DETECTION_VERSION``: cadeia de deteccao (IDs, lista de alvos, capa, GLiNER, fidelidade, propagacao).
+- ``DETECTION_VERSION``: cadeia de deteccao (IDs, lista de alvos, capa, GLiNER, fidelidade; 2.1 = + propagacao do lote).
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
 - commit: o commit do git em que a pasta esta, lido direto de ``.git`` (sem chamar programa externo).
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 APP_VERSION = "0.4.0"
-DETECTION_VERSION = "2.0"
+DETECTION_VERSION = "2.1"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
