@@ -86,6 +86,9 @@ numero de protocolo nao vira telefone; endereco para na celula ou na coluna
 da tabela e antes de parentese nao fechado, e nao corta numero ao meio. O
 CPF na notacao antiga (DV depois da barra) sai inteiro no token.
 
+Folha de separacao e capa do eproc saem com cada rotulo junto do seu valor,
+numa linha ("Tipo documento: ... — Evento: ... — Data: ... — Usuario: ...").
+
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia

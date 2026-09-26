@@ -12,7 +12,9 @@ privado, antes da troca) e o Markdown exportavel (depois da troca):
   na troca (token que comeu valor/data; folha com [NASCIMENTO_n] nao conta);
 - tokens colados em numero ("[X_n],12"; digito colado a letra, "C1.[X_n]", nao conta) e token
   no cabecalho de tabela (rotulo trocado);
-- titulos so com rotulo ("## Evento:") e "## Evento N" partindo frase.
+- titulos so com rotulo ("## Evento:") e "## Evento N" partindo frase;
+- folhas de separacao/capa do eproc e rotulos delas sem o valor na mesma linha (a IA teria
+  de adivinhar os pares).
 
 E a regua da fase "estrutura primeiro" (GOVERNANCA, fila 3.x): perda de informacao
 aparece aqui antes de chegar a IA de analise.
@@ -43,6 +45,9 @@ DATE = re.compile(r"(?<!\d)\d{2}/\d{2}/\d{4}(?!\d)")
 TOKEN_ON_DIGIT = re.compile(r"\[[A-Z_]+_\d+\][.,/]?\d|(?<![^\W\d_])\d[.,/-]?\[[A-Z_]+_\d+\]")
 LABEL_HEADING = re.compile(r"^#+ [^\n]{1,25}:\s*$", re.M)
 SPLIT_EVENT = re.compile(r"\n\n## Evento \d+\n\n[,a-zà-ú]")
+EPROC_LABEL_ALONE = re.compile(
+    r"(?m)^(?:Tipo documento|Evento|Data|Usuário|Processo|Sequência Evento):[ \t]*$"
+)
 
 
 def _fold(text: str) -> str:
@@ -121,6 +126,9 @@ def measure(pdf: Path, exported: Path) -> dict:
     result["tokens_em_cabecalho_de_tabela"] = _header_tokens(markdown)
     result["titulos_so_rotulo"] = len(LABEL_HEADING.findall(markdown))
     result["evento_partindo_frase"] = len(SPLIT_EVENT.findall(markdown))
+    separators = [page for page in out_pages.values() if "Tipo documento:" in page]
+    result["folhas_separacao_eproc"] = len(separators)
+    result["rotulos_eproc_sem_valor"] = sum(len(EPROC_LABEL_ALONE.findall(page)) for page in separators)
     if coverage is not None:
         result["nao_lidas"] = len(coverage.unread)
         result["ocr"] = coverage.ocr

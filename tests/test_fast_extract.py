@@ -56,6 +56,38 @@ class FastPdfTests(unittest.TestCase):
         self.assertIn("<!-- pagina-origem: 1 -->\n## Evento 1 - INIC1", text)
         self.assertIn("<!-- pagina-origem: 2 -->\n## Evento 12 - CERT1", text)
 
+    def test_eproc_separator_and_cover_pair_label_with_value(self) -> None:
+        import pymupdf
+
+        labels = ["Tipo documento:", "Evento:", "Data:", "Usuário:", "Processo:", "Sequência Evento:"]
+        values = ["PETIÇÃO INICIAL", "DISTRIBUIÇÃO POR SORTEIO", "19/12/2025 14:59:19",
+                  "81974 - FULANO FICTICIO", "0000000-00.2025.4.04.7000", "1"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sep.pdf"
+            with pymupdf.open() as document:
+                separator = document.new_page()
+                separator.insert_text((235, 40), "PÁGINA DE SEPARAÇÃO")
+                separator.insert_text((235, 95), "Documento 1")
+                for index, (label, value) in enumerate(zip(labels, values)):
+                    y = 160 + 31 * index
+                    separator.insert_text((14, y), label)  # valor uma linha abaixo do rotulo
+                    separator.insert_text((17, y + 14), value)
+                cover = document.new_page()
+                cover.insert_text((25, 44), "Tipo documento:")  # capa: valor ao lado
+                cover.insert_text((119, 44), "CAPA PROCESSO")
+                cover.insert_text((73, 58), "Evento:")
+                cover.insert_text((119, 58), "abertura")
+                cover.insert_text((269, 410), "PROCESSO")
+                document.save(path)
+            text = extract_fast(path).markdown
+
+        expected = " — ".join(f"{label} {value}" for label, value in zip(labels, values))
+        self.assertIn(expected, _page_block(text, 1))
+        self.assertLess(_page_block(text, 1).index("Documento 1"), _page_block(text, 1).index(expected))
+        cover_block = _page_block(text, 2)
+        self.assertIn("Tipo documento: CAPA PROCESSO — Evento: abertura", cover_block)
+        self.assertIn("\nPROCESSO", cover_block)
+
     def test_event_mentioned_mid_sentence_is_not_split(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             text = extract_fast(self._pdf(Path(tmp))).markdown

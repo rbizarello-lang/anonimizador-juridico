@@ -31,7 +31,14 @@ from pathlib import Path
 from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|8"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|9"
+# Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2).
+_EPROC_LABEL_START = re.compile(
+    r"^(Tipo documento:|Evento:|Data:|Usuário:|Processo:|Sequência Evento:)(?=\s|$)"
+)
+# Valor ao lado do rotulo (capa) ou ate uma linha abaixo dele (separacao: +14 pt).
+_EPROC_SAME_LINE = 2.0
+_EPROC_VALUE_GAP = 20.0
 # Tabela so em pagina com texto e com linhas retas suficientes para uma grade.
 TABLE_MIN_TEXT = 150
 TABLE_MIN_SEGMENTS = 8
@@ -159,6 +166,9 @@ def _ocr_body(
 def _native_body(page: object, native: str) -> str:
     """Texto nativo; tabela com grade sai em Markdown, tabela sem grade em colunas alinhadas."""
 
+    metadata = _eproc_metadata_body(page, native)
+    if metadata is not None:
+        return metadata
     if len("".join(native.split())) < TABLE_MIN_TEXT:
         return native
     if _overlapping_words(page) > OVERLAP_MAX_RATIO:
@@ -183,6 +193,55 @@ def _native_body(page: object, native: str) -> str:
     if layout is not None and _keeps_words(native, layout):
         return layout
     return ruled if ruled is not None else native
+
+
+def _eproc_metadata_body(page: object, native: str) -> str | None:
+    """Folha de separacao e capa do eproc: cada rotulo com o seu valor, numa linha so.
+
+    Os rotulos ficam numa coluna e os valores noutra (abaixo do rotulo na separacao, ao lado
+    na capa); na ordem do PDF saia rotulo, rotulo, ..., valor, valor e a IA tinha de adivinhar
+    os pares. Cada valor pertence ao ultimo rotulo acima dele (ou na mesma altura).
+    """
+
+    if "Tipo documento:" not in native:
+        return None
+    lines: list[tuple[float, str]] = []
+    labels: list[tuple[float, str]] = []
+    inline: dict[float, str] = {}
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            text = "".join(span["text"] for span in line["spans"]).strip()
+            label = _EPROC_LABEL_START.match(text)
+            if label is not None:
+                y = line["bbox"][1]
+                labels.append((y, label.group(1)))
+                if text[label.end() :].strip():
+                    # Rotulo e valor ja na mesma linha do PDF.
+                    inline[y] = text[label.end() :].strip()
+            elif text:
+                lines.append((line["bbox"][1], text))
+    labels.sort()
+    if {"Tipo documento:", "Evento:"} - {text for _y, text in labels}:
+        return None
+    values: dict[int, list[str]] = {
+        index: [inline[y]] if y in inline else [] for index, (y, _label) in enumerate(labels)
+    }
+    rest: list[tuple[float, str]] = []
+    for y, text in sorted(lines):
+        owner = None
+        for index, (label_y, _label) in enumerate(labels):
+            if label_y <= y + _EPROC_SAME_LINE and y - label_y <= _EPROC_VALUE_GAP:
+                owner = index
+        if owner is None:
+            rest.append((y, text))
+        else:
+            values[owner].append(text)
+    pairs = " — ".join(
+        f"{label} {' '.join(values[index])}".rstrip() for index, (_y, label) in enumerate(labels)
+    )
+    rest.append((labels[0][0], pairs))
+    body = "\n".join(text for _y, text in sorted(rest, key=lambda item: item[0]))
+    return body if _keeps_words(native, body) else None
 
 
 def _ruled_tables_body(page: object) -> tuple[str, float, list] | None:
