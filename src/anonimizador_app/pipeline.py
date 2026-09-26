@@ -107,7 +107,7 @@ def resolve_lote_dirs(
         warning = (
             "A pasta de textos e a pasta privada coincidem. "
             "Os Markdowns foram gravados em exportaveis/ e o mapa em privados/, "
-            "para a chave nao viajar com o lote."
+            "para a chave não viajar com o lote."
         )
     return export_dir, map_path, warning
 
@@ -323,7 +323,7 @@ def build_job_result(
     warning = extra_warning.strip()
     if failed:
         allowed = False
-        reason = "Ha arquivos com erro. Corrija o lote antes de copiar o resultado."
+        reason = "Há arquivos com erro. Corrija o lote antes de copiar o resultado."
     elif not contextual_used:
         allowed = False
         reason = EXPORT_BLOCKED_REASON
@@ -331,12 +331,12 @@ def build_job_result(
         allowed = True
         reason = (
             "Textos anonimizados gravados. Revise o trecho. "
-            "O mapa privado fica em outra pasta e nao deve ser copiado junto."
+            "O mapa privado fica em outra pasta e não deve ser copiado junto."
         )
         if residual:
             residual_note = (
-                "A revisao residual apontou trechos possivelmente identificaveis, "
-                "que nao foram substituidos para nao descaracterizar a peca: "
+                "A revisão residual apontou trechos possivelmente identificáveis, "
+                "que não foram substituídos para não descaracterizar a peça: "
                 + ", ".join(residual[:8])
             )
             warning = f"{warning} {residual_note}".strip() if warning else residual_note

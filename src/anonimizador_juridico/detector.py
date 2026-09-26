@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from bisect import bisect_left
 from collections.abc import Iterable
 
 from presidio_analyzer import PatternRecognizer
@@ -57,24 +59,53 @@ class StructuredDetector:
         self.recognizers = list(recognizers or build_structured_recognizers())
 
     def detect(self, text: str) -> list[EntitySpan]:
+        """Roda os reconhecedores bloco a bloco (fronteira = ancora de pagina).
+
+        O ``remove_duplicates`` do Presidio e quadratico no numero de achados
+        de cada reconhecedor; no processo inteiro de uma vez (milhares de CPFs)
+        custava minutos. Nenhum ID atravessa a ancora ``<!-- pagina-origem -->``,
+        entao o resultado e o mesmo do texto inteiro.
+        """
+
         candidates: list[EntitySpan] = []
-        for recognizer in self.recognizers:
-            entity_type = recognizer.supported_entities[0]
-            for result in recognizer.analyze(
-                text=text,
-                entities=[entity_type],
-                nlp_artifacts=None,
-            ):
-                candidates.append(
-                    EntitySpan(
-                        start=result.start,
-                        end=result.end,
-                        entity_type=result.entity_type,
-                        score=result.score,
-                        recognizer=recognizer.name,
+        for offset, block in _page_blocks(text):
+            for recognizer in self.recognizers:
+                entity_type = recognizer.supported_entities[0]
+                for result in recognizer.analyze(
+                    text=block,
+                    entities=[entity_type],
+                    nlp_artifacts=None,
+                ):
+                    candidates.append(
+                        EntitySpan(
+                            start=offset + result.start,
+                            end=offset + result.end,
+                            entity_type=result.entity_type,
+                            score=result.score,
+                            recognizer=recognizer.name,
+                        )
                     )
-                )
         return resolve_overlaps(candidates)
+
+
+_PAGE_ANCHOR = re.compile(r"<!--\s*pagina-origem:\s*\d+\s*-->")
+_BLOCK_CHARS = 50_000
+
+
+def _page_blocks(text: str) -> list[tuple[int, str]]:
+    """Blocos de ate ``_BLOCK_CHARS`` cortados so no inicio de uma ancora de pagina."""
+
+    cuts = [match.start() for match in _PAGE_ANCHOR.finditer(text) if match.start() > 0]
+    if len(text) <= _BLOCK_CHARS or not cuts:
+        return [(0, text)]
+    blocks: list[tuple[int, str]] = []
+    start = 0
+    for cut in cuts:
+        if cut - start >= _BLOCK_CHARS:
+            blocks.append((start, text[start:cut]))
+            start = cut
+    blocks.append((start, text[start:]))
+    return blocks
 
 
 def source_rank(span: EntitySpan) -> int:
@@ -115,6 +146,11 @@ def resolve_overlaps(candidates: Iterable[EntitySpan]) -> list[EntitySpan]:
     criterio antigo (tipo → score → comprimento → inicio).
     """
 
+    # Escolhidos ficam disjuntos e ordenados pelo inicio; o candidato so pode
+    # colidir com o ultimo escolhido que comeca antes do fim dele. O(n log n):
+    # a varredura contra todos os escolhidos custava minutos num processo de
+    # milhares de folhas (dezenas de milhares de spans).
+    starts: list[int] = []
     selected: list[EntitySpan] = []
     unique = {
         (span.start, span.end, span.entity_type, span.recognizer): span
@@ -122,8 +158,10 @@ def resolve_overlaps(candidates: Iterable[EntitySpan]) -> list[EntitySpan]:
     }.values()
 
     for candidate in sorted(unique, key=_rank, reverse=True):
-        if any(_overlap(candidate, existing) for existing in selected):
+        position = bisect_left(starts, candidate.end)
+        if position and _overlap(candidate, selected[position - 1]):
             continue
-        selected.append(candidate)
+        starts.insert(position, candidate.start)
+        selected.insert(position, candidate)
 
     return sorted(selected, key=lambda span: (span.start, span.end, span.entity_type))

@@ -34,6 +34,30 @@ class GeographyTests(unittest.TestCase):
         self.assertIn("<!-- bloco-peca -->", text)
         self.assertIn("SISBAJUD", text)
 
+    def test_event_mention_inside_sentence_stays_in_place(self) -> None:
+        for sentence in (
+            "Conforme o evento 12, o socio JOAO FICTICIO foi citado.",
+            "Conforme o Evento 12, o sócio foi citado.",
+            "A decisão do Evento 12 - DESPADEC1 foi mantida.",
+            "CONFORME O EVENTO 12, O SÓCIO FOI CITADO.",
+            "Conforme o\nEvento 12, o sócio foi citado.",
+            "Ver a certidão (cf. Evento 30 - CERT1).",
+        ):
+            with self.subTest(sentence=sentence):
+                text = serialize_geography(f"Capa\n{sentence}\n")
+                self.assertNotIn("## Evento", text)
+                self.assertIn(sentence, text)
+
+    def test_glued_event_header_still_splits(self) -> None:
+        for raw, expected in (
+            ("Pedido deferido. Evento 13 juntada da executada.", "## Evento 13"),
+            ("Página 3 de 10 Evento 14 - DESPACHO", "## Evento 14"),
+            ("<!-- pagina-origem: 2 -->\nEVENTO 15 - PETIÇÃO", "## Evento 15"),
+            ("Texto da peça ## Evento 16", "## Evento 16"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertIn(expected, serialize_geography(raw))
+
     def test_marks_nfd_separation_heading(self) -> None:
         nfd = unicodedata.normalize("NFD", "PÁGINA DE SEPARAÇÃO")
         text = serialize_geography(f"Capa\n{nfd}\n")

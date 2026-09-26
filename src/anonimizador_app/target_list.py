@@ -31,6 +31,7 @@ import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
@@ -472,6 +473,7 @@ class _TargetEntry:
     canonical_key: str
     phrases: tuple[str, ...]
     particles: tuple[str, ...]
+    names: tuple[str, ...] = ()
 
 
 class TargetListEngine:
@@ -540,10 +542,14 @@ class TargetListEngine:
         phrase_jobs.sort(key=lambda item: item[0], reverse=True)
 
         for _length, entry, phrase in phrase_jobs:
+            # Nome completo listado (2+ palavras) e pedido explicito do operador:
+            # "A PGFN requer a citacao do socio FULANO" nao o protege (ver
+            # is_pfn_officer). Variante parcial continua cedendo ao procurador.
+            listed_full_name = phrase in entry.names and len(phrase.split()) >= 2
             for start, end in _exact_and_fuzzy_spans(text, phrase):
                 if entry.kind == "pessoa" and (
                     is_magistrate_or_citation(text, start, end)
-                    or is_pfn_officer(text, start, end)
+                    or (not listed_full_name and is_pfn_officer(text, start, end))
                 ):
                     continue
                 if entry.kind == "empresa":
@@ -866,6 +872,7 @@ def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_Ta
                 canonical_key=f"alvo:pessoa:{body}",
                 phrases=phrases,
                 particles=tuple(particles),
+                names=originals,
             )
         )
     return tuple(entries)
@@ -932,16 +939,16 @@ def _fuzzy_phrase_spans(
     ]
     if not targets:
         return []
-    tokens = list(_TOKEN.finditer(text))
+    starts, ends, words = _folded_tokens(text)
     size = len(targets)
-    if size == 0 or len(tokens) < size:
+    if size == 0 or len(words) < size:
         return []
     hits: list[tuple[int, int]] = []
-    for index in range(len(tokens) - size + 1):
+    for index in range(len(words) - size + 1):
         edits = 0
         aligned = True
         for offset, target in enumerate(targets):
-            folded = _fold_word(tokens[index + offset].group())
+            folded = words[index + offset]
             distance = _edit_distance(folded, target)
             if distance > 1:
                 aligned = False
@@ -956,8 +963,26 @@ def _fuzzy_phrase_spans(
         if not aligned or edits == 0:
             continue
         if per_word or edits == 1:
-            hits.append((tokens[index].start(), tokens[index + size - 1].end()))
+            hits.append((starts[index], ends[index + size - 1]))
     return hits
+
+
+@lru_cache(maxsize=2)
+def _folded_tokens(text: str) -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...]]:
+    """Palavras do texto ja dobradas, uma vez por texto (nao uma vez por alvo).
+
+    Refazer a dobra de cada palavra para cada alvo custava minutos por mil
+    folhas com uma lista de alvos de cem nomes.
+    """
+
+    starts: list[int] = []
+    ends: list[int] = []
+    words: list[str] = []
+    for match in _TOKEN.finditer(text):
+        starts.append(match.start())
+        ends.append(match.end())
+        words.append(_fold_word(match.group()))
+    return tuple(starts), tuple(ends), tuple(words)
 
 
 def _fold_word(value: str) -> str:
@@ -1013,6 +1038,7 @@ def _char_class(char: str) -> str:
     return re.escape(char)
 
 
+@lru_cache(maxsize=4096)
 def _fold_char(char: str) -> str:
     decomposed = unicodedata.normalize("NFKD", char)
     stripped = "".join(item for item in decomposed if not unicodedata.combining(item))

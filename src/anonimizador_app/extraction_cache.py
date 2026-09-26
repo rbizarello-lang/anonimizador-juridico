@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from importlib import metadata
@@ -67,8 +68,14 @@ def load_or_extract(
     use_cache: bool = True,
     version_string: str | None = None,
     prefer_docling: bool = True,
+    extract_fn: Callable[[Path], ExtractedDocument] | None = None,
 ) -> CachedExtraction:
-    """Devolve o Markdown extraído, lendo o cache se a versão bater."""
+    """Devolve o Markdown extraído, lendo o cache se a versão bater.
+
+    ``extract_fn`` troca o extrator (ex.: ``fast_extract.extract_fast``); nesse
+    caso ``version_string`` deve identificar o extrator, para não misturar
+    caches.
+    """
 
     source = Path(path)
     version = version_string or extractor_version()
@@ -95,7 +102,10 @@ def load_or_extract(
                 path=md_path,
             )
 
-    extracted = extract_document(source, prefer_docling=prefer_docling)
+    if extract_fn is not None:
+        extracted = extract_fn(source)
+    else:
+        extracted = extract_document(source, prefer_docling=prefer_docling)
     generated_at = datetime.now().isoformat(timespec="seconds")
     if cache_dir is not None and md_path is not None and json_path is not None:
         meta = {

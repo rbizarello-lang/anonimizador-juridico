@@ -29,10 +29,17 @@ Se o app ja estava aberto com codigo velho, feche a janela e abra de novo.
 O atalho nao deve abrir janelas pretas do System32; se a abertura falhar,
 veja `saidas\app.log`.
 
-Duas abas:
+Tres abas:
 
-- **Anonimizar** — arquivos, nomes do caso (empresas/pessoas), pastas, executar
-- **Regras** — tags, regex estreita, lista de alvos, base CNPJ, exclusoes
+- **Lote** — fila de arquivos (escolher, adicionar pasta ou colar o caminho),
+  painel de execucao (resumo do caso, destinos, motor local) e resultado
+  (indicadores, trechos trocados por tipo, pastas, previa com os tokens
+  destacados)
+- **Caso** — empresas, pessoas e CPF/CNPJ da carteira; importa a planilha do Nexus
+- **Regras** — tags ligadas, regex estreita, termos protegidos, base CNPJ, experimentos
+
+O botao **?** do cabecalho abre "Como funciona" (principio de fidelidade,
+tags, extracao de PDF, leitura externa).
 
 ## Saidas
 
@@ -54,3 +61,24 @@ O motor local (GLiNER, com spaCy em portugues de reserva) detecta nomes
 completos, empresas privadas e logradouros nesta maquina. O Gemini nao
 roda no app: a leitura de original e Markdown tokenizado, se houver,
 fica fora. O mapa reversivel permanece so nesta maquina.
+
+## Pipeline com LLM (experimental, por linha de comando)
+
+Proposta 3.0, avaliada em `AVALIACAO-2026-09.md`. O LLM (Gemini via
+LangExtract) so aponta quem aparece e com que papel; a troca continua
+local e deterministica. CPF, CNPJ e afins sao mascarados **antes** de o
+texto sair da maquina. Um segundo passe do LLM le o texto ja tokenizado e
+acusa o que sobrou. Pagina que o LLM nao conseguiu ler bloqueia a
+exportacao.
+
+```
+pip install -e .[llm]
+set GEMINI_API_KEY=...        (projeto com faturamento; chave gratuita NAO)
+python tools\anonimizar_llm.py autos.pdf
+python tools\anonimizar_llm.py autos.pdf --provedor vertex --projeto MEU-PROJETO
+python tools\anonimizar_llm.py autos.pdf --elenco saidas\privados\lote_...\elenco.json
+```
+
+Saidas extras: `saidas\privados\lote_...\elenco.json` (quem e quem, com
+originais — privado; edite `acao` para `manter`/`tokenizar` e rode de novo)
+e `saidas\exportaveis\lote_...\ELENCO.md` (token, tipo e papel, sem nome).
