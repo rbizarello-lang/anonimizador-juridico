@@ -47,6 +47,7 @@ from .rules import InvalidRuleError, build_recognizers, slug_entity_type, valida
 from .settings import CustomRule, load_settings, save_settings
 from .spreadsheet_targets import merge_unique, parse_target_spreadsheet
 from .target_ids import parse_target_ids
+from .version import version_info
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESOURCES_URL = "/recursos"
@@ -101,6 +102,7 @@ body { color: var(--aj-ink); font-family: var(--aj-sans); font-size: 15px; -webk
 .aj-mark { width: 34px; height: 34px; flex: none; display: block; }
 .aj-brand { font-family: var(--aj-serif); font-weight: 600; font-size: 19px; color: #fff; line-height: 1.1; }
 .aj-brand-sub { font-size: 12.5px; color: #c9d3e6; line-height: 1.25; }
+.aj-version { font-size: 11px; color: #9fb0cf; line-height: 1.2; letter-spacing: .02em; cursor: default; }
 .aj-nav .q-tab { color: #c9d3e6; min-height: 64px; padding: 0 16px; font-weight: 600; font-size: 15px; }
 .aj-nav .q-tab--active { color: #fff; }
 .aj-nav .q-tab__indicator { height: 4px; border-radius: 3px 3px 0 0; background: var(--aj-ochre) !important; }
@@ -484,6 +486,10 @@ def _build_page(session: Session) -> None:
             with ui.column().classes("gap-0"):
                 ui.label("Anonimizador Jurídico").classes("aj-brand")
                 ui.label("Pseudonimização local de peças").classes("aj-brand-sub")
+                # Versao do codigo carregado: confere com a AUDITORIA.txt de cada lote.
+                ui.label(version_info().short()).classes("aj-version").tooltip(
+                    version_info().line()
+                )
             ui.space()
             with ui.tabs().props("no-caps inline-label dense").classes("aj-nav") as tabs:
                 lote_tab = ui.tab("lote", label="Lote", icon="folder_copy")
@@ -1314,6 +1320,14 @@ def _build_help_dialog():
             "marcada no texto, aparece na AUDITORIA e bloqueia o envio.</p>"
         ).classes("w-full")
         ui.html(f"<h3>Leitura externa</h3><p>{html.escape(GEMINI_POLICY)}</p>").classes("w-full")
+        ui.html(
+            "<h3>Versão em uso</h3>"
+            f"<p><code>{html.escape(version_info().line())}</code></p>"
+            "<p>O “código” muda com qualquer alteração do app, mesmo sem commit. A mesma "
+            "linha vai para a AUDITORIA.txt e o LEIA-ME.txt de cada lote: é assim que se "
+            "confere qual versão gerou cada texto. Se a janela mostrar um código antigo, "
+            "feche o app e abra de novo.</p>"
+        ).classes("w-full")
         ui.label(f"Endereço local deste app: {APP_URL}").classes("aj-card-note")
     return dialog
 

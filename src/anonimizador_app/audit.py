@@ -238,9 +238,12 @@ def audit_map_records(records: Sequence[object]) -> list[str]:
 
 
 def write_audit_report(export_dir: Path, notes_by_file: Sequence[tuple[str, list[str]]]) -> Path:
+    from .version import version_info
+
     lines = [
         "AUDITORIA AUTOMATICA DESTE LOTE",
         "Conferencia dos criterios de fidelidade. Nao substitui a revisao humana.",
+        f"Versao do app que gerou este lote: {version_info().line()}",
         "",
     ]
     for name, notes in notes_by_file:

@@ -1,6 +1,6 @@
 # Governança do desenvolvimento — Anonimizador Jurídico
 
-**Versão do app:** 0.3.0  
+**Versão do app:** 0.4.0 (indicador na janela e em cada lote)  
 **Data deste mapa:** 29/08/2026  
 **Atualizado:** 26/09/2026 (Veredito 3.0-E: PyMuPDF por folha como extrator padrão; aceite = lote eproc de 25/09).  
 **Para quem:** Roger (uso do app) e quem voltar a este projeto daqui a semanas ou meses.  

@@ -124,13 +124,17 @@ def write_lote_guides(
 ) -> None:
     """Grava um LEIA-ME em cada pasta do lote: textos anonimizados vs mapa."""
 
+    from .version import version_info
+
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
+    generated_by = f"Gerado por: {version_info().line()}\n"
     export_dir.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
     (export_dir / "LEIA-ME.txt").write_text(
         (
             f"LOTE {job_id}\n"
-            "\n"
+            + generated_by
+            + "\n"
             "Esta pasta contem os TEXTOS ANONIMIZADOS (.md).\n"
             "Sao os arquivos que voce le, copia ou envia para analise.\n"
             "\n"
@@ -151,7 +155,8 @@ def write_lote_guides(
     (map_path.parent / "LEIA-ME.txt").write_text(
         (
             f"LOTE {job_id}\n"
-            "\n"
+            + generated_by
+            + "\n"
             "Esta pasta contem o MAPA PRIVADO (a chave dos tokens).\n"
             "Arquivo: mapa.json\n"
             "\n"
