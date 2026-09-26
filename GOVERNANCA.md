@@ -564,6 +564,23 @@ Antes de gastar um ciclo em algo hoje descartado, responder por escrito (pode se
 
 ## 9. Próximos passos (ordem que vale)
 
+### Fila 3.x — estrutura primeiro (26/09/2026, vale sobre as filas abaixo)
+
+**Decisão do Operador (26/09/2026).** A estrutura vale mais que a perfeição da anonimização. A IA que recebe o exportável tem de conseguir analisar o caso com fidelidade: sem equívoco e sem perda de informação (folha, valor, data, tabela, evento, página). A anonimização está em nível aceitável (Veredito 2.1); o acabamento fino fica para uma passada do Operador em IA institucional. **Ajuste de recall está pausado.** Token que destrói conteúdo (come valor, data, código, termo jurídico, rótulo, referência a evento) é defeito de **estrutura**, não de anonimização: entra nesta fila.
+
+**Régua:** `tools/medir_estrutura.py <pasta dos PDFs> <pasta do lote>` (só contagens; compara PDF × texto extraído × exportável). Linha de base, lote eproc de 25/09 (`lote_20260926_083235`): 698/698 âncoras; 0 folhas não lidas; 0 folhas com extração fraca; valores em R$: 563 no PDF, **0 perdidos**; datas: 1.230, **10 perdidas na troca**; **31 tokens colados em número**; 1 token em cabeçalho de tabela; 0 título só-rótulo; 0 evento partindo frase. Anonimização (pausada, só para não regredir): `tools/medir_vazamento.py saidas/privados/gabaritos/<caso>.json <lotes...>` — o gabarito tem dados reais e fica só na pasta privada.
+
+| # | Item | Evidência (lote de 25/09) | Aceite |
+|---|---|---|---|
+| E1 | **Token que come conteúdo.** (a) CNPJ alfanumérico casou “CONTRIBUICAO” + espaços de coluna + dia da data (`[CNPJ_n]/09/2023`, 20×; são as 10 datas perdidas): exigir dígito na base e no máximo um espaço entre as partes. (b) Telefone dentro do protocolo CNIB (`[TELEFONE_n].…-IA-773`, 4×) e ID colado em código mais longo: descartar span encostado em `[.,/-]dígito`. (c) Endereço que atravessa célula `|` ou vão de coluna, ou termina no meio de número/código (`[ENDERECO_n],12`, `[ENDERECO_n].350`, `[ENDERECO_n].1-A-3`): higiene corta no limite. (d) Rótulo e referência trocados (“Tipo de Devedor”, “r. despacho Ev. 56”, prenome solto compartilhado): conferir no lote novo. | régua | 0 data e 0 valor perdidos na troca; 0 token colado em número; sem regressão no gabarito. |
+| E2 | **Página de separação do eproc.** Rótulos (“Tipo documento: / Evento: / Data: / Usuário:”) saem separados dos valores; a IA tem de adivinhar os pares. Renderizar como “Evento N — TIPO — data hora — usuário”. | leitura do exportável | metadado do evento em uma linha em toda folha de separação. |
+| E3 | **Índice do lote** (`INDICE.md` no exportável): por arquivo, eventos e documentos (marcadores do PDF) com faixa de folhas, folhas lidas por OCR, tabelas, e documento que continua de um PARTE para o outro. | marcadores já extraídos | índice bate com os marcadores; citação “evento, documento, página” localizável. |
+| E4 | **Fidelidade do OCR.** RapidOCR (modelo mobile) perdeu ~4 de 45 linhas numa folha de contrato. Medir perda de linha (referência: a 5ª alteração contratual existe vetorizada num PARTE e com texto nativo na execução fiscal, evento 10) e testar escala maior / modelo server / segunda leitura. | 1 folha auditada à mão | perda de linha medida por lote; meta ≤ 1%. |
+| E5 | **Legenda do elenco sem nomes** (`ELENCO.md`: token → tipo → nº de ocorrências → papel quando a capa diz: exequente, executado, requerido, advogado da parte). A IA de análise sabe quem é a executada sem saber o nome. | o pipeline LLM já grava; o local não | legenda no exportável; nenhum nome nela. |
+| E6 | **Escala (P5).** OCR é o custo (~6 s por folha sem texto): paralelizar por processo antes de 2–3 mil folhas. | 165 folhas de OCR em ~12 min | tempo por folha de OCR medido; lote de 3 mil folhas viável. |
+
+**3.0 com LLM (LangExtract), aguardando decisão do canal pelo Operador.** O código de descoberta já existe (`llm_discovery.py`, `pipeline_llm.py`, `tools/anonimizar_llm.py`). Falta: (L1) seletor de motor na interface (“Local 2.1” / “LLM”) com aviso do canal; (L2) guardar a chave fora do projeto (variável de ambiente ou Gerenciador de Credenciais do Windows), nunca em `config.json`, e registrar o canal usado na AUDITORIA e na linha de versão; (L3) tela de revisão do elenco (tipo, papel, ocorrências, trocar/manter); (L4) aceite no lote de 25/09 com as duas réguas. Alerta registrado: com LangExtract, o texto vai ao provedor com IDs mascarados, mas **nomes, fatos e valores em claro**; o que decide o tratamento é o canal da chave (gratuita: pode treinar e ter revisão humana; paga: não treina; Vertex AI institucional em São Paulo: contrato de nuvem).
+
 ### Ciclo 4 (02/09/2026) — concluído
 
 Determinístico, medido no PARTE_1, gabarito APROVADO (`lote_20260902_210844`). 4a tabela DETRAN (placa/RENAVAM/chassi); 4b formulário Receita (nascimento/filiação/título); 4c eproc de procurador; 4d domínio/marca da empresa alvo. Intocado: GLiNER, limiar 0,75, Docling, OCR, regex de CPF sem rótulo.
@@ -774,6 +791,8 @@ A remoção não pode deixar um caminho que ainda poste o original. `mapa.json` 
 | Cobertura por folha e trava de envio | `src/anonimizador_app/coverage.py`, `pipeline.py` (`build_job_result`) |
 | Propagação do lote (elenco, um token por entidade) | `src/anonimizador_app/batch_propagation.py`, `pipeline.py` (`prepare_file`/`finish_file`) |
 | Versão em uso (janela, AUDITORIA, LEIA-ME) | `src/anonimizador_app/version.py` |
+| Régua de estrutura (PDF × extraído × exportável) | `tools/medir_estrutura.py` |
+| Régua de vazamento (gabarito privado) | `tools/medir_vazamento.py` + `saidas/privados/gabaritos/` (fora do git) |
 | Geografia (só caminho legado Docling) | `src/anonimizador_app/geography.py` |
 | Auto-auditoria | `src/anonimizador_app/audit.py` |
 | Higiene de span | `src/anonimizador_app/span_hygiene.py` |
