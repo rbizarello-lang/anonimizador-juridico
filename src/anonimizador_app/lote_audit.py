@@ -34,7 +34,7 @@ def normalize_search(text: str) -> str:
 
 def find_markdown(lote_dir: Path) -> Path:
     files = sorted(
-        path for path in Path(lote_dir).glob("*.md") if path.is_file() and path.name != "INDICE.md"
+        path for path in Path(lote_dir).glob("*.md") if path.is_file() and path.name not in ("INDICE.md", "ELENCO.md")
     )
     if not files:
         raise FileNotFoundError(f"Nenhum Markdown em {lote_dir}")
