@@ -46,6 +46,7 @@ from .pipeline import (
     resolve_lote_dirs,
     build_audit_notes,
     write_lote_guides,
+    write_outcomes_index,
 )
 from .rules import InvalidRuleError, build_recognizers, slug_entity_type, validate_custom_rule
 from .settings import CustomRule, load_settings, save_settings
@@ -884,6 +885,7 @@ def _build_lote_tab(
             progress.value = 0.97
             await run.io_bound(mapping.dump, map_path)
             write_audit_report(export_dir, build_audit_notes(outcomes, mapping))
+            write_outcomes_index(export_dir, outcomes)
             write_lote_guides(
                 job_id=identifier,
                 export_dir=export_dir,

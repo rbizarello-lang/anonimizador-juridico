@@ -29,6 +29,7 @@ from .coverage import pages_label, unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import UnsupportedDocumentError
 from .fidelity import FidelityDropStats, drop_protected_spans
+from .lote_index import INDEX_NAME, write_lote_index
 from .gemini_detector import ContextualEngine
 from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
@@ -146,6 +147,10 @@ def write_lote_guides(
             "Arquivos deste lote:\n"
             f"{names}\n"
             "\n"
+            f"{INDEX_NAME}: eventos e documentos de cada arquivo, com a faixa de folhas,\n"
+            "as folhas lidas por OCR e as tabelas; documento que continua de um PARTE\n"
+            "para o seguinte vem marcado. Envie junto com os .md.\n"
+            "\n"
             "O mapa para REVERTER os tokens NAO esta aqui.\n"
             f"Mapa privado: {map_path}\n"
             "\n"
@@ -173,6 +178,15 @@ def write_lote_guides(
             "na pasta privada raiz, nao dentro deste lote.\n"
         ),
         encoding="utf-8",
+    )
+
+
+def write_outcomes_index(export_dir: Path, outcomes: Sequence[FileOutcome]) -> Path:
+    """INDICE.md: eventos e documentos de cada arquivo, com faixa de folhas (do texto tokenizado)."""
+
+    return write_lote_index(
+        export_dir,
+        [outcome.markdown_path for outcome in outcomes if outcome.ok and outcome.markdown_path],
     )
 
 
@@ -255,6 +269,7 @@ def run_job(
     _report(on_progress, "Gravando mapa privado", 0.97)
     mapping.dump(map_path)
     write_audit_report(export_dir, build_audit_notes(outcomes, mapping))
+    write_outcomes_index(export_dir, outcomes)
     write_lote_guides(
         job_id=identifier,
         export_dir=export_dir,

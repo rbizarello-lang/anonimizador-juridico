@@ -87,7 +87,10 @@ da tabela e antes de parentese nao fechado, e nao corta numero ao meio. O
 CPF na notacao antiga (DV depois da barra) sai inteiro no token.
 
 Folha de separacao e capa do eproc saem com cada rotulo junto do seu valor,
-numa linha ("Tipo documento: ... — Evento: ... — Data: ... — Usuario: ...").
+numa linha ("Tipo documento: ... — Evento: ... — Data: ... — Usuario: ..."),
+inclusive a de evento sem documento (intimacao, prazo, ciencia). Cada lote traz
+o INDICE.md: por arquivo, eventos e documentos com a faixa de folhas, a data,
+as folhas lidas por OCR e as tabelas; e a linha do tempo do processo.
 
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
