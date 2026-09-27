@@ -214,3 +214,52 @@ class BatchJobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntityTypeTests(unittest.TestCase):
+    """Tipo errado julgado por entidade: rua com nome de pessoa e banco do SISBAJUD."""
+
+    def _run(self, text: str, spans: list[EntitySpan]) -> str:
+        roster = BatchRoster()
+        roster.add(text, spans)
+        roster.review([text])
+        return pseudonymize(text, roster.apply(text, spans)).text
+
+    def test_street_named_after_person_becomes_address(self) -> None:
+        name = "Marechal Fictício de Souza Lima"
+        text = (
+            f"Endereço: {name}, NR. 656, Cidade Industrial.\n"
+            f"Sede na Rua {name}, nº 656.\n"
+            f"Filial também na {name}, NR. 700."
+        )
+        out = self._run(text, [_span(text, name, "PERSON")])
+        self.assertNotIn(name, out)
+        self.assertNotIn("[PESSOA_", out)
+        self.assertEqual(out.count("[ENDERECO_1]"), 3)
+
+    def test_person_seldom_in_address_position_stays_person(self) -> None:
+        name = "Fulano Fictício Tavares"
+        text = (
+            f"Endereço: {name}, NR. 10.\n"
+            f"O sócio {name} assinou. Depois {name} saiu. Enfim {name} voltou."
+        )
+        out = self._run(text, [_span(text, name, "PERSON", occurrence=1)])
+        self.assertIn("[PESSOA_1]", out)
+        self.assertNotIn("[ENDERECO_", out)
+
+    def test_bank_in_sisbajud_stays_in_clear_everywhere(self) -> None:
+        bank = "BANCO FICTICIO S.A."
+        company = "EMPRESA FICTICIA SERVICOS LTDA"
+        text = (
+            f"Instituições\n05422 - {bank}\n  /\n{company}\n"
+            f"Respostas\n{bank}\n  Data/hora   Tipo de ordem\n"
+            f"Depósito no {bank} pela {company}."
+        )
+        spans = [
+            _span(text, bank, "ORGANIZATION"),
+            _span(text, bank, "ORGANIZATION", occurrence=1),
+            _span(text, company, "ORGANIZATION"),
+        ]
+        out = self._run(text, spans)
+        self.assertEqual(out.count(bank), 3)
+        self.assertNotIn(company, out)

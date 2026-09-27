@@ -86,6 +86,9 @@ numero de protocolo nao vira telefone; endereco para na celula ou na coluna
 da tabela e antes de parentese nao fechado, e nao corta numero ao meio. O
 CPF na notacao antiga (DV depois da barra) sai inteiro no token.
 
+Deteccao 2.3: rua com nome de pessoa vira [ENDERECO_n] (nao [PESSOA_n]), e banco
+ou instituicao de pagamento listado no SISBAJUD fica em claro em todo o lote.
+
 Folha de separacao e capa do eproc saem com cada rotulo junto do seu valor,
 numa linha ("Tipo documento: ... — Evento: ... — Data: ... — Usuario: ..."),
 inclusive a de evento sem documento (intimacao, prazo, ciencia). Cada lote traz

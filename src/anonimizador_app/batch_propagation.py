@@ -81,6 +81,18 @@ _ROLE_AFTER = re.compile(
 )
 
 
+# Tipo errado (lote de 25/09): a rua com nome de pessoa virava [PESSOA_n] em 38 enderecos;
+# banco do SISBAJUD virava [EMPRESA_n] (e a corretora ao lado, na mesma lista, ficava em claro).
+_STREET_SHARE = 0.6
+_STREET_BEFORE = re.compile(
+    r"(?i)(?:endere[çc]o|logradouro)\s*:?\s*$|"
+    r"(?:\brua|\br\.|\bav\.|\bavenida|\balameda|\btravessa|\bpra[çc]a|\brodovia|\bestrada)\s*$"
+)
+_HOUSE_NUMBER_AFTER = re.compile(r"(?i)\s*,?\s*(?:nr?\.|n[º°o]\.?|n[uú]mero)\s*\d")
+_COMPE_BEFORE = re.compile(r"^\s*\d{3,5}\s*-\s*$")
+_BANK_HEADER_AFTER = re.compile(r"[^\n]{0,25}\n\s*Data/hora")
+
+
 @dataclass(slots=True)
 class _Entity:
     entity_type: str
@@ -88,6 +100,21 @@ class _Entity:
     cores: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     public_agent: bool = False
+    # Juizo de tipo, por entidade (fila 3.x, tokens do tipo errado).
+    occurrences: int = 0
+    street_hits: int = 0
+    street_label: bool = False
+    financial: bool = False
+
+    @property
+    def is_street(self) -> bool:
+        """Rua com nome de pessoa: quase toda ocorrencia em posicao de logradouro."""
+
+        return (
+            self.entity_type == "PERSON"
+            and self.street_label
+            and self.street_hits >= _STREET_SHARE * max(1, self.occurrences)
+        )
 
     @property
     def representative(self) -> str:
@@ -115,6 +142,8 @@ class BatchRoster:
         self._id_records: list[SimpleNamespace] = []
         self._entities: list[_Entity] | None = None
         self._by_core: dict[tuple[str, str], _Entity] = {}
+        # Empresa vista em posicao de instituicao financeira (SISBAJUD) na fase 1.
+        self._financial: set[str] = set()
 
     # --- fase 1 -------------------------------------------------------------
     def add(self, text: str, spans: Iterable[EntitySpan]) -> None:
@@ -127,6 +156,8 @@ class BatchRoster:
                 core = entity_core(kind, value)
                 if _CONTENT.search(core):
                     self._names[(span.entity_type, core)].append(value)
+                    if span.entity_type == "ORGANIZATION" and _financial_position(text, span.start, span.end):
+                        self._financial.add(core)
                 continue
             canonical = span.canonical_key or canonicalize(span.entity_type, value)
             if not canonical:
@@ -161,9 +192,18 @@ class BatchRoster:
         for text in texts:
             for span in spans_for_roster(text, entries, extra_keep=self._extra_keep):
                 entity = by_key.get(span.canonical_key)
-                if entity is None or entity.public_agent or entity.entity_type != "PERSON":
+                if entity is None:
                     continue
-                if _public_role(text, span.start, span.end):
+                entity.occurrences += 1
+                if entity.entity_type == "ORGANIZATION":
+                    entity.financial = entity.financial or _financial_position(text, span.start, span.end)
+                    continue
+                if entity.entity_type != "PERSON":
+                    continue
+                labelled, street = _street_position(text, span.start, span.end)
+                entity.street_label = entity.street_label or labelled
+                entity.street_hits += street
+                if not entity.public_agent and _public_role(text, span.start, span.end):
                     entity.public_agent = True
 
     # --- elenco -------------------------------------------------------------
@@ -202,6 +242,7 @@ class BatchRoster:
                     groups.append(target)
                 target.cores.append(core)
                 target.names.extend(cores[core])
+                target.financial = target.financial or core in self._financial
             entities.extend(groups)
         return entities
 
@@ -245,7 +286,25 @@ class BatchRoster:
         found.extend(self._id_spans(text))
         found = drop_protected_spans(text, found, self._extra_keep, source_name=source_name)
         found = sanitize_spans(text, found)
-        return sorted([*unified, *_gaps(found, unified)], key=lambda span: (span.start, span.end))
+        merged = sorted([*unified, *_gaps(found, unified)], key=lambda span: (span.start, span.end))
+        return self._retype(merged)
+
+    def _retype(self, spans: list[EntitySpan]) -> list[EntitySpan]:
+        """Rua com nome de pessoa vira endereco; banco do SISBAJUD fica em claro."""
+
+        flagged = {
+            entity.key: entity for entity in self._ensure() if entity.is_street or entity.financial
+        }
+        if not flagged:
+            return spans
+        result: list[EntitySpan] = []
+        for span in spans:
+            entity = flagged.get(span.canonical_key)
+            if entity is None:
+                result.append(span)
+            elif entity.is_street:
+                result.append(replace(span, entity_type="LOCATION"))
+        return result
 
     def _unify(self, text: str, span: EntitySpan) -> EntitySpan:
         if span.canonical_key or span.entity_type not in _NAME_KINDS:
@@ -310,6 +369,23 @@ def _gaps(found: Sequence[EntitySpan], taken: Sequence[EntitySpan]) -> list[Enti
             continue
         chosen.append(span)
     return chosen
+
+
+def _street_position(text: str, start: int, end: int) -> tuple[bool, bool]:
+    """(rotulo de logradouro logo antes, ocorrencia em posicao de endereco)."""
+
+    labelled = bool(_STREET_BEFORE.search(text[max(0, start - 30) : start]))
+    return labelled, labelled or bool(_HOUSE_NUMBER_AFTER.match(text, end))
+
+
+def _financial_position(text: str, start: int, end: int) -> bool:
+    """Empresa no lugar de instituicao do SISBAJUD: "05422 - NOME" na lista da ordem, ou
+    cabecalho da resposta seguido de "Data/hora"."""
+
+    line_start = text.rfind("\n", 0, start) + 1
+    if _COMPE_BEFORE.match(text[line_start:start]):
+        return True
+    return bool(_BANK_HEADER_AFTER.match(text, end))
 
 
 def _public_role(text: str, start: int, end: int) -> bool:
