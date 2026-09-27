@@ -88,6 +88,34 @@ class FastPdfTests(unittest.TestCase):
         self.assertIn("Tipo documento: CAPA PROCESSO — Evento: abertura", cover_block)
         self.assertIn("\nPROCESSO", cover_block)
 
+    def test_eproc_event_without_document_pairs_open_fields(self) -> None:
+        import pymupdf
+
+        rows = [("Evento:", ["EXPEDIDA INTIMACAO ELETRONICA"]), ("Data:", ["09/06/2026 13:11:55"]),
+                ("Sequência Evento:", ["28"]), ("Prazo:", ["5 Dias"]),
+                ("Suspensões e Feriados:", ["FERIADO A: 24/06/2026", "FERIADO B: 29/06/2026"])]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mov.pdf"
+            with pymupdf.open() as document:
+                page = document.new_page()
+                page.insert_text((235, 40), "PÁGINA DE SEPARAÇÃO")
+                page.insert_text((255, 95), "Evento 28")
+                y = 160
+                for label, values in rows:
+                    page.insert_text((14, y), label)
+                    for offset, value in enumerate(values, start=1):
+                        page.insert_text((17, y + 14 * offset), value)
+                    y += 31
+                document.save(path)
+            block = _page_block(extract_fast(path).markdown, 1)
+
+        self.assertIn(
+            "Evento: EXPEDIDA INTIMACAO ELETRONICA — Data: 09/06/2026 13:11:55 — Sequência Evento: 28"
+            " — Prazo: 5 Dias — Suspensões e Feriados: FERIADO A: 24/06/2026 FERIADO B: 29/06/2026",
+            block,
+        )
+        self.assertLess(block.index("Evento 28\n"), block.index("Evento: EXPEDIDA"))
+
     def test_event_mentioned_mid_sentence_is_not_split(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             text = extract_fast(self._pdf(Path(tmp))).markdown

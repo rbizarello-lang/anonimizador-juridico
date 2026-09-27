@@ -31,14 +31,19 @@ from pathlib import Path
 from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|9"
-# Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2).
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|10"
+# Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
+# documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
+# tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").
+_EPROC_SEPARATOR_MARKS = ("Tipo documento:", "PÁGINA DE SEPARAÇÃO")
 _EPROC_LABEL_START = re.compile(
     r"^(Tipo documento:|Evento:|Data:|Usuário:|Processo:|Sequência Evento:)(?=\s|$)"
 )
-# Valor ao lado do rotulo (capa) ou ate uma linha abaixo dele (separacao: +14 pt).
+_EPROC_LABEL_LINE = re.compile(r"^[^:]{1,40}:$")
+# Valor ao lado do rotulo (capa) ou abaixo dele, ate o proximo rotulo (separacao: +14 pt;
+# "Suspensoes e Feriados" tem duas linhas).
 _EPROC_SAME_LINE = 2.0
-_EPROC_VALUE_GAP = 20.0
+_EPROC_VALUE_GAP = 45.0
 # Tabela so em pagina com texto e com linhas retas suficientes para uma grade.
 TABLE_MIN_TEXT = 150
 TABLE_MIN_SEGMENTS = 8
@@ -203,7 +208,7 @@ def _eproc_metadata_body(page: object, native: str) -> str | None:
     os pares. Cada valor pertence ao ultimo rotulo acima dele (ou na mesma altura).
     """
 
-    if "Tipo documento:" not in native:
+    if not any(mark in native for mark in _EPROC_SEPARATOR_MARKS):
         return None
     lines: list[tuple[float, str]] = []
     labels: list[tuple[float, str]] = []
@@ -211,17 +216,18 @@ def _eproc_metadata_body(page: object, native: str) -> str | None:
     for block in page.get_text("dict")["blocks"]:
         for line in block.get("lines", []):
             text = "".join(span["text"] for span in line["spans"]).strip()
-            label = _EPROC_LABEL_START.match(text)
-            if label is not None:
-                y = line["bbox"][1]
-                labels.append((y, label.group(1)))
-                if text[label.end() :].strip():
-                    # Rotulo e valor ja na mesma linha do PDF.
-                    inline[y] = text[label.end() :].strip()
+            y = line["bbox"][1]
+            known = _EPROC_LABEL_START.match(text)
+            if _EPROC_LABEL_LINE.match(text):
+                labels.append((y, text))
+            elif known is not None:
+                # Rotulo e valor ja na mesma linha do PDF.
+                labels.append((y, known.group(1)))
+                inline[y] = text[known.end() :].strip()
             elif text:
-                lines.append((line["bbox"][1], text))
+                lines.append((y, text))
     labels.sort()
-    if {"Tipo documento:", "Evento:"} - {text for _y, text in labels}:
+    if "Evento:" not in {text for _y, text in labels}:
         return None
     values: dict[int, list[str]] = {
         index: [inline[y]] if y in inline else [] for index, (y, _label) in enumerate(labels)
