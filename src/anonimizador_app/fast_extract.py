@@ -31,7 +31,7 @@ from pathlib import Path
 from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|10"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|11"
 # Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
 # documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
 # tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").
