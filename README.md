@@ -96,6 +96,9 @@ o INDICE.md: por arquivo, eventos e documentos com a faixa de folhas, a data,
 as folhas lidas por OCR e as tabelas; e a linha do tempo do processo.
 E traz o ELENCO.md: quem e quem (requerido, executado, procurador...) pelos
 tokens, sem nomes, tirado da capa de cada processo.
+Cada folha comeca com a linha de citacao, por exemplo
+"[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]" (folha do arquivo, evento, documento e
+pagina do carimbo do eproc).
 
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar

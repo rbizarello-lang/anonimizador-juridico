@@ -17,6 +17,7 @@ from pathlib import Path
 INDEX_NAME = "INDICE.md"
 
 _ANCHOR = re.compile(r"<!-- pagina-origem: (\d+) -->")
+_ANCHOR_LINE = re.compile(r"<!-- pagina-origem: (\d+) -->(?!\n\[fl\. )")
 _STAMP = re.compile(r"Processo\s+(\S+?),\s*Evento\s+(\d+)\s*,\s*(\S+?)\s*,\s*P[áa]gina\s+(\d+)")
 _BOOKMARK = re.compile(r"^#{1,6} Evento\.?\s+(\d+)\s*-\s*Doc\.?\s*(\d+)\s*-\s*(.+?)\s*$", re.M)
 _PAGE_HEADING = re.compile(r"^#{1,6} P[áa]g\.\s*(\d+)\s*$", re.M)
@@ -42,6 +43,8 @@ class _Group:
     continues_from: str = ""
     continues_to: str = ""
     date: str = ""
+    # Folha -> (codigo do carimbo, pagina do documento), para a ancora visivel.
+    sheet_pages: dict[int, tuple[str, int | None]] = field(default_factory=dict)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -129,12 +132,43 @@ def _file_groups(text: str) -> tuple[str, str, list[_Group]]:
             # Data do evento, da folha de separacao que abre o documento.
             group.date = group.date or dated.group(1)
         group.sheets.append(sheet)
+        group.sheet_pages[sheet] = (code, page)
         if page is not None:
             group.pages.append(page)
         group.ocr += "<!-- ocr:" in body
         group.tables += len(re.findall(r"(?m)^\|---", body)) + len(re.findall(r"(?m)^```text", body))
     coverage = _coverage_label(text)
     return process, coverage, groups
+
+
+def add_sheet_anchors(text: str) -> str:
+    """Linha visivel no topo de cada folha: "[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]".
+
+    O comentario ``<!-- pagina-origem: N -->`` continua (as reguas e o indice o leem); a
+    linha visivel da a citacao do eproc sem a IA ter de achar o carimbo no meio da folha.
+    """
+
+    _process, _coverage, groups = _file_groups(text)
+    labels: dict[int, str] = {}
+    for group in groups:
+        for sheet in group.sheets:
+            code, page = group.sheet_pages.get(sheet, ("", None))
+            parts = [f"fl. {sheet}"]
+            if group.event:
+                parts.append(f"Evento {group.event}")
+                if group.doc:
+                    parts.append(code or f"Doc. {group.doc}")
+                    if page is not None:
+                        parts.append(f"p. {page}")
+                else:
+                    parts.append("movimentação")
+            labels[sheet] = "[" + " · ".join(parts) + "]"
+
+    def anchor(match: re.Match[str]) -> str:
+        label = labels.get(int(match.group(1)))
+        return f"{match.group(0)}\n{label}" if label else match.group(0)
+
+    return _ANCHOR_LINE.sub(anchor, text)
 
 
 def _movement(body: str) -> tuple[str, str, str] | None:

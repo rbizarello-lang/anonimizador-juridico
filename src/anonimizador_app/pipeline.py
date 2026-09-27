@@ -30,7 +30,7 @@ from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extra
 from .extractors import UnsupportedDocumentError
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .lote_elenco import CAST_NAME, write_lote_cast
-from .lote_index import INDEX_NAME, write_lote_index
+from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
 from .gemini_detector import ContextualEngine
 from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
@@ -386,7 +386,9 @@ def finish_file(
         result = pseudonymize(text, entities, mapping=mapping)
         residual = tuple(contextual.scan_residual(result.text)) if contextual else ()
         markdown_path = _unique_path(export_dir, prepared.source.stem, ".md")
-        markdown_path.write_text(result.text, encoding="utf-8")
+        # Ancora visivel por folha ("[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]"), depois da troca:
+        # nao entra na deteccao nem muda os caches.
+        markdown_path.write_text(add_sheet_anchors(result.text), encoding="utf-8")
         counts = Counter(entity.entity_type for entity in entities)
         extracted = prepared.cached.document
         return FileOutcome(

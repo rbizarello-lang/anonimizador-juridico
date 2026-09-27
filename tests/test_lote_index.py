@@ -76,5 +76,19 @@ class LoteIndexTests(unittest.TestCase):
         self.assertIn("documento avulso, folhas 1–1", self.index)
 
 
+class SheetAnchorTests(unittest.TestCase):
+    def test_visible_anchor_per_sheet(self) -> None:
+        from anonimizador_app.lote_index import add_sheet_anchors
+
+        text = add_sheet_anchors(PARTE_1)
+        self.assertIn("<!-- pagina-origem: 3 -->\n[fl. 3 · Evento 1 · CONTRSOCIAL2 · p. 1]", text)
+        self.assertIn("<!-- pagina-origem: 4 -->\n[fl. 4 · Evento 1 · CONTRSOCIAL2 · p. 2]", text)
+        self.assertIn("<!-- pagina-origem: 1 -->\n[fl. 1]", text)
+        moved = add_sheet_anchors(PARTE_2)
+        self.assertIn("<!-- pagina-origem: 3 -->\n[fl. 3 · Evento 28 · movimentação]", moved)
+        self.assertEqual(add_sheet_anchors(text), text)  # idempotente
+        self.assertIn("| 1 | Doc. 2 — CONTRATO SOCIAL (CONTRSOCIAL2)", build_index([("autos_PARTE_1.md", text)]))
+
+
 if __name__ == "__main__":
     unittest.main()
