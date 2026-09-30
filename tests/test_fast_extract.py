@@ -116,6 +116,37 @@ class FastPdfTests(unittest.TestCase):
         )
         self.assertLess(block.index("Evento 28\n"), block.index("Evento: EXPEDIDA"))
 
+    def test_cda_label_over_value_box_pairs_by_column(self) -> None:
+        import pymupdf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cda.pdf"
+            with pymupdf.open() as document:
+                page = document.new_page()
+                page.insert_text((72, 80), "CERTIDÃO DE DÍVIDA ATIVA")
+                page.insert_text((72, 110), "Texto da certidão com o fundamento legal da cobrança.")
+                # Valores escritos antes dos rotulos: a ordem do PDF os poe primeiro.
+                page.insert_text((87, 345), "14966 000000/2024-00")
+                page.insert_text((290, 345), "R$ 1.838,40")
+                page.insert_text((447, 345), "UFIR 1.727,62")
+                page.insert_text((87, 315), "Processo Administrativo")
+                page.insert_text((247, 320), "Valor Total Inscrito Originária")
+                page.insert_text((425, 312), "Valor Total Inscrito em")
+                page.insert_text((436, 323), "UFIR (Lei 8383/91)")
+                page.insert_text((78, 750), "Nº do agrupamento de inscrições")
+                page.insert_text((78, 785), "202500000000")
+                page.insert_text((457, 763), "Página")
+                page.insert_text((505, 763), "1 / 7")
+                document.save(path)
+            block = _page_block(extract_fast(path).markdown, 1)
+
+        self.assertIn(
+            "Processo Administrativo: 14966 000000/2024-00 — Valor Total Inscrito Originária: R$ 1.838,40"
+            " — Valor Total Inscrito em UFIR (Lei 8383/91): UFIR 1.727,62",
+            block,
+        )
+        self.assertIn("Nº do agrupamento de inscrições: 202500000000 — Página: 1 / 7", block)
+
     def test_event_mentioned_mid_sentence_is_not_split(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             text = extract_fast(self._pdf(Path(tmp))).markdown

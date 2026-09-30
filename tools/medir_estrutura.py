@@ -8,8 +8,9 @@ privado, antes da troca) e o Markdown exportavel (depois da troca):
 
 - folhas x ancoras; cobertura (nativas / OCR / em branco / nao lidas);
 - extracao: folha nativa cujo texto no cache perdeu mais de 10% das palavras do PDF;
-- valores em R$ e datas de folha nativa: quantos sumiram na extracao e quantos sumiram
-  na troca (token que comeu valor/data; folha com [NASCIMENTO_n] nao conta);
+- valores em R$, numeros decimais (colunas de valor sem "R$") e datas de folha nativa: quantos
+  sumiram na extracao e quantos sumiram na troca (token que comeu valor/data; folha com
+  [NASCIMENTO_n] nao conta);
 - tokens colados em numero ("[X_n],12"; digito colado a letra, "C1.[X_n]", nao conta) e token
   no cabecalho de tabela (rotulo trocado);
 - titulos so com rotulo ("## Evento:") e "## Evento N" partindo frase;
@@ -39,6 +40,8 @@ ANCHOR = re.compile(r"<!-- pagina-origem: (\d+) -->")
 TOKEN = re.compile(r"\[[A-Z_]+_\d+\]")
 STAMP = re.compile(r"Processo\s+[\d.\-/A-Z]+,\s*Evento\s+\d+\s*,\s*\S+\s*,\s*P.gina\s+\d+", re.I)
 MONEY = re.compile(r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}")
+# Numero decimal sem "R$" (colunas de valor da CDA, do SISBAJUD, do CNIS).
+DECIMAL = re.compile(r"(?<![\d.,])\d{1,3}(?:\.\d{3})*,\d{2}(?![\d,])")
 DATE = re.compile(r"(?<!\d)\d{2}/\d{2}/\d{4}(?!\d)")
 # Digito de palavra antes do token nao e numero: "C1.[RG_n]" e OCR de "CI." (Cedula de
 # Identidade) antes do rotulo "RG", nada comido.
@@ -46,6 +49,10 @@ TOKEN_ON_DIGIT = re.compile(r"\[[A-Z_]+_\d+\][.,/]?\d|(?<![^\W\d_])\d[.,/-]?\[[A
 LABEL_HEADING = re.compile(r"^#+ [^\n]{1,25}:\s*$", re.M)
 SPLIT_EVENT = re.compile(r"\n\n## Evento \d+\n\n[,a-zà-ú]")
 EPROC_LABEL_ALONE = re.compile(r"(?m)^[^:\n]{1,40}:[ \t]*$")
+CDA_BOX_LABEL_ALONE = re.compile(
+    r"(?m)^(?:Processo Administrativo|Valor Total Inscrito Originária|Valor Total Inscrito em|"
+    r"UFIR \(Lei 8383/91\)|Nº do agrupamento de inscrições|Página)[ \t]*$"
+)
 
 
 def _fold(text: str) -> str:
@@ -111,7 +118,7 @@ def measure(pdf: Path, exported: Path) -> dict:
             exported_page = _compact(out_pages.get(number, ""))
             cached_page = _compact(cache_pages.get(number, "")) if cache else None
             birth_token = "[NASCIMENTO_" in out_pages.get(number, "")
-            for kind, pattern in (("valores", MONEY), ("datas", DATE)):
+            for kind, pattern in (("valores", MONEY), ("decimais", DECIMAL), ("datas", DATE)):
                 for value in set(pattern.findall(native)):
                     value = _compact(value)
                     result[f"{kind}_no_pdf"] += 1
@@ -130,6 +137,9 @@ def measure(pdf: Path, exported: Path) -> dict:
     ]
     result["folhas_separacao_eproc"] = len(separators)
     result["rotulos_eproc_sem_valor"] = sum(len(EPROC_LABEL_ALONE.findall(page)) for page in separators)
+    cda_boxes = [page for page in out_pages.values() if "Valor Total Inscrito" in page]
+    result["folhas_quadro_cda"] = len(cda_boxes)
+    result["rotulos_cda_sem_valor"] = sum(len(CDA_BOX_LABEL_ALONE.findall(page)) for page in cda_boxes)
     if coverage is not None:
         result["nao_lidas"] = len(coverage.unread)
         result["ocr"] = coverage.ocr

@@ -31,7 +31,7 @@ from pathlib import Path
 from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|11"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|12"
 # Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
 # documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
 # tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").
@@ -44,6 +44,15 @@ _EPROC_LABEL_LINE = re.compile(r"^[^:]{1,40}:$")
 # "Suspensoes e Feriados" tem duas linhas).
 _EPROC_SAME_LINE = 2.0
 _EPROC_VALUE_GAP = 45.0
+# Quadro da CDA (fila 3.x E9): rotulo em cima, valor embaixo. Rotulo -> 2a linha do rotulo.
+_BOX_LABELS = {
+    "Processo Administrativo": "",
+    "Valor Total Inscrito Originária": "",
+    "Valor Total Inscrito em": "UFIR (Lei 8383/91)",
+    "Nº do agrupamento de inscrições": "",
+    "Página": "",
+}
+_BOX_VALUE_GAP = 40.0
 # Tabela so em pagina com texto e com linhas retas suficientes para uma grade.
 TABLE_MIN_TEXT = 150
 TABLE_MIN_SEGMENTS = 8
@@ -174,6 +183,9 @@ def _native_body(page: object, native: str) -> str:
     metadata = _eproc_metadata_body(page, native)
     if metadata is not None:
         return metadata
+    box = _label_box_body(page, native)
+    if box is not None:
+        return box
     if len("".join(native.split())) < TABLE_MIN_TEXT:
         return native
     if _overlapping_words(page) > OVERLAP_MAX_RATIO:
@@ -248,6 +260,85 @@ def _eproc_metadata_body(page: object, native: str) -> str | None:
     rest.append((labels[0][0], pairs))
     body = "\n".join(text for _y, text in sorted(rest, key=lambda item: item[0]))
     return body if _keeps_words(native, body) else None
+
+
+def _label_box_body(page: object, native: str) -> str | None:
+    """Quadro de rotulo sobre valor da CDA: cada rotulo com o seu valor, numa linha por fileira.
+
+    Na camada de texto os valores vinham antes dos rotulos e o quadro (meio da folha) caia
+    depois da assinatura: "R$ 1.838,40 / Processo Administrativo / Valor Total Inscrito
+    Originaria". O valor pertence ao rotulo cuja coluna ele ocupa, logo abaixo, ou ao que esta
+    a esquerda na mesma altura ("Pagina 1 / 7"). So o vocabulario do quadro; palavra perdida
+    ou duplicada devolve None (fica o texto nativo).
+    """
+
+    if "Valor Total Inscrito" not in native:
+        return None
+    lines: list[tuple[float, float, float, float, str]] = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            text = "".join(span["text"] for span in line["spans"]).strip()
+            if text:
+                x0, y0, x1, y1 = line["bbox"]
+                lines.append((y0, y1, x0, x1, text))
+    lines.sort()
+    labels: list[tuple[float, float, float, float, str, list[str]]] = []
+    used: set[int] = set()
+    for index, (y0, y1, x0, x1, text) in enumerate(lines):
+        if index in used or text not in _BOX_LABELS:
+            continue
+        parts, bottom = [text], y1
+        tail = _BOX_LABELS[text]
+        if tail:
+            for other, (oy0, oy1, ox0, ox1, otext) in enumerate(lines):
+                if otext == tail and -6 <= oy0 - y1 <= 8 and min(x1, ox1) > max(x0, ox0):
+                    parts.append(otext)
+                    bottom = oy1
+                    used.add(other)
+                    break
+        used.add(index)
+        labels.append((y0, bottom, x0, x1, " ".join(parts), parts))
+    pairs: list[tuple[float, str, list[str]]] = []
+    for y0, bottom, x0, x1, label, parts in labels:
+        value = None
+        for index, (vy0, _vy1, vx0, vx1, vtext) in enumerate(lines):
+            if index in used:
+                continue
+            below = 0 <= vy0 - bottom <= _BOX_VALUE_GAP and min(x1, vx1) > max(x0, vx0)
+            beside = abs(vy0 - y0) <= 3 and 0 <= vx0 - x1 <= 60
+            if below or beside:
+                value = (index, vtext)
+                break
+        if value is None:
+            return None
+        used.add(value[0])
+        pairs.append((y0, x0, f"{label}: {value[1]}", [*parts, value[1]]))
+    # Fileiras do quadro (mesma altura do rotulo, +-15 pt) numa linha cada, colunas em ordem.
+    grouped: list[list[tuple[float, float, str, list[str]]]] = []
+    for pair in sorted(pairs):
+        if grouped and pair[0] - grouped[-1][0][0] <= 15:
+            grouped[-1].append(pair)
+        else:
+            grouped.append([pair])
+    rows = [
+        (group[0][0], [item[2] for item in sorted(group, key=lambda item: item[1])],
+         [piece for item in group for piece in item[3]])
+        for group in grouped
+    ]
+    body = native.split("\n")
+    for _y, row_pairs, removed in rows:
+        positions = []
+        for piece in removed:
+            position = next(
+                (i for i, line in enumerate(body) if line is not None and line.strip() == piece), None
+            )
+            if position is None:
+                return None
+            positions.append(position)
+            body[position] = None
+        body[min(positions)] = " — ".join(row_pairs)
+    rebuilt = "\n".join(line for line in body if line is not None)
+    return rebuilt if _keeps_words(native, rebuilt) else None
 
 
 def _ruled_tables_body(page: object) -> tuple[str, float, list] | None:
