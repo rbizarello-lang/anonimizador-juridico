@@ -150,6 +150,13 @@ proprio quando sao varias (irmas do grupo, nome antigo e novo). A capa do agravo
 alimenta o ELENCO.md (versao de extracao |15, so a capa mudou: o cache |14 serve de ponto
 de partida, sem OCR).
 
+Deteccao 2.6: nome de cidade ou de estado nao vira empresa. A palavra que e nome de
+municipio ou de estado (lista do IBGE, guardada no pacote) nunca e "marca de uma palavra",
+e a ocorrencia da marca em contexto de foro ou de endereco ("Vara ... de X", "Comarca de
+X", "X/SC", linha de endereco, cabecalho em CAIXA ALTA) fica como estava. Cada lote traz
+`AUDITORIA_PRIVADA.txt` na pasta privada, com as palavras-marca aprovadas e as recusadas
+para voce conferir; a `AUDITORIA.txt` dos textos so tem tokens e contagens.
+
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia

@@ -307,6 +307,11 @@ class PseudonymMap:
         self._insert(record)
         return token
 
+    def token_for(self, entity_type: str, canonical: str) -> str:
+        """Token ja atribuido a essa entidade canonica ("" se nenhum); nao cria token."""
+
+        return self._index.get((entity_type, canonical), "")
+
     def to_dict(self) -> dict[str, Any]:
         records = []
         for record in self._records.values():
