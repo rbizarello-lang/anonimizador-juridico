@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .coverage import parse_coverage
 from .extractors import ExtractedDocument, extract_document
-from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
+from .fast_extract import FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
 
 CACHE_SUBDIR = "cache_extracao"
 _OCR_PAGES = re.compile(r"<!--\s*ocr-paginas:\s*(\d+)", re.IGNORECASE)
@@ -89,7 +89,8 @@ def load_or_extract(
 
     source = Path(path)
     version = version_string or default_extractor_version(prefer_docling=prefer_docling)
-    digest = cache_key(source.read_bytes(), version)
+    file_bytes = source.read_bytes()
+    digest = cache_key(file_bytes, version)
     md_path = json_path = None
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
@@ -112,12 +113,15 @@ def load_or_extract(
                 path=md_path,
             )
 
-    if extract_fn is not None:
+    if extract_fn is not None and extract_fn is not extract_fast:
         extracted = extract_fn(source)
     elif prefer_docling:
         extracted = extract_document(source, prefer_docling=True)
     else:
-        extracted = extract_fast(source)
+        extracted = extract_fast(
+            source,
+            previous=_reusable_markdown(file_bytes, cache_dir, version) if use_cache else None,
+        )
     generated_at = datetime.now().isoformat(timespec="seconds")
     if cache_dir is not None and md_path is not None and json_path is not None:
         meta = {
@@ -152,6 +156,21 @@ def load_or_extract(
         digest=digest,
         path=md_path,
     )
+
+
+def _reusable_markdown(file_bytes: bytes, cache_dir: Path | None, version: str) -> str | None:
+    """Extracao de uma versao anterior compativel (``FAST_OCR_REUSABLE_FROM``) do mesmo arquivo.
+
+    So a extracao rapida atual reaproveita: as folhas lidas por OCR vem dela e as nativas sao
+    refeitas. Sem cache dessa versao, ``None`` e tudo roda como sempre."""
+
+    if cache_dir is None or version != FAST_EXTRACTOR_VERSION:
+        return None
+    for older in FAST_OCR_REUSABLE_FROM:
+        candidate = Path(cache_dir) / f"{cache_key(file_bytes, older)}.md"
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return None
 
 
 def _ocr_page_count(markdown: str) -> int:

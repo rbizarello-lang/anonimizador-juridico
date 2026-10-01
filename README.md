@@ -115,6 +115,17 @@ texto de verdade encostado nele fica. Folha sem esse texto nao muda. Como a
 extracao mudou (versao |13), o primeiro lote depois da atualizacao refaz a leitura
 (e o OCR) de cada PDF, o que leva alguns minutos a mais.
 
+Extrato do SISBAJUD, lista de veiculos do RENAJUD e capa do processo saem com cada
+rotulo junto do seu valor: "Numero do processo: ...", "Repeticao programada? Sim",
+"Nivel de Sigilo do Processo: Sem Sigilo (Nivel 0)"; as respostas de cada instituicao
+no SISBAJUD viram uma tabela (valor da ordem e valor bloqueado cada um na sua coluna,
+com a instituicao acima) e a lista de veiculos do RENAJUD tambem. So em layout
+reconhecido pelos rotulos fixos, e so se nenhuma palavra da folha se perder: se
+perder, a folha sai como antes. Como a extracao mudou (versao |14) mas so no texto
+nativo, o primeiro lote depois da atualizacao aproveita o cache da |13: as folhas
+lidas por OCR nao sao lidas de novo (AÇOCARGAS inteiro leva uns 3 minutos nessa etapa,
+nao 90).
+
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia

@@ -30,8 +30,13 @@ from pathlib import Path
 
 from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
+from .report_layouts import report_plan
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|13"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|14"
+# Versoes cujas folhas lidas por OCR saem iguais as desta (a |14 so mudou o texto nativo: relatorios
+# SISBAJUD/RENAJUD/capa, fila 3.x E12). O cache delas serve de ponto de partida: so as folhas nativas
+# sao refeitas, e o OCR (~90 min no lote AÇOCARGAS) nao roda de novo.
+FAST_OCR_REUSABLE_FROM = ("pymupdf-rapido|13",)
 # Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
 # documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
 # tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").
@@ -70,13 +75,19 @@ _LOG = logging.getLogger(__name__)
 PageReader = Callable[[object], str]
 
 
-def extract_fast(path: str | Path, *, read_page: PageReader | None = None) -> ExtractedDocument:
-    """``read_page`` troca o OCR (teste); o padrao e o RapidOCR local."""
+def extract_fast(
+    path: str | Path, *, read_page: PageReader | None = None, previous: str | None = None
+) -> ExtractedDocument:
+    """``read_page`` troca o OCR (teste); o padrao e o RapidOCR local.
+
+    ``previous``: Markdown de uma extracao anterior do mesmo arquivo, de versao listada em
+    ``FAST_OCR_REUSABLE_FROM``; a folha que ele leu por OCR e que continua pedindo OCR e copiada
+    dele em vez de lida de novo."""
 
     source = Path(path)
     suffix = source.suffix.lower()
     if suffix == ".pdf":
-        return _extract_pdf(source, read_page=read_page)
+        return _extract_pdf(source, read_page=read_page, previous=previous)
     if suffix == ".docx":
         return ExtractedDocument(
             markdown=docx_to_markdown(source),
@@ -94,7 +105,26 @@ def extract_fast(path: str | Path, *, read_page: PageReader | None = None) -> Ex
     )
 
 
-def _extract_pdf(source: Path, *, read_page: PageReader | None = None) -> ExtractedDocument:
+_PAGE_ANCHOR_SPLIT = re.compile(r"(?=<!-- pagina-origem: \d+ -->\n)")
+_PAGE_ANCHOR_NUMBER = re.compile(r"<!-- pagina-origem: (\d+) -->")
+
+
+def _ocr_pages_of(markdown: str | None) -> dict[int, str]:
+    """Folhas de uma extracao anterior lidas por OCR, inteiras (ancora e titulos inclusos)."""
+
+    if not markdown:
+        return {}
+    pages: dict[int, str] = {}
+    for segment in _PAGE_ANCHOR_SPLIT.split(markdown):
+        found = _PAGE_ANCHOR_NUMBER.match(segment)
+        if found is not None and "<!-- ocr: " in segment:
+            pages[int(found.group(1))] = segment
+    return pages
+
+
+def _extract_pdf(
+    source: Path, *, read_page: PageReader | None = None, previous: str | None = None
+) -> ExtractedDocument:
     try:
         import pymupdf
     except ImportError as exc:  # pragma: no cover - depende do ambiente
@@ -110,14 +140,20 @@ def _extract_pdf(source: Path, *, read_page: PageReader | None = None) -> Extrac
     with pymupdf.open(source) as document:
         page_count = document.page_count
         headings = _bookmarks_by_page(document.get_toc(simple=True), page_count)
+        reusable = _ocr_pages_of(previous)
         for number, pdf_page in enumerate(document, start=1):
             # Selo de editor de PDF (fila 3.x E10) fora do texto, das tabelas e do OCR.
             page = without_watermark(pdf_page)
+            native = page.get_text("text").replace("\r\n", "\n").strip()
+            reason = page_ocr_reason(page, native)
+            if reason is not None and number in reusable:
+                # Folha ja lida por OCR numa versao compativel: o OCR nao roda de novo.
+                parts.append(reusable[number])
+                counts[reason] += 1
+                continue
             parts.append(f"<!-- pagina-origem: {number} -->\n")
             for level, title in headings.get(number, ()):
                 parts.append(f"{'#' * min(level + 1, 6)} {title}\n\n")
-            native = page.get_text("text").replace("\r\n", "\n").strip()
-            reason = page_ocr_reason(page, native)
             if reason is None:
                 counts["nativa"] += 1
                 body = _native_body(page, native)
@@ -191,6 +227,13 @@ def _native_body(page: object, native: str) -> str:
         return box
     if len("".join(native.split())) < TABLE_MIN_TEXT:
         return native
+    # Extrato SISBAJUD, lista do RENAJUD, capa do processo (fila 3.x E12): rotulo com o valor.
+    report = report_plan(page, native)
+    if report is not None and report.tables:
+        body = _text_with_tables(page, [], report)
+        if _keeps_words(native, body):
+            return body
+        report = None
     if _overlapping_words(page) > OVERLAP_MAX_RATIO:
         # Camadas de texto sobrepostas (varias folhas impressas uma sobre a outra):
         # por posicao elas se entrelacam; na ordem do PDF cada camada sai inteira,
@@ -201,14 +244,20 @@ def _native_body(page: object, native: str) -> str:
     covered = 0.0
     boxes: list = []
     if _axis_segments(page) >= TABLE_MIN_SEGMENTS:
-        found = _ruled_tables_body(page)
+        planner = (lambda excluded: report_plan(page, native, exclude=excluded)) if report is not None else None
+        found = _ruled_tables_body(page, planner)
         if found is not None and _keeps_words(native, found[0]):
             ruled, covered, boxes = found
     # Grade que cobre a folha: tabela Markdown. Grade pequena num canto de uma folha de
     # colunas sem grade (debitos da CDA) ou grade falsa, recusada acima (rastreador do
-    # CAGED): colunas alinhadas. As colunas contam so fora das grades aceitas.
-    if ruled is not None and covered >= RULED_MIN_COVERAGE:
+    # CAGED): colunas alinhadas. As colunas contam so fora das grades aceitas. Relatorio
+    # reconhecido (capa do processo): as tabelas de grade ficam e os pares entram nas linhas soltas.
+    if ruled is not None and (covered >= RULED_MIN_COVERAGE or report is not None):
         return ruled
+    if report is not None:
+        body = _text_with_tables(page, [], report)
+        if _keeps_words(native, body):
+            return body
     layout = _layout_body(page, exclude=boxes)
     if layout is not None and _keeps_words(native, layout):
         return layout
@@ -344,8 +393,11 @@ def _label_box_body(page: object, native: str) -> str | None:
     return rebuilt if _keeps_words(native, rebuilt) else None
 
 
-def _ruled_tables_body(page: object) -> tuple[str, float, list] | None:
-    """Texto com as tabelas de grade em Markdown, fracao de palavras dentro delas e as caixas."""
+def _ruled_tables_body(page: object, planner: Callable | None = None) -> tuple[str, float, list] | None:
+    """Texto com as tabelas de grade em Markdown, fracao de palavras dentro delas e as caixas.
+
+    ``planner(caixas)`` devolve o plano de pareamento do relatorio (E12) para as linhas fora
+    das grades."""
 
     import pymupdf
 
@@ -376,7 +428,8 @@ def _ruled_tables_body(page: object) -> tuple[str, float, list] | None:
     boxes = [pymupdf.Rect(bbox) for bbox, _rendered in tables]
     words = page.get_text("words")
     inside = sum(1 for word in words if _in_boxes(word, boxes))
-    return _text_with_tables(page, tables), inside / max(1, len(words)), boxes
+    plan = planner(boxes) if planner is not None else None
+    return _text_with_tables(page, tables, plan), inside / max(1, len(words)), boxes
 
 
 def _stream_rows(page: object) -> str:
@@ -602,22 +655,31 @@ def _pdf_table_markdown(table: object, *, header: list[str] | None = None) -> st
     return "\n".join(lines)
 
 
-def _text_with_tables(page: object, tables: list[tuple[tuple, str]]) -> str:
-    """Linhas fora das tabelas na ordem do PDF; cada tabela entra onde a primeira linha dela estava."""
+def _text_with_tables(page: object, tables: list[tuple[tuple, str]], plan: object | None = None) -> str:
+    """Linhas fora das tabelas na ordem do PDF; cada tabela entra onde a primeira linha dela estava.
+
+    ``plan`` (``ReportPlan``, E12): linhas trocadas pelo par rotulo/valor ou tabela do relatorio e
+    linhas que ja entraram em outro texto. Os indices contam todas as linhas dos blocos de texto."""
 
     import pymupdf
 
     boxes = [pymupdf.Rect(bbox) for bbox, _rendered in tables]
     chunks: list[str] = []
     emitted: set[int] = set()
+    line_index = -1
     for block in page.get_text("dict").get("blocks", ()):
         if block.get("type") != 0:
             continue
         lines: list[str] = []
         for line in block.get("lines", ()):
+            line_index += 1
             text = "".join(span.get("text", "") for span in line.get("spans", ()))
             if not text.strip():
                 continue
+            if plan is not None:
+                if line_index in plan.removed:
+                    continue
+                text = plan.replaced.get(line_index, text)
             center = pymupdf.Rect(line["bbox"])
             point = pymupdf.Point((center.x0 + center.x1) / 2, (center.y0 + center.y1) / 2)
             inside = next((index for index, box in enumerate(boxes) if point in box), None)

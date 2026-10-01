@@ -15,7 +15,9 @@ privado, antes da troca) e o Markdown exportavel (depois da troca):
   no cabecalho de tabela (rotulo trocado);
 - titulos so com rotulo ("## Evento:") e "## Evento N" partindo frase;
 - folhas de separacao/capa do eproc e rotulos delas sem o valor na mesma linha (a IA teria
-  de adivinhar os pares).
+  de adivinhar os pares);
+- folhas de relatorio (extrato SISBAJUD, lista do RENAJUD, capa do processo; fila 3.x E12):
+  rotulos sem o valor na linha e valores em R$ sozinhos na linha (sem o rotulo da coluna).
 
 E a regua da fase "estrutura primeiro" (GOVERNANCA, fila 3.x): perda de informacao
 aparece aqui antes de chegar a IA de analise.
@@ -54,6 +56,26 @@ CDA_BOX_LABEL_ALONE = re.compile(
     r"(?m)^(?:Processo Administrativo|Valor Total Inscrito Originária|Valor Total Inscrito em|"
     r"UFIR \(Lei 8383/91\)|Nº do agrupamento de inscrições|Página)[ \t]*$"
 )
+# Folhas de relatorio com rotulo e valor (fila 3.x E12): extrato SISBAJUD, lista do RENAJUD e
+# capa do processo, reconhecidas pelo rotulo fixo.
+FORM_PAGE_MARKS = ("Juiz solicitante do bloqueio:", "Lista de Veículos", "Chave Processo:")
+# Rotulo ("Numero do processo:", "Ordem sigilosa?") sozinho na linha; a linha de tabela, de
+# titulo e de bloco alinhado nao conta.
+FORM_LABEL_ALONE = re.compile(r"(?m)^(?![|#<`])[^:?\n]{1,60}[:?][ \t]*$")
+FORM_MONEY_ALONE = re.compile(r"(?m)^[ \t]*R\$[ \t]*\d{1,3}(?:\.\d{3})*,\d{2}[ \t]*$")
+
+
+def form_page_stats(pages: dict[int, str]) -> collections.Counter:
+    """Folhas de relatorio, rotulos sem valor e valores R$ sem rotulo, por folha do Markdown."""
+
+    stats: collections.Counter = collections.Counter()
+    for page in pages.values():
+        if not any(mark in page for mark in FORM_PAGE_MARKS):
+            continue
+        stats["folhas_relatorio"] += 1
+        stats["rotulos_relatorio_sem_valor"] += len(FORM_LABEL_ALONE.findall(page))
+        stats["valores_relatorio_sem_rotulo"] += len(FORM_MONEY_ALONE.findall(page))
+    return stats
 
 
 def _fold(text: str) -> str:
@@ -139,6 +161,7 @@ def measure(pdf: Path, exported: Path) -> dict:
     ]
     result["folhas_separacao_eproc"] = len(separators)
     result["rotulos_eproc_sem_valor"] = sum(len(EPROC_LABEL_ALONE.findall(page)) for page in separators)
+    result.update(form_page_stats(out_pages))
     cda_boxes = [page for page in out_pages.values() if "Valor Total Inscrito" in page]
     result["folhas_quadro_cda"] = len(cda_boxes)
     result["rotulos_cda_sem_valor"] = sum(len(CDA_BOX_LABEL_ALONE.findall(page)) for page in cda_boxes)
