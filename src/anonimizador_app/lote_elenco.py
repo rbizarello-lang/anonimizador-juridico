@@ -18,6 +18,8 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
+from .lote_index import document_code, is_standalone, standalone_facts
+
 CAST_NAME = "ELENCO.md"
 
 _TOKEN = re.compile(r"\[([A-Z_]+)_\d+\]")
@@ -75,6 +77,31 @@ _RENAME_NOW = re.compile(
 )
 _STEP_GAP = 900
 
+# Contrato avulso (E14): socios e administradores, so quando o proprio texto os diz.
+_TOKEN_ANY = r"\[(?:PESSOA|EMPRESA)_\d+\]"
+_TOKEN_RUN = rf"{_TOKEN_ANY}(?:\s*(?:,|e/ou|e|ou|/)\s*{_TOKEN_ANY})*"
+_ADMIN_CLAUSE = (
+    re.compile(
+        r"(?is)administra[çc][ãa]o\s+(?:da\s+)?(?:sociedade|empresa)[^.\[]{0,100}?"
+        r"(?:exercid[ao]s?|cabe(?:rá)?|compete)\s+(?:pel[oa]s?|ao|aos|à)\s+"
+        r"(?:(?:sócios?|sócias?|administrador(?:es|a)?|sócio[- ]administrador(?:es)?)\s+)*"
+        rf"({_TOKEN_RUN})"
+    ),
+    re.compile(
+        r"(?is)(?:nomead[oa]s?|designad[oa]s?|investid[oa]s?)\s+(?:como\s+|na\s+função\s+de\s+)?"
+        rf"administrador(?:es|a)?[^.\[]{{0,60}}?({_TOKEN_RUN})"
+    ),
+)
+_PREAMBLE_END = re.compile(
+    r"(?i)únic[oa]s?\s+s[óo]ci[oa]s?|s[óo]ci[oa]s?\s+(?:componentes|integrantes)|\bresolvem?\b"
+)
+_QUALIFIED = re.compile(
+    rf"({_TOKEN_ANY})\s*,\s*(?=(?:brasileir|portugu|nacionalidade|solteir|casad|divorciad|vi[úu]v|maior|"
+    r"empres[áa]ri|natural|nascid|estrangeir|sociedade|pessoa\s+jur|inscrit|com\s+sede))",
+    re.I,
+)
+_PREAMBLE_WINDOW = 3500
+
 
 def build_cast(documents: Sequence[tuple[str, str]]) -> str:
     """``documents``: (nome do .md, texto tokenizado), na ordem do lote."""
@@ -86,6 +113,7 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
             occurrences[match.group(0)] += 1
             files[match.group(0)].add(name)
     header_roles = _header_roles(documents)
+
     sections: list[str] = []
     listed: set[str] = set()
     cover_ids: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
@@ -131,6 +159,7 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
         "o papel que o cabeçalho das peças lhe dá, quando há.",
         "",
     ]
+    contracts = _contract_rows(documents)
     links = _links(documents, cover_ids)
     if links:
         out += [
@@ -146,22 +175,36 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
         out += [f"| {a} | {kind} | {b} | {evidence} |" for a, kind, b, evidence in links]
         out.append("")
     out += sections
+    if contracts:
+        out += _contract_section(contracts)
     rest = [token for token, _count in occurrences.most_common() if token not in listed]
     if rest:
+        rows = []
+        grouped = False
+        for token in rest:
+            kind = _LABELS.get(_TOKEN.match(token).group(1), "")
+            names, used = _files_label(files[token])
+            grouped = grouped or used
+            roles = _role_list(header_roles.get(token))
+            rows.append(f"| {token} | {kind} | {occurrences[token]} | {roles} | {names} |")
         out += [
             "## Demais pessoas e empresas do lote",
             "",
             "Papel não informado na capa; o contexto de cada ocorrência diz o papel. “Papel no "
             "cabeçalho das peças” é o que consta em linhas como “EXECUTADO: [token]” (número de linhas).",
             "",
+        ]
+        if grouped:
+            out += [
+                "Arquivo de documento avulso aparece pelo código do nome (CONTRSOCIAL3–9 = os arquivos "
+                "terminados em _CONTRSOCIAL3 a _CONTRSOCIAL9; o `INDICE.md` dá o nome completo).",
+                "",
+            ]
+        out += [
             "| Token | Tipo | Ocorrências | Papel no cabeçalho das peças | Arquivos |",
             "|---|---|---|---|---|",
         ]
-        for token in rest:
-            kind = _LABELS.get(_TOKEN.match(token).group(1), "")
-            names = ", ".join(sorted(files[token]))
-            roles = _role_list(header_roles.get(token))
-            out.append(f"| {token} | {kind} | {occurrences[token]} | {roles} | {names} |")
+        out += rows
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -341,3 +384,84 @@ def _rest(cell: str, role: str) -> tuple[str, list[str]]:
     representatives = _REPRESENTATIVES.search(cell)
     tokens = _PARTY_TOKEN.findall(representatives.group(1)) if representatives else []
     return role, list(dict.fromkeys(tokens))
+
+
+def _files_label(names: set[str]) -> tuple[str, bool]:
+    """Lista de arquivos; os de documento avulso com o mesmo prefixo de codigo (3 ou mais) viram faixa."""
+
+    coded: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for name in names:
+        match = re.fullmatch(r"([^\W\d_]+)(\d+)", document_code(name))
+        if match:
+            coded[match.group(1)].append((int(match.group(2)), name))
+    grouped = {prefix: items for prefix, items in coded.items() if len(items) >= 3}
+    taken = {name for items in grouped.values() for _n, name in items}
+    parts = [f"{prefix}{_ranges([n for n, _name in sorted(items)])}" for prefix, items in sorted(grouped.items())]
+    return ", ".join(parts + sorted(name for name in names if name not in taken)), bool(grouped)
+
+
+def _ranges(numbers: list[int]) -> str:
+    runs: list[list[int]] = []
+    for number in numbers:
+        if runs and number == runs[-1][-1] + 1:
+            runs[-1].append(number)
+        else:
+            runs.append([number])
+    return ", ".join(str(run[0]) if len(run) == 1 else f"{run[0]}–{run[-1]}" for run in runs)
+
+
+def contract_roles(text: str) -> tuple[list[str], list[str]]:
+    """(socios, administradores) de um contrato avulso, so por token e so pelo que o texto diz:
+    partes qualificadas no preambulo (antes de "unicos socios"/"resolvem") e a clausula da administracao."""
+
+    end = _PREAMBLE_END.search(text)
+    preamble = text[: end.start()][-_PREAMBLE_WINDOW:] if end else ""
+    partners = list(dict.fromkeys(_QUALIFIED.findall(preamble)))
+    admins: list[str] = []
+    for pattern in _ADMIN_CLAUSE:
+        for match in pattern.finditer(text):
+            admins += re.findall(_TOKEN_ANY, match.group(1))
+    return partners, list(dict.fromkeys(admins))
+
+
+def _contract_rows(documents: Sequence[tuple[str, str]]) -> list[tuple[str, str, str, list[str], list[str]]]:
+    rows = []
+    for name, text in documents:
+        if not is_standalone(text):
+            continue
+        facts = standalone_facts(text, name)
+        if not facts.code or not (facts.dates or facts.companies) or facts.issued:
+            continue
+        partners, admins = contract_roles(text)
+        if not (partners or admins):
+            continue
+        rows.append((facts.code, " / ".join(facts.companies), "; ".join(facts.dates), partners, admins))
+    rows.sort(key=lambda row: (_company_order(row[1]), _date_key(row[2]), row[0]))
+    return rows
+
+
+def _company_order(label: str) -> tuple[str, int]:
+    return _token_order(label.split(" / ")[0]) if label else ("~", 0)
+
+
+def _date_key(dates: str) -> str:
+    first = dates.split("; ")[0]
+    return f"{first[6:]}{first[3:5]}{first[:2]}" if len(first) == 10 else "9999"
+
+
+def _contract_section(rows: list[tuple[str, str, str, list[str], list[str]]]) -> list[str]:
+    out = [
+        "## Sócios e administradores dos contratos avulsos",
+        "",
+        "Só tokens, pelo que cada contrato diz: “sócios” são as partes qualificadas no preâmbulo "
+        "(antes de “únicos sócios” ou “resolvem”; podem ser sócio que entra ou que sai) e "
+        "“administradores” os nomeados na cláusula da administração. Ordem: empresa e data do registro "
+        "na Junta. Vazio = o texto não diz ou a leitura não reconheceu; não é afirmação de ausência.",
+        "",
+        "| Contrato | Empresa | Registro | Sócios (preâmbulo) | Administradores (cláusula) |",
+        "|---|---|---|---|---|",
+    ]
+    for code, company, dates, partners, admins in rows:
+        out.append(f"| {code} | {company} | {dates} | {', '.join(partners)} | {', '.join(admins)} |")
+    out.append("")
+    return out

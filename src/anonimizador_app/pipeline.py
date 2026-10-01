@@ -388,7 +388,7 @@ def finish_file(
         markdown_path = _unique_path(export_dir, prepared.source.stem, ".md")
         # Ancora visivel por folha ("[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]"), depois da troca:
         # nao entra na deteccao nem muda os caches.
-        markdown_path.write_text(add_sheet_anchors(result.text), encoding="utf-8")
+        markdown_path.write_text(add_sheet_anchors(result.text, markdown_path.name), encoding="utf-8")
         counts = Counter(entity.entity_type for entity in entities)
         extracted = prepared.cached.document
         return FileOutcome(

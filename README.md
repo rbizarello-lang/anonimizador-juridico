@@ -108,6 +108,12 @@ alterado para ..."). Os tokens nao sao unificados: o vinculo e dito, nao decidid
 Cada folha comeca com a linha de citacao, por exemplo
 "[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]" (folha do arquivo, evento, documento e
 pagina do carimbo do eproc).
+Arquivo sem nenhum carimbo do eproc (contrato social avulso, extrato) leva o codigo do
+nome do arquivo na linha de citacao ("[CONTRSOCIAL13 · fl. 4]"), porque "fl. 4" sozinho
+seria ambiguo entre dezenas de arquivos; o INDICE.md traz, para o contrato avulso, a
+empresa (token), o ato (constituicao, alteracao, consolidacao) e a data do registro na
+Junta Comercial, e o ELENCO.md lista, so por token, os socios e administradores que
+cada contrato diz ter.
 
 PDF salvo no PDF-XChange Editor sem licenca traz em cada folha um selo no canto
 ("Click to BUY NOW!" e "PDF-XChange Editor / www.tracker-software.com" letra a letra
