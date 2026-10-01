@@ -17,6 +17,7 @@ from anonimizador_app.credentials import ApiKey
 from anonimizador_app.llm_discovery import Discovery, DiscoveryReport, LlmConfig
 from anonimizador_app.pipeline_llm import LEGEND_FILENAME, ROSTER_FILENAME, run_llm_job
 from anonimizador_app.roster import KEEP, Mention
+from anonimizador_juridico import EntitySpan
 
 DOC = """\
 # EXECUÇÃO FISCAL
@@ -103,6 +104,47 @@ class FakeDiscoverer:
         return Discovery(mentions=mentions, report=report)
 
 
+class FakeLocalEngine:
+    """O "motor local" do teste: acha os nomes que conhece (como o NER e as listas fariam)."""
+
+    def __init__(self, names=(), *, boom: Exception | None = None) -> None:
+        self.names = list(names)
+        self.boom = boom
+        self.calls = 0
+
+    def detect(self, text: str) -> list[EntitySpan]:
+        self.calls += 1
+        if self.boom is not None:
+            raise self.boom
+        spans = []
+        folded = text.casefold()
+        for kind, value in self.names:
+            start = folded.find(value.casefold())
+            while start >= 0:
+                spans.append(
+                    EntitySpan(start=start, end=start + len(value), entity_type=kind, score=0.9,
+                               recognizer="FakeLocal")
+                )
+                start = folded.find(value.casefold(), start + 1)
+        return spans
+
+    def scan_residual(self, text: str) -> list[str]:
+        return []
+
+
+class EmptyAnswerDiscoverer(FakeDiscoverer):
+    """O LLM "responde" JSON valido sem nenhuma entidade na pagina 2."""
+
+    def discover(self, text: str) -> Discovery:
+        found = super().discover(text)
+        marker = "<!-- pagina-origem: 2 -->"
+        if marker in text and len(self.calls) == 1:
+            start = text.index(marker)
+            found.mentions = [m for m in found.mentions if m.start < start]
+            found.report.empty = [(start, len(text))]
+        return found
+
+
 class FakeChannelDiscoverer(FakeDiscoverer):
     """Como o descobridor real: leva o canal na configuracao (so o id, nunca a chave)."""
 
@@ -169,23 +211,6 @@ class PipelineLlmTests(unittest.TestCase):
             FakeDiscoverer(miss_first={"MARLENE OLIVEIRA SAMPAIO"}), verification_rounds=0
         )
         self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
-
-    def test_page_unread_in_every_pass_blocks_export(self) -> None:
-        result, _text = self._run(FakeDiscoverer(fail_pass={1, 2}), verification_rounds=1)
-
-        report = result.reports["autos.md"]
-        self.assertEqual(report.unread_pages, [2])
-        self.assertFalse(result.job.export_allowed)
-        self.assertIn("paginas 2", result.job.export_block_reason)
-        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
-        self.assertIn("ALERTA: paginas 2 sem leitura do LLM", audit)
-
-    def test_page_read_in_the_second_pass_does_not_block(self) -> None:
-        result, text = self._run(FakeDiscoverer(fail_pass={1}), verification_rounds=1)
-
-        self.assertEqual(result.reports["autos.md"].unread_pages, [])
-        self.assertTrue(result.job.export_allowed)
-        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text)
 
     def test_roster_is_private_and_legend_has_no_names(self) -> None:
         result, _text = self._run(FakeDiscoverer())
@@ -436,6 +461,156 @@ class StructureParityTests(unittest.TestCase):
         self.assertIn("2º Registro de Imóveis de Joinville", body)
         self.assertNotIn("12345", body)
         self.assertEqual(len(set(re.findall(r"\[MATRICULA_IMOVEL_\d+\]", body))), 2)
+
+
+PAGE_2_NAMES = [("PERSON", "MARLENE OLIVEIRA SAMPAIO"), ("PERSON", "Olavo Ricardo Teixeira")]
+
+
+class LlmFailureFallbackTests(unittest.TestCase):
+    """B1/I6: folha que o LLM nao leu, ou que ele respondeu vazia, nunca sai com nome em claro."""
+
+    def _run(self, discoverer, *, engine=None, **kwargs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        source = base / "autos.md"
+        source.write_text(DOC, encoding="utf-8")
+        result = run_llm_job(
+            [source],
+            export_root=base / "exportaveis",
+            private_root=base / "privados",
+            discoverer=discoverer,
+            use_cache=False,
+            fallback_engine=engine,
+            **kwargs,
+        )
+        self.base = base
+        return result
+
+    def _exported(self, result) -> str:
+        return "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(result.job.export_dir.glob("*.md"))
+            if path.name not in {"INDICE.md", "ELENCO.md"}
+        )
+
+    def test_failed_page_is_handled_by_the_local_engine_and_listed(self) -> None:
+        engine = FakeLocalEngine(PAGE_2_NAMES)
+        result = self._run(FakeDiscoverer(fail_pass={1, 2}), engine=engine, verification_rounds=1)
+        text = self._exported(result)
+
+        self.assertEqual(engine.calls, 1)
+        for name in ("MARLENE OLIVEIRA SAMPAIO", "Olavo Ricardo Teixeira"):
+            self.assertNotIn(name.casefold(), text.casefold(), name)
+        self.assertTrue(result.job.export_allowed, result.job.export_block_reason)
+        self.assertEqual(result.fallback_pages, {"autos.md": [2]})
+        self.assertEqual(result.reports["autos.md"].unread_pages, [])
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: autos.md: paginas 2", audit)
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: autos.md: paginas 2", guide)
+        self.assertIn("Folhas tratadas pelo motor local", result.job.export_warning)
+        # O que o motor local achou entrou no elenco, com a origem, para a tela de revisao.
+        sources = {entry.source for entry in result.roster.entries}
+        self.assertIn("motor_local", sources)
+        for name in ("MARLENE", "SAMPAIO"):
+            self.assertNotIn(name, audit)
+
+    def test_local_find_shares_the_token_of_the_llm_roster(self) -> None:
+        engine = FakeLocalEngine([("PERSON", "Olavo Ricardo Teixeira")])
+        result = self._run(FakeDiscoverer(fail_pass={1, 2}), engine=engine, verification_rounds=0)
+        text = self._exported(result)
+
+        self.assertNotIn("Olavo Ricardo Teixeira".casefold(), text.casefold())
+        # Pagina 1 (LLM) e pagina 2 (motor local): o mesmo token.
+        self.assertEqual(text.count("[PESSOA_1]"), 2)
+
+    def test_without_a_failure_the_local_engine_does_not_even_run(self) -> None:
+        engine = FakeLocalEngine([("PERSON", "LUCIANA MONTEFUSCO DE ALMEIDA")])
+        result = self._run(FakeDiscoverer(), engine=engine, verification_rounds=0)
+
+        self.assertEqual(engine.calls, 0)
+        self.assertEqual(result.fallback_pages, {})
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertNotIn("tratadas pelo motor local", audit)
+        # A juiza (papel de magistrado) fica, como sempre.
+        self.assertIn("LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal", self._exported(result))
+
+    def test_empty_answer_with_names_on_the_page_goes_through_the_local_engine(self) -> None:
+        engine = FakeLocalEngine(PAGE_2_NAMES)
+        result = self._run(EmptyAnswerDiscoverer(), engine=engine, verification_rounds=0)
+        text = self._exported(result)
+
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO".casefold(), text.casefold())
+        self.assertEqual(result.fallback_pages, {"autos.md": [2]})
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("1 resposta(s) vazia(s) (nao guardada(s) no cache)", audit)
+
+    def test_empty_answer_confirmed_empty_by_the_local_engine_is_not_a_fallback(self) -> None:
+        engine = FakeLocalEngine([])
+        result = self._run(EmptyAnswerDiscoverer(), engine=engine, verification_rounds=0)
+
+        self.assertEqual(engine.calls, 1)
+        self.assertEqual(result.fallback_pages, {})
+        self.assertEqual(result.reports["autos.md"].empty_confirmed_pages, [2])
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("Resposta vazia do LLM, sem nome segundo o motor local: paginas 2", audit)
+        self.assertTrue(result.job.export_allowed)
+
+    def test_offline_page_outside_the_cache_counts_only_if_the_local_engine_finds_something(self) -> None:
+        class OfflineDiscoverer(FakeDiscoverer):
+            def discover(self, text: str) -> Discovery:
+                found = super().discover(text)
+                found.report.offline = True
+                return found
+
+        quiet = self._run(OfflineDiscoverer(fail_pass={1, 2}), engine=FakeLocalEngine([]), verification_rounds=0)
+        self.assertEqual(quiet.fallback_pages, {})
+        busy = self._run(
+            OfflineDiscoverer(fail_pass={1, 2}), engine=FakeLocalEngine(PAGE_2_NAMES), verification_rounds=0
+        )
+        self.assertEqual(busy.fallback_pages, {"autos.md": [2]})
+
+    def test_when_the_local_engine_cannot_run_the_file_is_held_and_not_exported(self) -> None:
+        engine = FakeLocalEngine(boom=RuntimeError("modelo ausente: MARLENE"))
+        result = self._run(FakeDiscoverer(fail_pass={1, 2}), engine=engine, verification_rounds=0)
+
+        self.assertEqual(self._exported(result), "")
+        self.assertFalse(result.job.export_allowed)
+        self.assertEqual(result.held, ("autos.md",))
+        outcome = result.job.outcomes[0]
+        self.assertFalse(outcome.ok)
+        self.assertIn("quarentena", outcome.error)
+        # A mensagem so diz o tipo do erro; o texto da excecao (que pode ter nome) nao vai.
+        self.assertIn("RuntimeError", result.reports["autos.md"].fallback_error)
+        self.assertNotIn("MARLENE", result.reports["autos.md"].fallback_error)
+        held = list((result.job.map_path.parent / "quarentena").glob("*.md"))
+        self.assertEqual(len(held), 1)
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        self.assertIn("retido(s) em quarentena", guide)
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertNotIn("MARLENE", audit)
+
+    def test_the_default_local_engine_is_built_only_when_a_page_needs_it(self) -> None:
+        import anonimizador_app.pipeline_llm as pipeline_llm
+
+        built: list[int] = []
+        original = pipeline_llm.build_contextual_engine
+        pipeline_llm.build_contextual_engine = lambda *args, **kwargs: built.append(1) or FakeLocalEngine([])
+        self.addCleanup(setattr, pipeline_llm, "build_contextual_engine", original)
+
+        self._run(FakeDiscoverer(), verification_rounds=0)
+        self.assertEqual(built, [])
+        self._run(FakeDiscoverer(fail_pass={1, 2}), verification_rounds=0)
+        self.assertEqual(built, [1])
+
+    def test_page_read_in_the_verification_pass_still_gets_the_local_check(self) -> None:
+        engine = FakeLocalEngine(PAGE_2_NAMES)
+        result = self._run(FakeDiscoverer(fail_pass={1}), engine=engine, verification_rounds=1)
+
+        self.assertTrue(result.job.export_allowed)
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", self._exported(result))
+        self.assertEqual(result.fallback_pages, {"autos.md": [2]})
 
 
 if __name__ == "__main__":

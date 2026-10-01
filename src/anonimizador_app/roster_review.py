@@ -163,6 +163,7 @@ def reapply_offline(
     verification_rounds: int = 1,
     discoverer: Discoverer | None = None,
     engine_notes: Sequence[str] = (),
+    fallback_engine=None,
 ) -> ReapplyResult:
     """Refaz o lote com o elenco revisado, SEM rede (so cache).
 
@@ -199,6 +200,7 @@ def reapply_offline(
         use_cache=True,
         engine=previous.engine or None,
         engine_notes=notes,
+        fallback_engine=fallback_engine,
     )
     return ReapplyResult(result=result, reviewed_path=reviewed, changed=changed)
 

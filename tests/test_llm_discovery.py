@@ -240,6 +240,45 @@ class LangExtractAdapterTests(unittest.TestCase):
         self.assertIn("ACME COMÉRCIO DE GRÃOS LTDA", {m.text for m in found.mentions})
         self.assertEqual(len(cached_files), found.report.chunks - 1)
 
+    def test_empty_answer_is_reported_and_never_cached(self) -> None:
+        text = _paged(
+            "EXECUTADO: ACME COMÉRCIO DE GRÃOS LTDA\nSócio: JOÃO DA SILVA SAURO",
+            "Valor R$ 10.000,00 em 01/02/2024, apurado conforme a CDA anexa, com juros e encargos "
+            "legais e multa de mora sobre o principal inscrito. Nada mais consta nesta folha.",
+            "O sócio João da Silva Sauro reside na Rua das Palmeiras, 45.",
+        )
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            discoverer = LangExtractDiscoverer(
+                LlmConfig(chunk_chars=200, max_workers=2),
+                cache_dir=Path(tmp),
+                model_factory=lambda: self._fake_model(calls=calls),
+            )
+            first = discoverer.discover(text)
+            sent = len(calls)
+            second = discoverer.discover(text)
+            cached_names = {path.name for path in Path(tmp).glob("*.json")}
+
+        self.assertEqual(len(first.report.empty), 1)
+        self.assertIn("Nada mais", text[first.report.empty[0][0] : first.report.empty[0][1]])
+        # A pagina sem entidade e reenviada na segunda rodada (a vazia nao esta no cache) e volta como vazia.
+        self.assertEqual(len(calls), sent + 1)
+        self.assertEqual(len(second.report.empty), 1)
+        self.assertEqual(second.report.cached, second.report.chunks - 1)
+        self.assertEqual(len(cached_names), first.report.chunks - 1)
+
+    def test_old_cache_with_an_empty_answer_is_not_served(self) -> None:
+        text = _paged("Texto da pagina sem nenhum nome proprio aqui.")
+        with tempfile.TemporaryDirectory() as tmp:
+            discoverer = LangExtractDiscoverer(LlmConfig(chunk_chars=300), cache_dir=Path(tmp))
+            chunk = split_chunks(text, 300)[0]
+            path = discoverer._cache_path(chunk)
+            path.write_text(json.dumps({"formato": 1, "extracoes": []}), encoding="utf-8")
+            self.assertIsNone(discoverer._cache_load(chunk))
+            path.unlink()
+            discoverer._cache_save(chunk, [])
+            self.assertFalse(path.exists())
+
     def test_examples_align_with_their_own_text(self) -> None:
         from langextract import prompt_validation, resolver
 

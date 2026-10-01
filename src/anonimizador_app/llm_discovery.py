@@ -217,6 +217,12 @@ class DiscoveryReport:
     failed: list[tuple[int, int]] = field(default_factory=list)
     failure_reasons: list[str] = field(default_factory=list)
     ungrounded: int = 0
+    # Trechos que o LLM respondeu com JSON valido mas SEM nenhuma entidade. Pode ser pagina sem nome, ou
+    # resposta ruim: o LLM nao e quem decide. O pipeline manda o motor local conferir (B1/I6) e a resposta
+    # vazia nunca vai para o cache.
+    empty: list[tuple[int, int]] = field(default_factory=list)
+    # Modo sem rede: trecho fora do cache nao foi lido (nao e falha do provedor).
+    offline: bool = False
 
 
 @dataclass(slots=True)
@@ -277,6 +283,16 @@ def page_of(text: str, position: int) -> int:
             break
         page = int(match.group(1))
     return page
+
+
+def page_ranges(text: str) -> dict[int, list[tuple[int, int]]]:
+    """Faixas do texto por numero de pagina (``pagina-origem``); o que vem antes da primeira ancora e a
+    pagina 0. Texto sem nenhuma ancora e uma pagina 0 so (o texto todo)."""
+
+    ranges: dict[int, list[tuple[int, int]]] = {}
+    for start, end in _page_blocks(text):
+        ranges.setdefault(page_of(text, start), []).append((start, end))
+    return ranges
 
 
 def _page_blocks(text: str) -> list[tuple[int, int]]:
@@ -402,10 +418,16 @@ class LangExtractDiscoverer:
             # Sem rede: trecho fora do cache nao e lido (fail-closed, como falha de API).
             report.failed = [(chunks[index].start, chunks[index].end) for index in pending]
             report.failure_reasons = ["sem rede: trecho fora do cache"]
+            report.offline = True
         elif pending:
             report.sent = len(pending)
             failed = self._run(chunks, pending, found, report)
             report.failed = [(chunks[index].start, chunks[index].end) for index in sorted(failed)]
+            report.empty = [
+                (chunks[index].start, chunks[index].end)
+                for index in pending
+                if index not in failed and not found.get(index)
+            ]
         mentions: list[Mention] = []
         for index in sorted(found):
             for item in found[index]:
@@ -480,7 +502,10 @@ class LangExtractDiscoverer:
                 for extraction in document.extractions or []
             ]
             found[index] = items
-            self._cache_save(chunks[index], items)
+            # Resposta vazia nao e guardada: pode ser falha disfarcada (JSON valido sem nada), e o cache
+            # a serviria para sempre como "lida". O motor local confere o que ficou sem entidade.
+            if items:
+                self._cache_save(chunks[index], items)
         return failed
 
     def _build_model(self) -> Any:
@@ -548,13 +573,14 @@ class LangExtractDiscoverer:
         except (OSError, ValueError):
             return None
         items = payload.get("extracoes") if isinstance(payload, dict) else None
-        if not isinstance(items, list):
+        if not isinstance(items, list) or not items:
+            # Cache de versao antiga com resposta vazia: nao vale (a regra agora e nao guardar vazio).
             return None
         return [_realign(item, chunk.text) for item in items if isinstance(item, dict)]
 
     def _cache_save(self, chunk: Chunk, items: list[dict]) -> None:
         path = self._cache_path(chunk)
-        if path is None:
+        if path is None or not items:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {

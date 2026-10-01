@@ -296,6 +296,12 @@ class Roster:
     def entries(self) -> tuple[RosterEntry, ...]:
         return tuple(self._entries.values())
 
+    def lookup(self, kind: str, text: str) -> RosterEntry | None:
+        """A entrada do elenco a que uma grafia pertence (por nome ou variante), ou ``None``."""
+
+        key = self._by_variant.get((kind, entity_core(kind, text)))
+        return self._entries.get(key) if key is not None else None
+
     def to_tokenize(self) -> tuple[RosterEntry, ...]:
         return tuple(item for item in self._entries.values() if item.action == TOKENIZE)
 

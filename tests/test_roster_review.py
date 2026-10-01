@@ -223,10 +223,13 @@ class ReapplyOfflineEndToEndTests(_Base):
         self.assertIn("sem rede", audit)
         self.assertIn("motor LLM: gemini-pago", audit)
 
-    def test_chunk_missing_from_the_cache_blocks_the_export(self) -> None:
+    def test_chunk_missing_from_the_cache_goes_through_the_local_engine(self) -> None:
+        from test_pipeline_llm import FakeLocalEngine
+
         base, source = self._workspace()
         paths = dict(export_root=base / "exp", private_root=base / "priv")
         names = {value: (kind, role) for kind, value, role in ENTITIES}
+        local = FakeLocalEngine([("PERSON", "OLAVO RICARDO TEIXEIRA"), ("PERSON", "MARLENE OLIVEIRA SAMPAIO")])
         with block_network() as attempts:
             # Sem cache de LLM na primeira rodada: nada fica guardado para reaproveitar.
             live = LangExtractDiscoverer(
@@ -235,10 +238,15 @@ class ReapplyOfflineEndToEndTests(_Base):
                 model_factory=lambda: _fake_langextract_model(names),
             )
             first = run_llm_job([source], discoverer=live, verification_rounds=0, **paths)
-            done = reapply_offline(first, {}, [source], **paths)
+            done = reapply_offline(first, {}, [source], fallback_engine=local, **paths)
         self.assertEqual(attempts, [])
-        self.assertFalse(done.result.job.export_allowed)
-        self.assertIn("nao conseguiu ler", done.result.job.export_block_reason)
+        # O LLM nao leu nada nesta rodada (so cache, e o cache esta vazio): o motor local tratou as
+        # folhas, o texto nao sai com nome em claro e a rodada diz isso.
+        self.assertTrue(done.result.fallback_pages)
+        text = done.result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
+        self.assertNotIn("OLAVO RICARDO TEIXEIRA", text.upper())
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text.upper())
+        self.assertIn("tratadas pelo motor local", done.result.job.export_warning)
 
     def test_unknown_engine_has_no_cache_to_reuse(self) -> None:
         base, source = self._workspace()

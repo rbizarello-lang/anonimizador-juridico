@@ -15,7 +15,7 @@ from anonimizador_app import credentials
 from anonimizador_app.credentials import ENV_VAR, VAULT_SERVICE, VAULT_USER
 from anonimizador_app.netblock import block_network
 from test_credentials import FAKE, FakeVault
-from test_pipeline_llm import DOC, FakeChannelDiscoverer
+from test_pipeline_llm import DOC, PAGE_2_NAMES, FakeChannelDiscoverer, FakeDiscoverer, FakeLocalEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location("anonimizar_llm_cli", ROOT / "tools" / "anonimizar_llm.py")
@@ -147,20 +147,73 @@ class OfflineCliTests(_Workspace):
         self.assertEqual(code, 2)
         self.assertIn("--canal", err)
 
-    def test_offline_with_empty_cache_blocks_the_export_and_opens_no_socket(self) -> None:
-        with block_network() as attempts:
+    def test_offline_with_empty_cache_goes_through_the_local_engine_and_opens_no_socket(self) -> None:
+        engine = FakeLocalEngine(PAGE_2_NAMES + [("PERSON", "OLAVO RICARDO TEIXEIRA")])
+        with block_network() as attempts, patch(
+            "anonimizador_app.pipeline_llm.build_contextual_engine", lambda *a, **k: engine
+        ):
             code, out, err = _run(
                 [str(self.source), "--canal", "gemini-pago", "--sem-rede", *self.roots],
                 vault=FakeVault(),
             )
         self.assertEqual(attempts, [])
-        self.assertEqual(code, 1)
-        self.assertIn("NAO ENVIE AINDA", err)
+        # O LLM nao leu nada (sem cache): o motor local tratou; o codigo de saida avisa.
+        self.assertEqual(code, 3, err)
+        self.assertIn("FALLBACK autos.md", err)
+        self.assertIn("--aceitar-fallback", err)
         self.assertIn("Motor: LLM gemini-pago", out)
         folder = next((self.base / "exp").iterdir())
         audit = (folder / "AUDITORIA.txt").read_text(encoding="utf-8")
         self.assertIn("Modo sem rede", audit)
         self.assertIn("motor LLM: gemini-pago", audit)
+        self.assertIn("tratadas pelo motor local por falha do LLM", audit)
+        text = (folder / "autos.md").read_text(encoding="utf-8")
+        self.assertNotIn("OLAVO RICARDO TEIXEIRA", text.upper())
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text.upper())
+
+
+class FallbackExitCodeTests(_Workspace):
+    def _argv(self, *extra):
+        return [
+            str(self.source), "--canal", "gemini-pago", "--ciente", "--faturamento-confirmado",
+            *self.roots, *extra,
+        ]
+
+    def _run_with(self, discoverer, engine, *extra):
+        with patch.object(cli, "build_discoverer", lambda *a, **k: discoverer), patch(
+            "anonimizador_app.pipeline_llm.build_contextual_engine", lambda *a, **k: engine
+        ):
+            return _run(self._argv(*extra), env={ENV_VAR: FAKE}, vault=FakeVault())
+
+    def test_a_fallback_exits_non_zero_unless_it_is_accepted(self) -> None:
+        discoverer = FakeChannelDiscoverer(fail_pass={1, 2})
+        code, _out, err = self._run_with(discoverer, FakeLocalEngine(PAGE_2_NAMES))
+        self.assertEqual(code, 3, err)
+        self.assertIn("folhas tratadas pelo motor local por falha do LLM: 2", err)
+        self.assertNotIn(FAKE, err)
+
+        # A pasta ja tem o lote da rodada anterior: o texto foi gravado, sem o nome em claro.
+        folder = next((self.base / "exp").iterdir())
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", (folder / "autos.md").read_text(encoding="utf-8").upper())
+
+        code, _out, err = self._run_with(
+            FakeChannelDiscoverer(fail_pass={1, 2}), FakeLocalEngine(PAGE_2_NAMES), "--aceitar-fallback"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("FALLBACK autos.md", err)
+
+    def test_no_fallback_no_extra_exit_code(self) -> None:
+        code, _out, err = self._run_with(FakeChannelDiscoverer(), FakeLocalEngine([]))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("FALLBACK", err)
+
+    def test_held_file_is_not_exported_and_exits_one(self) -> None:
+        engine = FakeLocalEngine(boom=RuntimeError("falhou"))
+        code, _out, err = self._run_with(FakeChannelDiscoverer(fail_pass={1, 2}), engine, "--aceitar-fallback")
+        self.assertEqual(code, 1)
+        self.assertIn("NAO ENVIE AINDA", err)
+        folder = next((self.base / "exp").iterdir())
+        self.assertFalse((folder / "autos.md").exists())
 
 
 if __name__ == "__main__":

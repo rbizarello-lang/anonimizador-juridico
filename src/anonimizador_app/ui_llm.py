@@ -354,6 +354,24 @@ def show_result(
     )
     render_results(result_area, job, token_labels())
     with result_area:
+        if result.fallback_pages or result.held:
+            with ui.row().classes("aj-callout warn items-start"):
+                ui.icon("report_problem")
+                with ui.column().classes("gap-1"):
+                    ui.label(
+                        "O LLM não leu algumas folhas. Elas passaram pelo motor local (nunca saem com "
+                        "nome em claro por falha do LLM); confira essas folhas antes de enviar."
+                    )
+                    for name, pages in result.fallback_pages.items():
+                        ui.label(
+                            f"Folhas tratadas pelo motor local por falha do LLM, em {name}: "
+                            + ", ".join(str(page) for page in pages)
+                        ).classes("aj-card-note")
+                    for name in result.held:
+                        ui.label(
+                            f"{name}: retido na pasta privada (quarentena), não exportado: o motor "
+                            "local também não pôde tratar as folhas sem leitura do LLM."
+                        ).classes("aj-card-note")
         with ui.row().classes("aj-callout info items-start"):
             ui.icon("fact_check")
             with ui.column().classes("gap-1"):

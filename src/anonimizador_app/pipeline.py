@@ -129,12 +129,16 @@ def write_lote_guides(
     map_path: Path,
     markdown_names: Sequence[str],
     engine: str = "local",
+    notes: Sequence[str] = (),
 ) -> None:
     """Grava um LEIA-ME em cada pasta do lote: textos anonimizados vs mapa."""
 
     from .version import version_info
 
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
+    attention = "".join(f"ATENCAO: {line}\n" for line in notes if line)
+    if attention:
+        attention += "\n"
     generated_by = f"Gerado por: {version_info().line(engine)}\n"
     export_dir.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +153,8 @@ def write_lote_guides(
             "Arquivos deste lote:\n"
             f"{names}\n"
             "\n"
-            f"{INDEX_NAME}: eventos e documentos de cada arquivo, com a faixa de folhas,\n"
+            + attention
+            + f"{INDEX_NAME}: eventos e documentos de cada arquivo, com a faixa de folhas,\n"
             "as folhas lidas por OCR e as tabelas; documento que continua de um PARTE\n"
             "para o seguinte vem marcado. Envie junto com os .md.\n"
             f"{CAST_NAME}: quem e quem (requerido, executado, procurador...) pelos tokens,\n"

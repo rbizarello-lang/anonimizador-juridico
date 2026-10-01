@@ -25,6 +25,11 @@ Exemplos:
   # Apagar a chave guardada:
   python tools/anonimizar_llm.py --apagar-chave
 
+Codigos de saida: 0 = ok; 1 = lote nao liberado (erro, folha retida); 2 = configuracao, portao ou
+argumento; 3 = alguma folha foi tratada pelo motor local por falha do LLM (use --aceitar-fallback para
+aceitar). O texto da folha que o LLM nao leu nunca sai em claro: o motor local o trata ou o arquivo fica
+retido na pasta privada.
+
 A chave nunca vai para argumento de linha de comando, arquivo do projeto, log ou AUDITORIA.
 """
 
@@ -120,6 +125,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="config.json do app (lista de alvos, exclusoes).")
     parser.add_argument("--exportaveis", help="Raiz dos lotes exportaveis.")
     parser.add_argument("--privados", help="Raiz dos mapas, elencos e caches.")
+    parser.add_argument(
+        "--aceitar-fallback",
+        action="store_true",
+        help="Aceita o resultado mesmo que alguma folha tenha sido tratada pelo motor local por falha "
+        "do LLM. Sem esta opcao, o comando sai com codigo 3 nesse caso (o texto e gravado, mas conferir "
+        "essas folhas e do Operador).",
+    )
     parser.add_argument("--sem-cache", action="store_true", help="Relê o PDF e reenvia ao LLM.")
     parser.add_argument("--sem-legenda", action="store_true", help="Nao grava a secao de papeis do ELENCO.md.")
     return parser
@@ -307,9 +319,22 @@ def run_and_report(
         )
     for outcome in job.failed:
         print(f"ERRO {outcome.source.name}: {outcome.error}", file=sys.stderr)
+    for name, pages in result.fallback_pages.items():
+        print(
+            f"FALLBACK {name}: folhas tratadas pelo motor local por falha do LLM: "
+            + ", ".join(str(page) for page in pages),
+            file=sys.stderr,
+        )
     if not job.export_allowed:
         print(f"NAO ENVIE AINDA: {job.export_block_reason}", file=sys.stderr)
         return 1
+    if result.fallback_pages and not args.aceitar_fallback:
+        print(
+            "Houve folha tratada pelo motor local por falha do LLM (acima). Confira essas folhas; "
+            "para aceitar sem este codigo de saida, rode de novo com --aceitar-fallback.",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

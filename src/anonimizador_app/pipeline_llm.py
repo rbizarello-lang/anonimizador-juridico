@@ -13,9 +13,16 @@ Tres fases por lote: (1) descoberta em todos os arquivos, (2) verificacao,
 7. verificacao: o LLM le o texto JA tokenizado; o que ainda identificar
    entra no elenco e o arquivo e refeito (``verification_rounds``).
 
-Fail-closed: pagina que nenhuma passada conseguiu ler bloqueia a exportacao
-e aparece na AUDITORIA. O elenco com originais fica em ``privados``; a
-legenda exportavel (token -> tipo -> papel) nao leva nome.
+Fail-closed (B1/I6): pagina que o LLM nao leu (falha, bloqueio, trecho fora do
+cache sem rede) ou para a qual respondeu SEM nenhuma entidade passa pelo motor
+local (NER mais reconhecedores, o mesmo do motor padrao): nunca sai com nome em
+claro por causa de falha do LLM. As folhas tratadas assim ficam na AUDITORIA, no
+LEIA-ME e no resultado (``fallback_pages``); a CLI sai com codigo diferente de
+zero se houve alguma, salvo ``--aceitar-fallback``. Se o motor local tambem nao
+puder tratar a pagina, o arquivo NAO vai para a pasta exportavel: fica em
+``quarentena`` na pasta privada. Resposta vazia ou falha nunca entra no cache.
+O elenco com originais fica em ``privados``; a legenda exportavel (token -> tipo ->
+papel) nao leva nome.
 
 A saida tem a mesma estrutura do motor local: ancora visivel por folha,
 ``INDICE.md`` e ``ELENCO.md`` (capas, vinculos, socios dos contratos), o sufixo de grupo
@@ -29,8 +36,8 @@ diz o motor: ``motor LLM: <canal>``.
 
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
 import re
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
@@ -51,9 +58,11 @@ from .coverage import unread_pages as extraction_unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import ExtractedDocument, UnsupportedDocumentError
 from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
+from .contextual import build_contextual_engine
 from .fidelity import FidelityDropStats, drop_protected_spans
+from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
-from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of
+from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
 from .pipeline import (
@@ -70,15 +79,19 @@ from .pipeline import (
     write_lote_guides,
     write_outcomes_index,
 )
+from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
 from .roster import KEEP, TOKENIZE, Mention, Roster
 from .rules import build_recognizers
 from .settings import AppSettings
+from .span_hygiene import sanitize_spans
 
 LLM_CACHE_SUBDIR = "cache_llm"
 ROSTER_FILENAME = "elenco.json"
 LEGEND_FILENAME = "ELENCO.md"
+QUARANTINE_DIR = "quarentena"
+LOCAL_FALLBACK_SOURCE = "motor_local"
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +123,13 @@ class LlmFileReport:
     verification: list[DiscoveryReport] = field(default_factory=list)
     unread_pages: list[int] = field(default_factory=list)
     new_in_verification: int = 0
+    # B1/I6: folhas que o motor local tratou por falha ou resposta vazia do LLM.
+    fallback_pages: list[int] = field(default_factory=list)
+    # Resposta vazia do LLM que o motor local confirmou sem nome (nada a acrescentar).
+    empty_confirmed_pages: list[int] = field(default_factory=list)
+    fallback_entities: int = 0
+    # Preenchido quando o motor local nao pode tratar as folhas suspeitas: o arquivo fica retido.
+    fallback_error: str = ""
 
     @property
     def unverified(self) -> bool:
@@ -127,6 +147,10 @@ class LlmJobResult:
     occurrences: dict[str, int] = field(default_factory=dict)
     tokens: dict[str, str] = field(default_factory=dict)
     engine: str = ""
+    # Por arquivo, as folhas tratadas pelo motor local por falha do LLM (vazio = nenhuma).
+    fallback_pages: dict[str, list[int]] = field(default_factory=dict)
+    # Arquivos retidos na quarentena (privados) porque nem o motor local tratou as folhas.
+    held: tuple[str, ...] = ()
 
 
 def run_llm_job(
@@ -146,11 +170,16 @@ def run_llm_job(
     engine_notes: Sequence[str] = (),
     job_id: str | None = None,
     on_progress: ProgressFn | None = None,
+    fallback_engine: ContextualEngine | None = None,
 ) -> LlmJobResult:
     """Tres fases: descobre em todos os arquivos, confere, e so entao troca.
 
     O elenco e do processo inteiro, nao do arquivo: socio que so aparece com
     nome completo na PARTE_2 tambem e trocado na PARTE_1.
+
+    ``fallback_engine``: o motor local (``ContextualEngine``) que trata a folha que o LLM nao leu ou
+    para a qual respondeu vazio. Sem ele, e criado o mesmo do motor padrao (``build_contextual_engine``),
+    so se alguma folha precisar.
     """
 
     sources = _dedupe_paths(files)
@@ -175,6 +204,14 @@ def run_llm_job(
     for name in active.target_people:
         roster.add_listed("pessoa", name)
     cache_dir = default_cache_dir(Path(private_root)) if use_cache else None
+    local_engine = _LazyEngine(
+        fallback_engine,
+        lambda: build_contextual_engine(
+            active,
+            use_ner_cache=True,
+            ner_cache_dir=default_ner_cache_dir(Path(private_root)),
+        ),
+    )
 
     total = len(sources)
     states: list[_FileState] = []
@@ -201,6 +238,16 @@ def run_llm_job(
             states.append(state)
 
     for index, state in enumerate(states):
+        if not state.suspect_pages:
+            continue
+        _report(
+            on_progress,
+            f"Motor local nas folhas sem leitura do LLM em {state.source.name} ({index + 1} de {len(states)})",
+            0.5 + 0.1 * index / max(1, len(states)),
+        )
+        _apply_local_fallback(state, roster=roster, engine=local_engine, exclusions=exclusions)
+
+    for index, state in enumerate(states):
         _report(
             on_progress,
             f"Conferindo {state.source.name} ({index + 1} de {len(states)})",
@@ -225,6 +272,7 @@ def run_llm_job(
     written: list[tuple[FileOutcome, _FileState]] = []
     occurrences: Counter[str] = Counter()
     refused_brands: Counter[tuple[str, str]] = Counter()
+    held: list[str] = []
     for source in sources:
         if source in errors:
             outcomes.append(errors[source])
@@ -235,7 +283,33 @@ def run_llm_job(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
         )
         refused_brands.update(refused)
-        state.report.unread_pages = sorted(set.intersection(*state.failed_pages))
+        state.report.unread_pages = [
+            page
+            for page in sorted(set.intersection(*state.failed_pages))
+            if page not in state.report.fallback_pages
+            and page not in state.report.empty_confirmed_pages
+        ]
+        reports[source.name] = state.report
+        if state.report.fallback_error:
+            # Nem o motor local tratou as folhas que o LLM nao leu: o texto tem nome em claro e NAO vai
+            # para a pasta exportavel (B1). Fica retido, na pasta privada do lote.
+            held_path = _unique_path(map_path.parent / QUARANTINE_DIR, source.stem, ".md")
+            held_path.parent.mkdir(parents=True, exist_ok=True)
+            held_path.write_text(add_sheet_anchors(result.text, held_path.name), encoding="utf-8")
+            held.append(source.name)
+            outcomes.append(
+                FileOutcome(
+                    source=source,
+                    ok=False,
+                    error=(
+                        "O LLM nao leu algumas folhas e o motor local nao pode trata-las ("
+                        + state.report.fallback_error
+                        + f"); o texto ficou retido em {QUARANTINE_DIR}/ na pasta privada, "
+                        "nao na pasta exportavel."
+                    ),
+                )
+            )
+            continue
         markdown_path = _unique_path(export_dir, source.stem, ".md")
         # Ancora visivel por folha, depois da troca (igual ao motor local).
         final_text = add_sheet_anchors(result.text, markdown_path.name)
@@ -261,7 +335,6 @@ def run_llm_job(
             unread_pages=extraction_unread_pages(state.cached.document.markdown),
         )
         outcomes.append(outcome)
-        reports[source.name] = state.report
         written.append((outcome, state))
 
     # Empresas ligadas por vinculo declarado levam o sufixo de grupo ([EMPRESA_3·G1]), como no motor local:
@@ -294,7 +367,11 @@ def run_llm_job(
     notes.insert(0, ("elenco (sem nomes)", roster_summary(roster)))
     notes.insert(1, ("marca de uma palavra (so contagens)", brand_guard_lines(refused_brands)))
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
-    notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes]))
+    fallback_by_file = {
+        name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
+    }
+    guide_notes = _fallback_lines(fallback_by_file, held)
+    notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes, *guide_notes]))
     write_audit_report(export_dir, notes, engine=engine_id)
     write_lote_guides(
         job_id=identifier,
@@ -306,6 +383,7 @@ def run_llm_job(
             if outcome.ok and outcome.markdown_path is not None
         ],
         engine=engine_id,
+        notes=guide_notes,
     )
     _append_roster_guide(map_path.parent / "LEIA-ME.txt")
     job = build_job_result(
@@ -318,6 +396,11 @@ def run_llm_job(
         gemini_used=_is_remote(discoverer),
         extra_warning=split_warning,
     )
+    if fallback_by_file:
+        warning = (
+            "; ".join(guide_notes) + " Confira essas folhas no texto antes de enviar."
+        )
+        job = replace(job, export_warning=(job.export_warning + " " + warning).strip())
     unread = {name: item.unread_pages for name, item in reports.items() if item.unverified}
     if unread and job.export_allowed:
         listed = "; ".join(f"{name}: {_pages_label(pages)}" for name, pages in unread.items())
@@ -339,6 +422,8 @@ def run_llm_job(
         occurrences=dict(occurrences),
         tokens=tokens,
         engine=engine_id,
+        fallback_pages=fallback_by_file,
+        held=tuple(held),
     )
 
 
@@ -353,6 +438,10 @@ class _FileState:
     anchored: list[tuple[int, int, str]]
     report: LlmFileReport
     failed_pages: list[set[int]]
+    # Folhas que a descoberta nao leu (falha) ou respondeu vazio; o motor local as confere.
+    suspect_pages: set[int] = field(default_factory=set)
+    failed_discovery: set[int] = field(default_factory=set)
+    offline_discovery: bool = False
 
 
 def _discover_file(
@@ -386,6 +475,8 @@ def _discover_file(
     )
     masked, masked_offsets = pseudonymize_with_offsets(text, ids, mapping)
     discovery = discoverer.discover(masked.text)
+    failed = _pages_of(masked.text, discovery.report.failed)
+    empty = _pages_of(masked.text, discovery.report.empty)
     return _FileState(
         source=source,
         cached=cached,
@@ -395,7 +486,10 @@ def _discover_file(
         folded=fold_with_index(text),
         anchored=absorb_mentions(discovery.mentions, roster, masked_offsets, source="llm"),
         report=LlmFileReport(discovery=discovery.report),
-        failed_pages=[_failed_pages(masked.text, discovery.report)],
+        failed_pages=[failed],
+        suspect_pages=failed | empty,
+        failed_discovery=failed,
+        offline_discovery=bool(getattr(discovery.report, "offline", False)),
     )
 
 
@@ -417,7 +511,7 @@ def _verify_file(
         before = _tokenizable_state(roster)
         check = discoverer.discover(result.text)
         state.report.verification.append(check.report)
-        state.failed_pages.append(_failed_pages(result.text, check.report))
+        state.failed_pages.append(_pages_of(result.text, check.report.failed))
         extra = absorb_mentions(check.mentions, roster, offsets, source="verificacao")
         after = _tokenizable_state(roster)
         changed = sum(1 for key, value in after.items() if before.get(key) != value)
@@ -428,6 +522,112 @@ def _verify_file(
         _entities, result, offsets, _refused = _tokenize(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
         )
+
+
+class _LazyEngine:
+    """O motor local (NER mais reconhecedores) so e criado se alguma folha precisar."""
+
+    def __init__(self, engine: ContextualEngine | None, factory: Callable[[], ContextualEngine | None]) -> None:
+        self._engine = engine
+        self._factory: Callable[[], ContextualEngine | None] | None = None if engine is not None else factory
+
+    def get(self) -> ContextualEngine | None:
+        if self._engine is None and self._factory is not None:
+            factory, self._factory = self._factory, None
+            self._engine = factory()
+        return self._engine
+
+
+_NAME_KINDS = {"PERSON": "pessoa", "ORGANIZATION": "empresa", "LOCATION": "endereco"}
+
+
+def _apply_local_fallback(
+    state: _FileState,
+    *,
+    roster: Roster,
+    engine: _LazyEngine,
+    exclusions: Sequence[str],
+) -> None:
+    """B1/I6: o motor local confere as folhas em que o LLM falhou ou respondeu sem entidade.
+
+    O que ele acha nessas folhas entra no elenco (origem ``motor_local``: aparece na revisao e propaga
+    pelo lote) ou, se nao for nome, como ID. Entrada do elenco marcada ``manter`` vence o motor local
+    (juiz, orgao). Folha em que o LLM FALHOU conta como tratada pelo motor local mesmo que ele nao ache
+    nada; folha de resposta vazia (ou, sem rede, fora do cache) so conta se o motor local achar algo.
+    Se o motor local nao puder rodar, ``fallback_error`` retem o arquivo.
+    """
+
+    report = state.report
+    try:
+        local = engine.get()
+        if local is None:
+            report.fallback_error = "motor local indisponivel"
+            return
+        found = local.detect(state.text)
+    except Exception as exc:  # noqa: BLE001 - nao pode derrubar o lote nem vazar texto na mensagem
+        report.fallback_error = f"motor local falhou ({type(exc).__name__})"
+        return
+    ranges = page_ranges(state.text)
+    zones = sorted(span for page in state.suspect_pages for span in ranges.get(page, ()))
+    zone_starts = [start for start, _end in zones]
+
+    def in_zone(position: int) -> bool:
+        index = bisect_right(zone_starts, position) - 1
+        return index >= 0 and position < zones[index][1]
+
+    found = resolve_overlaps(found)
+    found = drop_protected_spans(
+        state.text, found, exclusions, source_name=state.source.name, stats=state.stats
+    )
+    found = sanitize_spans(state.text, found, stats=state.stats)
+    found = [span for span in found if in_zone(span.start)]
+
+    added = 0
+    pages_with_findings: set[int] = set()
+    for span in found:
+        value = state.text[span.start : span.end]
+        kind = _NAME_KINDS.get(span.entity_type)
+        if kind is None:
+            state.ids.append(span)
+            added += 1
+            pages_with_findings.add(page_of(state.text, span.start))
+            continue
+        entry = roster.lookup(kind, value)
+        if entry is not None and entry.action == KEEP:
+            continue
+        if entry is None:
+            entry = roster.add_mention(
+                Mention(kind=kind, text=value, canonical=value), source=LOCAL_FALLBACK_SOURCE
+            )
+        if entry is None:
+            continue
+        state.anchored.append((span.start, span.end, entry.key))
+        added += 1
+        pages_with_findings.add(page_of(state.text, span.start))
+
+    # Falha real do LLM: a folha conta como tratada pelo motor local. Vazio (ou sem rede, fora do cache):
+    # so conta se o motor local achou alguma coisa nela.
+    real_failure = set() if state.offline_discovery else set(state.failed_discovery)
+    treated = real_failure | (state.suspect_pages & pages_with_findings)
+    report.fallback_pages = sorted(treated)
+    report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
+    report.fallback_entities = added
+
+
+def _fallback_lines(by_file: dict[str, list[int]], held: Sequence[str]) -> list[str]:
+    """Linhas da AUDITORIA e do LEIA-ME: so nome de arquivo e numero de folha, nunca texto."""
+
+    lines: list[str] = []
+    if by_file:
+        listed = "; ".join(f"{name}: {_pages_label(pages)}" for name, pages in by_file.items())
+        lines.append(f"Folhas tratadas pelo motor local por falha do LLM: {listed}.")
+    if held:
+        lines.append(
+            "Arquivo(s) retido(s) em quarentena (pasta privada; nao exportado): "
+            + ", ".join(held)
+            + ". O LLM nao leu algumas folhas e o motor local nao pode trata-las."
+        )
+    return lines
 
 
 def _unique_job_id(export_root: Path, private_root: Path) -> str:
@@ -643,9 +843,9 @@ def _tokenizable_state(roster: Roster) -> dict[str, tuple[str, ...]]:
     }
 
 
-def _failed_pages(text: str, report: DiscoveryReport) -> set[int]:
+def _pages_of(text: str, ranges: Iterable[tuple[int, int]]) -> set[int]:
     pages: set[int] = set()
-    for start, end in report.failed:
+    for start, end in ranges:
         first, last = page_of(text, start), page_of(text, max(start, end - 1))
         pages.update(range(first, last + 1))
     return pages
@@ -672,6 +872,7 @@ def _file_notes(
         (
             f"Descoberta: {discovery.chunks} trecho(s), {discovery.cached} do cache, "
             f"{discovery.sent} enviado(s), {len(discovery.failed)} com falha, "
+            f"{len(discovery.empty)} resposta(s) vazia(s) (nao guardada(s) no cache), "
             f"{discovery.ungrounded} mencao(oes) sem ancora no texto"
         ),
     ]
@@ -686,6 +887,19 @@ def _file_notes(
     )
     if reasons:
         notes.append("Motivos de falha: " + " | ".join(reasons[:5]))
+    if report.fallback_pages:
+        notes.append(
+            "Folhas tratadas pelo motor local por falha do LLM: "
+            + _pages_label(report.fallback_pages)
+            + f" ({report.fallback_entities} entidade(s) apontada(s) pelo motor local)."
+        )
+    if report.empty_confirmed_pages:
+        notes.append(
+            "Resposta vazia do LLM, sem nome segundo o motor local: "
+            + _pages_label(report.empty_confirmed_pages)
+        )
+    if report.fallback_error:
+        notes.append("ALERTA: " + report.fallback_error + ". Arquivo retido em quarentena.")
     if report.unverified:
         notes.append(
             "ALERTA: " + _pages_label(report.unread_pages) + " sem leitura do LLM em "
