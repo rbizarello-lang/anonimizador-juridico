@@ -100,6 +100,15 @@ Cada folha comeca com a linha de citacao, por exemplo
 "[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]" (folha do arquivo, evento, documento e
 pagina do carimbo do eproc).
 
+PDF salvo no PDF-XChange Editor sem licenca traz em cada folha um selo no canto
+("Click to BUY NOW!" e "PDF-XChange Editor / www.tracker-software.com" letra a letra
+em circulo). O app o reconhece pelo texto "Click to BUY NOW!" e o tira antes da
+tabela e do OCR: some o ruido de uma letra por linha, as tabelas falsas e o selo
+lido junto com o texto da folha escaneada. So saem as letras do proprio selo; o
+texto de verdade encostado nele fica. Folha sem esse texto nao muda. Como a
+extracao mudou (versao |13), o primeiro lote depois da atualizacao refaz a leitura
+(e o OCR) de cada PDF, o que leva alguns minutos a mais.
+
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia

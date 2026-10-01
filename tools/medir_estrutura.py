@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from anonimizador_app.coverage import parse_coverage  # noqa: E402
+from anonimizador_app.watermark import without_watermark  # noqa: E402
 
 CACHE = ROOT / "saidas" / "privados" / "cache_extracao"
 ANCHOR = re.compile(r"<!-- pagina-origem: (\d+) -->")
@@ -105,7 +106,8 @@ def measure(pdf: Path, exported: Path) -> dict:
     with pymupdf.open(pdf) as document:
         result["folhas"] = document.page_count
         for number, page in enumerate(document, start=1):
-            native = STAMP.sub(" ", page.get_text("text"))
+            # Sem o selo do editor de PDF (E10): o app o tira, e a palavra dele nao e conteudo.
+            native = STAMP.sub(" ", without_watermark(page).get_text("text"))
             if len("".join(native.split())) < 150:
                 continue
             result["folhas_nativas"] += 1

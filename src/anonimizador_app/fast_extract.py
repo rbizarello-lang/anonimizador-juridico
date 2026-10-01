@@ -31,7 +31,7 @@ from pathlib import Path
 from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|12"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|13"
 # Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
 # documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
 # tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").
@@ -101,6 +101,7 @@ def _extract_pdf(source: Path, *, read_page: PageReader | None = None) -> Extrac
         raise RuntimeError("PyMuPDF nao esta instalado") from exc
 
     from .ocr_pages import OCR_BROKEN_FONT, page_ocr_reason, recognize_page
+    from .watermark import without_watermark
 
     reader = read_page or recognize_page
     parts: list[str] = []
@@ -109,7 +110,9 @@ def _extract_pdf(source: Path, *, read_page: PageReader | None = None) -> Extrac
     with pymupdf.open(source) as document:
         page_count = document.page_count
         headings = _bookmarks_by_page(document.get_toc(simple=True), page_count)
-        for number, page in enumerate(document, start=1):
+        for number, pdf_page in enumerate(document, start=1):
+            # Selo de editor de PDF (fila 3.x E10) fora do texto, das tabelas e do OCR.
+            page = without_watermark(pdf_page)
             parts.append(f"<!-- pagina-origem: {number} -->\n")
             for level, title in headings.get(number, ()):
                 parts.append(f"{'#' * min(level + 1, 6)} {title}\n\n")
