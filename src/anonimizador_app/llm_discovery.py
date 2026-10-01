@@ -38,7 +38,7 @@ _LETTER = re.compile(r"[^\W\d_]")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 # Token ja aplicado: a numeracao muda de um lote para outro (um CPF novo na
 # capa renumera todos os seguintes); a chave do cache ignora o numero.
-_TOKEN_NUMBER = re.compile(r"\[([A-Z0-9_]+)_\d+\]")
+_TOKEN_NUMBER = re.compile(r"\[([A-Z0-9_]+)_\d+(?:·G\d+)?\]")
 # Pecas de execucao fiscal falam de fraude, crime e violencia; o filtro
 # padrao bloquearia o trecho e a pagina ficaria sem leitura.
 _SAFETY_OFF = [

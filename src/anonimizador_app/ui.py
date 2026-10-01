@@ -339,7 +339,7 @@ _TAG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-_TOKEN_IN_TEXT = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9_]+?)_(\d+)\]")
+_TOKEN_IN_TEXT = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9_]+?)_(\d+(?:·G\d+)?)\]")
 _PAGE_MARK = re.compile(r"&lt;!--\s*pagina-origem:\s*(\d+)\s*--&gt;\n?")
 _OTHER_COMMENT = re.compile(r"&lt;!--.*?--&gt;", re.DOTALL)
 _PREVIEW_CHARS = 3000

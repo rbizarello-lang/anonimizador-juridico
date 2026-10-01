@@ -116,7 +116,7 @@ _ROLE_ALIASES = {
     "doutrina": "autor_citado",
 }
 
-_TOKEN_MARK = re.compile(r"\[[A-Z0-9_]+_\d+\]")
+_TOKEN_MARK = re.compile(r"\[[A-Z0-9_]+_\d+(?:·G\d+)?\]")
 _ID_LABEL_TAIL = re.compile(
     r"(?i)(?:[\s,;:(\-–—]+(?:cep|cpf|cnpj|oab|rg|n[º°o.]?|inscrit[oa]\s+no))?"
     r"[\s,;:(\-–—]*$"

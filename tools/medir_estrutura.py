@@ -40,7 +40,7 @@ from anonimizador_app.watermark import without_watermark  # noqa: E402
 
 CACHE = ROOT / "saidas" / "privados" / "cache_extracao"
 ANCHOR = re.compile(r"<!-- pagina-origem: (\d+) -->")
-TOKEN = re.compile(r"\[[A-Z_]+_\d+\]")
+TOKEN = re.compile(r"\[[A-Z_]+_\d+(?:·G\d+)?\]")
 STAMP = re.compile(r"Processo\s+[\d.\-/A-Z]+,\s*Evento\s+\d+\s*,\s*\S+\s*,\s*P.gina\s+\d+", re.I)
 MONEY = re.compile(r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}")
 # Numero decimal sem "R$" (colunas de valor da CDA, do SISBAJUD, do CNIS).
@@ -48,7 +48,7 @@ DECIMAL = re.compile(r"(?<![\d.,])\d{1,3}(?:\.\d{3})*,\d{2}(?![\d,])")
 DATE = re.compile(r"(?<!\d)\d{2}/\d{2}/\d{4}(?!\d)")
 # Digito de palavra antes do token nao e numero: "C1.[RG_n]" e OCR de "CI." (Cedula de
 # Identidade) antes do rotulo "RG", nada comido.
-TOKEN_ON_DIGIT = re.compile(r"\[[A-Z_]+_\d+\][.,/]?\d|(?<![^\W\d_])\d[.,/-]?\[[A-Z_]+_\d+\]")
+TOKEN_ON_DIGIT = re.compile(r"\[[A-Z_]+_\d+(?:·G\d+)?\][.,/]?\d|(?<![^\W\d_])\d[.,/-]?\[[A-Z_]+_\d+(?:·G\d+)?\]")
 LABEL_HEADING = re.compile(r"^#+ [^\n]{1,25}:\s*$", re.M)
 SPLIT_EVENT = re.compile(r"\n\n## Evento \d+\n\n[,a-zà-ú]")
 EPROC_LABEL_ALONE = re.compile(r"(?m)^[^:\n]{1,40}:[ \t]*$")

@@ -12,7 +12,7 @@ from .audit import token_counts
 from .gemini_detector import KEEP_TERMS
 from .geography import fold_key
 
-_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)\]")
+_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)(?:·G\d+)?\]")
 
 _TIPO_ENTITY = {
     "PESSOA": {"PERSON", "PESSOA"},

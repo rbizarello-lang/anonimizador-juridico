@@ -163,6 +163,13 @@ mais proxima (numero de ordem e lugar: "2o Oficio", "da Comarca de X"). Sem cart
 perto, o token continua sendo por numero. O nome do cartorio, oficio ou tabelionato fica
 em claro (nao vira [EMPRESA_n]).
 
+Deteccao 2.8: empresas ligadas levam o mesmo grupo. Os tokens de empresa que o `ELENCO.md`
+liga em "Vinculos" (mudanca de nome declarada em documento, ou o mesmo CNPJ nas capas) ganham
+no proprio texto o sufixo do grupo: `[EMPRESA_3·G1]`, `[EMPRESA_7·G1]`. Os tokens continuam
+separados (cada um com o nome da epoca do ato); o `ELENCO.md` explica cada grupo ("G1: cadeia
+de mudancas de nome", "G2: mesmo CNPJ [CNPJ_2]") e lista os membros. Semelhanca de nome
+nunca forma grupo. O mapa privado tem `[EMPRESA_3]`: ao reverter, ignore o sufixo.
+
 O modelo de reconhecimento de nomes (GLiNER) nunca vai a rede sozinho: o app roda
 com `HF_HUB_OFFLINE=1` por padrao e usa a revisao do modelo fixada no codigo. Em uma
 maquina nova o modelo ainda nao esta no cache local; baixe-o uma vez, de proposito,

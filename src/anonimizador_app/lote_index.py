@@ -51,12 +51,12 @@ _REGISTRY_DATES = (
     ),
 )
 _STAMP_COMPANY = re.compile(
-    r"(?is)certifico\s+(?:o\s+registro|que\s+o\s+ato)[^\[]{0,220}?\bda\s+empresa\s*:?\s*(\[EMPRESA_\d+\])"
+    r"(?is)certifico\s+(?:o\s+registro|que\s+o\s+ato)[^\[]{0,220}?\bda\s+empresa\s*:?\s*(\[EMPRESA_\d+(?:·G\d+)?\])"
 )
-_COMPANY_TOKEN = re.compile(r"\[EMPRESA_\d+\]")
+_COMPANY_TOKEN = re.compile(r"\[EMPRESA_\d+(?:·G\d+)?\]")
 # Ficha cadastral da Junta (nao e ato de registro): "Ficha Cadastral" no topo, "Nome da Empresa: [EMPRESA_n]".
 _FICHA = re.compile(r"(?is)\A(?:\s*<!--.*?-->\s*|\s*\[[^\]\n]*\]\s*)*ficha\s+cadastral[ \t]*(?:\n[ \t]*(\d{2}/\d{2}/\d{4}))?")
-_FICHA_COMPANY = re.compile(r"(?i)nome\s+da\s+empresa:\s*(\[EMPRESA_\d+\])")
+_FICHA_COMPANY = re.compile(r"(?i)nome\s+da\s+empresa:\s*(\[EMPRESA_\d+(?:·G\d+)?\])")
 _CONTRACT_CODE = "CONTRSOCIAL"
 _ACT_HEAD_SHEETS = 4
 _ACT_CONSOLIDATION = re.compile(r"(?i)consolida[çc][ãa]o")

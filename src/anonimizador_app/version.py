@@ -14,7 +14,9 @@
   2.6 = + endurecimento antes do L4, B3: a marca de uma palavra nunca e nome de municipio ou de estado
   (lista do IBGE) nem ocorrencia em contexto de foro ou de endereco;
   2.7 = + matricula por cartorio: o token distingue o cartorio de registro de imoveis mais proximo, e o
-  nome do cartorio/oficio/tabelionato fica em claro).
+  nome do cartorio/oficio/tabelionato fica em claro;
+  2.8 = + grupo de empresas ligadas: o token de empresa que o ELENCO liga por vinculo declarado (mudanca de
+  nome, mesmo CNPJ nas capas) leva o sufixo ·Gn no texto, ex. [EMPRESA_3·G1]; os tokens seguem separados).
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
 - commit: o commit do git em que a pasta esta, lido direto de ``.git`` (sem chamar programa externo).
 """
@@ -29,7 +31,7 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.7"
+DETECTION_VERSION = "2.8"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
