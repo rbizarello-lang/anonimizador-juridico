@@ -204,30 +204,30 @@ class PseudonymizerTests(unittest.TestCase):
         from anonimizador_juridico.pseudonymizer import canonicalize
 
         forms = [
-            "Rua Nei José de Oliveira Machado, 579",
-            "Rua Nei José de Oliveira Machado nº 579",
-            "Rua Nei José de Oliveira Machado n° 579",
-            "Rua Nei José de Oliveira Machado n. 579",
-            "Rua Nei José de Oliveira Machado no 579",
-            "Rua Nei José de Oliveira Machado n 579",
-            "R. Nei José de Oliveira Machado, 579",
-            "r Nei José de Oliveira Machado, 579",
-            "Rúa Nei José de Oliveira Machado, 579",
-            "Rua Ney José de Oliveira Machado, 579",
+            "Rua Ari Jose de Oliveira Meireles, 579",
+            "Rua Ari Jose de Oliveira Meireles nº 579",
+            "Rua Ari Jose de Oliveira Meireles n° 579",
+            "Rua Ari Jose de Oliveira Meireles n. 579",
+            "Rua Ari Jose de Oliveira Meireles no 579",
+            "Rua Ari Jose de Oliveira Meireles n 579",
+            "R. Ari Jose de Oliveira Meireles, 579",
+            "r Ari Jose de Oliveira Meireles, 579",
+            "Rúa Ari Jose de Oliveira Meireles, 579",
+            "Rua Ary Jose de Oliveira Meireles, 579",
         ]
         keys = {canonicalize("LOCATION", item) for item in forms}
-        self.assertEqual(keys, {"rua nei jose de oliveira machado 579"})
+        self.assertEqual(keys, {"rua ari jose de oliveira meireles 579"})
         self.assertEqual(
-            canonicalize_location("Av. Saul Elkind, 5419"),
-            canonicalize_location("AVENIDA SAUL ELKIND, 5419"),
+            canonicalize_location("Av. Itamar Rodriguez, 5419"),
+            canonicalize_location("AVENIDA ITAMAR RODRIGUEZ, 5419"),
         )
         self.assertEqual(
-            canonicalize_location("Avn. Jules Verne nº 674"),
-            canonicalize_location("Avenida Jules Verne, 674"),
+            canonicalize_location("Avn. Santos Dumont nº 674"),
+            canonicalize_location("Avenida Santos Dumont, 674"),
         )
         self.assertEqual(
-            canonicalize_location("Avn. Jules Verne. nº674"),
-            canonicalize_location("Av. Jules Verne, 674"),
+            canonicalize_location("Avn. Santos Dumont. nº674"),
+            canonicalize_location("Av. Santos Dumont, 674"),
         )
         self.assertEqual(
             canonicalize_location("Rua Pedro Vaz de Caminha, 455"),
@@ -242,32 +242,32 @@ class PseudonymizerTests(unittest.TestCase):
             canonicalize_location("Praça da Sé, 1"),
         )
         self.assertNotEqual(
-            canonicalize_location("Rua Ney da Silva, 10"),
-            canonicalize_location("Rua Nei da Silva, 10"),
+            canonicalize_location("Rua Ary da Silva, 10"),
+            canonicalize_location("Rua Ari da Silva, 10"),
         )
         self.assertEqual(
-            canonicalize_location("RUA LUIZ NATAL BONIN Número 150"),
-            canonicalize_location("Rua Luiz Natal Bonin, 150"),
+            canonicalize_location("RUA ANSELMO ROCHA PENTEADO Número 150"),
+            canonicalize_location("Rua Anselmo Rocha Penteado, 150"),
         )
         self.assertNotEqual(
-            canonicalize("LOCATION", "Rua Nei José de Oliveira Machado, 563"),
-            canonicalize("LOCATION", "Rua Nei José de Oliveira Machado, 579"),
+            canonicalize("LOCATION", "Rua Ari Jose de Oliveira Meireles, 563"),
+            canonicalize("LOCATION", "Rua Ari Jose de Oliveira Meireles, 579"),
         )
 
     def test_location_numberless_shares_token_with_numbered(self) -> None:
         mapping = PseudonymMap()
-        first = mapping.resolve("LOCATION", "Av. Saul Elkind, 5419")
-        second = mapping.resolve("LOCATION", "AVENIDA SAUL ELKIND")
+        first = mapping.resolve("LOCATION", "Av. Itamar Rodriguez, 5419")
+        second = mapping.resolve("LOCATION", "AVENIDA ITAMAR RODRIGUEZ")
         self.assertEqual(first, second)
         self.assertEqual(len(mapping.records), 1)
-        third = mapping.resolve("LOCATION", "Avenida Saul Elkind n° 5419")
+        third = mapping.resolve("LOCATION", "Avenida Itamar Rodriguez n° 5419")
         self.assertEqual(third, first)
-        other = mapping.resolve("LOCATION", "Rua Nei José de Oliveira Machado, nº 563")
-        again = mapping.resolve("LOCATION", "Rua Ney José de Oliveira Machado, 563")
+        other = mapping.resolve("LOCATION", "Rua Ari Jose de Oliveira Meireles, nº 563")
+        again = mapping.resolve("LOCATION", "Rua Ary Jose de Oliveira Meireles, 563")
         self.assertEqual(other, again)
         self.assertNotEqual(first, other)
-        truncated = mapping.resolve("LOCATION", "R. Nei José de Oliveira Machado,\n57")
-        full = mapping.resolve("LOCATION", "Rua Nei José de Oliveira Machado, 579")
+        truncated = mapping.resolve("LOCATION", "R. Ari Jose de Oliveira Meireles,\n57")
+        full = mapping.resolve("LOCATION", "Rua Ari Jose de Oliveira Meireles, 579")
         self.assertEqual(truncated, full)
         self.assertNotEqual(truncated, other)
 

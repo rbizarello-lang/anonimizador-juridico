@@ -38,7 +38,16 @@ from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.pseudonymizer import canonicalize, fold_lexical
 
 from .fidelity import PUBLIC_CNPJ_ROOTS, drop_protected_spans
-from .propagation import FoldedText, _find_all, fold_with_index, is_protected, protected_forms, spans_for_roster
+from .geo_names import geo_context, is_geo_word
+from .propagation import (
+    FoldedText,
+    _find_all,
+    fold_value,
+    fold_with_index,
+    is_protected,
+    protected_forms,
+    spans_for_roster,
+)
 from .roster import TOKENIZE, RosterEntry, entity_core, has_token
 from .span_hygiene import ROLE_BEFORE_NAME, sanitize_spans
 
@@ -168,7 +177,13 @@ class BatchRoster:
         self._brands: dict[str, str] = {}
         # Nome de 2+ palavras que a deteccao ja achou, por texto: dentro dele a marca nao esta "sozinha".
         self._named: dict[int, list[tuple[int, int]]] = {}
-        self.brand_stats: dict[str, tuple[int, int, int, int]] = {}
+        self.brand_stats: dict[str, tuple[int, ...]] = {}
+        # Palavra-marca que e nome de municipio ou de estado (B3): nunca vira marca; guarda as ocorrencias.
+        self.brand_geo_words: dict[str, int] = {}
+        # Ocorrencias da marca em contexto de foro/endereco ou dentro de termo protegido: sem token (B3).
+        self.brand_context_rejected: dict[str, int] = {}
+        # Ocorrencias da marca que receberam token na troca, por palavra.
+        self.brand_applied: dict[str, int] = {}
 
     # --- fase 1 -------------------------------------------------------------
     def add(self, text: str, spans: Iterable[EntitySpan]) -> None:
@@ -225,7 +240,7 @@ class BatchRoster:
             return
         by_key = {entity.key: entity for entity in self._ensure()}
         candidates = self._brand_candidates()
-        bare: dict[str, list[int]] = {word: [0, 0, 0, 0] for word in candidates}
+        bare: dict[str, list[int]] = {word: [0, 0, 0, 0, 0] for word in candidates}
         for text in texts:
             folded = fold_with_index(text)
             spans = spans_for_roster(text, entries, extra_keep=self._extra_keep, folded=folded)
@@ -251,9 +266,11 @@ class BatchRoster:
                         written = text[slice(*folded.to_original(start, end))]
                         bare[word][2] += written.islower()
                         bare[word][3] += 1
-                    for start, end in _brand_hits(text, folded, word, taken):
+                    refused: list[tuple[int, int]] = []
+                    for start, end in _brand_hits(text, folded, word, taken, self._protected, refused):
                         bare[word][0] += 1
                         bare[word][1] += _capitalized(text[start:end])
+                    bare[word][4] += len(refused)
         self._brands = self._approve_brands(candidates, bare)
 
     def _brand_candidates(self) -> dict[str, list[_Entity]]:
@@ -298,10 +315,15 @@ class BatchRoster:
 
         approved: dict[str, str] = {}
         self.brand_stats = {}
+        self.brand_geo_words = {}
         for word, owners in candidates.items():
-            alone, capitalized, lower, total = bare.get(word, (0, 0, 0, 0))
+            alone, capitalized, lower, total, refused = bare.get(word, (0, 0, 0, 0, 0))
             full = sum(entity.occurrences for entity in owners)
-            self.brand_stats[word] = (len(owners), full, alone, capitalized, lower, total)
+            self.brand_stats[word] = (len(owners), full, alone, capitalized, lower, total, refused)
+            if is_geo_word(word):
+                # Nome de municipio ou de estado (lista do IBGE): "Joinville Metais" nao faz do foro uma empresa.
+                self.brand_geo_words[word] = alone + refused
+                continue
             if alone == 0 or full < _BRAND_MIN_FULL or alone > _BRAND_MAX_RATIO * full:
                 continue
             if lower > _BRAND_MAX_LOWER or lower * 50 > total:
@@ -310,6 +332,41 @@ class BatchRoster:
             # mesmo grupo, nome antigo e novo): a marca tem token proprio, sem decidir de quem e.
             approved[word] = owners[0].key if len(owners) == 1 else word
         return approved
+
+    def brand_report(self, mapping: object, *, private: bool = False) -> list[str]:
+        """Linhas da AUDITORIA sobre a marca de uma palavra (B3).
+
+        Exportavel (``private=False``): so o token e as contagens, nunca a palavra. Privada: a palavra
+        junto do token, para o Operador conferir o que foi aprovado e o que foi recusado."""
+
+        def token_of(word: str) -> str:
+            key = self._brands[word]
+            finder = getattr(mapping, "token_for", None)
+            return (finder("ORGANIZATION", key) if finder else "") or "(sem token: nenhuma ocorrencia trocada)"
+
+        lines = [
+            f"Marca de uma palavra propagada (palavra inicial do nome de empresa usada sozinha): "
+            f"{len(self._brands)}"
+        ]
+        for word in sorted(self._brands, key=lambda item: (token_of(item), item)):
+            used = self.brand_applied.get(word, 0)
+            refused = self.brand_context_rejected.get(word, 0)
+            owners, full, _alone, _capitalized, _lower, _total, _refused = self.brand_stats.get(
+                word, (0, 0, 0, 0, 0, 0, 0)
+            )
+            shown = f'"{word}" -> ' if private else ""
+            lines.append(
+                f"  {shown}{token_of(word)}: {used} ocorrencia(s) com token, {refused} recusada(s) por contexto "
+                f"de foro/endereco ou termo protegido; nome completo em {full} mencao(oes), {owners} empresa(s)"
+            )
+        geo_hits = sum(self.brand_geo_words.values())
+        lines.append(
+            f"Palavra recusada por ser nome de municipio ou de estado (lista do IBGE): "
+            f"{len(self.brand_geo_words)} palavra(s), {geo_hits} ocorrencia(s) sem token"
+        )
+        if private:
+            lines += [f'  "{word}": {hits} ocorrencia(s)' for word, hits in sorted(self.brand_geo_words.items())]
+        return lines
 
     # --- elenco -------------------------------------------------------------
     def entities(self) -> list[_Entity]:
@@ -418,8 +475,10 @@ class BatchRoster:
         occupied = [(span.start, span.end) for span in taken]
         spans: list[EntitySpan] = []
         for word, key in self._brands.items():
-            for start, end in _brand_hits(text, source, word, occupied):
+            refused: list[tuple[int, int]] = []
+            for start, end in _brand_hits(text, source, word, occupied, self._protected, refused):
                 if _capitalized(text[start:end]):
+                    self.brand_applied[word] = self.brand_applied.get(word, 0) + 1
                     spans.append(
                         EntitySpan(
                             start=start,
@@ -430,6 +489,8 @@ class BatchRoster:
                             canonical_key=key,
                         )
                     )
+            if refused:
+                self.brand_context_rejected[word] = self.brand_context_rejected.get(word, 0) + len(refused)
         return spans
 
     def _retype(self, spans: list[EntitySpan]) -> list[EntitySpan]:
@@ -484,8 +545,19 @@ def _merged(intervals: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def _brand_hits(text: str, folded: FoldedText, word: str, occupied: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Ocorrencias da palavra inteira que nao estao dentro de nome ja achado."""
+def _brand_hits(
+    text: str,
+    folded: FoldedText,
+    word: str,
+    occupied: Iterable[tuple[int, int]],
+    protected: frozenset[str] = frozenset(),
+    refused: list[tuple[int, int]] | None = None,
+) -> list[tuple[int, int]]:
+    """Ocorrencias da palavra inteira que nao estao dentro de nome ja achado.
+
+    Fora tambem (e vao para ``refused``, se dada): a ocorrencia em contexto de foro ou de endereco e a
+    que cai dentro de termo protegido ("Tribunal Regional Federal"): ali a palavra nomeia um lugar ou
+    um orgao, nao a empresa (B3)."""
 
     spans = _merged(occupied)
     starts = [start for start, _end in spans]
@@ -494,9 +566,38 @@ def _brand_hits(text: str, folded: FoldedText, word: str, occupied: Iterable[tup
         original_start, original_end = folded.to_original(start, end)
         position = bisect_left(starts, original_end) - 1
         inside = position >= 0 and spans[position][1] > original_start
-        if not inside and "\n" not in text[original_start:original_end]:
-            hits.append((original_start, original_end))
+        if inside or "\n" in text[original_start:original_end]:
+            continue
+        if geo_context(text, original_start, original_end) or _in_kept_term(
+            text, original_start, original_end, protected
+        ):
+            if refused is not None:
+                refused.append((original_start, original_end))
+            continue
+        hits.append((original_start, original_end))
     return hits
+
+
+_NEIGHBOR_WORD = re.compile(r"[^\W\d_]+(?:[-‐‑][^\W\d_]+)*")
+
+
+def _in_kept_term(text: str, start: int, end: int, protected: frozenset[str]) -> bool:
+    """A ocorrencia e parte de um termo protegido de 2+ palavras ("Procuradoria-Geral da Fazenda Nacional")."""
+
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end < 0 else line_end
+    before = [m.group(0) for m in _NEIGHBOR_WORD.finditer(text, max(line_start, start - 60), start)][-3:]
+    after = [m.group(0) for m in _NEIGHBOR_WORD.finditer(text, end, min(line_end, end + 60))][:3]
+    middle = text[start:end]
+    for first in range(len(before) + 1):
+        for last in range(len(after) + 1):
+            if first == 0 and last == 0:
+                continue  # so a palavra: ja julgada como candidata
+            phrase = " ".join([*before[len(before) - first :], middle, *after[:last]])
+            if fold_value(phrase) in protected:
+                return True
+    return False
 
 
 def _capitalized(value: str) -> int:

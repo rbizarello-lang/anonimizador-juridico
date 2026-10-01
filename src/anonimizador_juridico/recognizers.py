@@ -464,7 +464,7 @@ class BrCepRecognizer(ValueGroupPatternRecognizer):
 
 
 class BrCepTabelaRecognizer(ValueGroupPatternRecognizer):
-    """CEP de 8 dígitos colado, sem rótulo e sem hífen, em tabela de endereços: "BAIRRO 88304500
+    """CEP de 8 dígitos colado, sem rótulo e sem hífen, em tabela de endereços: "BAIRRO 12345678
     CIDADE SC" (a coluna do CEP, a da cidade e a da UF, uma depois da outra).
 
     Só entra com a cidade em maiúsculas e a UF no fim da linha ou da célula: o mesmo número

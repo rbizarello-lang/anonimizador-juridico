@@ -63,11 +63,11 @@ PDF_NAME = "autos_sinteticos.pdf"
 # (tipo, texto, papel). Tudo inventado.
 ENTITIES = [
     ("empresa", "MADEIREIRA PINHAL VERDE LTDA", "parte"),
-    ("pessoa", "ANTONIO CARLOS PEDROSO", "socio"),
-    ("pessoa", "CLAUDETE SCHNEIDER PEDROSO", "socio"),
+    ("pessoa", "ANTONIO CARLOS BARRETO", "socio"),
+    ("pessoa", "CLAUDETE HOFFMEISTER BARRETO", "socio"),
     ("empresa", "TRANSPORTADORA RIO DO PEIXE EIRELI", "terceiro"),
     ("endereco", "Rua Tupinambás, 1.520", "parte"),
-    ("pessoa", "LUCIANA MARCHETTI DE ALMEIDA", "magistrado"),
+    ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "magistrado"),
 ]
 CPF = "529.982.247-25"
 CNPJ = "11.222.333/0001-81"
@@ -80,8 +80,8 @@ PAGES = [
     "A UNIÃO (FAZENDA NACIONAL), por intermédio da PGFN, ajuíza esta execução\n"
     "fiscal para cobrança dos créditos inscritos em dívida ativa, no valor de\n"
     "R$ 1.234.567,89, apurado em 12/03/2024.",
-    f"O sócio-administrador ANTONIO CARLOS PEDROSO, CPF {CPF},\n"
-    "e a sócia CLAUDETE SCHNEIDER PEDROSO dirigiam a sociedade ao tempo\n"
+    f"O sócio-administrador ANTONIO CARLOS BARRETO, CPF {CPF},\n"
+    "e a sócia CLAUDETE HOFFMEISTER BARRETO dirigiam a sociedade ao tempo\n"
     "dos fatos geradores, conforme a ficha cadastral da Junta Comercial.\n"
     "Requer-se a inclusão de ambos no polo passivo, com fundamento no\n"
     "art. 135, III, do CTN e no Tema 962 do STJ.\n"
@@ -90,8 +90,8 @@ PAGES = [
     "executada em 14/03/2023, por R$ 850.000,00, conforme o evento 45.\n"
     "Pede-se a penhora via SISBAJUD e RENAJUD, sem prejuízo da\n"
     "indisponibilidade prevista no art. 185-A do CTN, e a citação de\n"
-    "ANTONIO CARLOS PEDROSO.",
-    "Documento eletrônico assinado por LUCIANA MARCHETTI DE ALMEIDA,\n"
+    "ANTONIO CARLOS BARRETO.",
+    "Documento eletrônico assinado por LUCIANA MONTEFUSCO DE ALMEIDA,\n"
     "Juíza Federal. Defiro a penhora requerida, devendo a Secretaria cumprir\n"
     "as diligências no prazo legal, a contar de 20/10/2025, com ciência à\n"
     "executada MADEIREIRA PINHAL VERDE LTDA e aos sócios, na pessoa de seus\n"
@@ -206,10 +206,10 @@ def write_gabarito(path: Path) -> None:
     gabarito = {
         "entidades": [
             {"categoria": "EMPRESA-parte", "rotulo": "executada", "padroes": ["MADEIREIRA PINHAL VERDE"]},
-            {"categoria": "PESSOA-socio", "rotulo": "socio A", "padroes": ["ANTONIO CARLOS PEDROSO"]},
-            {"categoria": "PESSOA-socio", "rotulo": "socia B", "padroes": ["CLAUDETE SCHNEIDER PEDROSO"]},
+            {"categoria": "PESSOA-socio", "rotulo": "socio A", "padroes": ["ANTONIO CARLOS BARRETO"]},
+            {"categoria": "PESSOA-socio", "rotulo": "socia B", "padroes": ["CLAUDETE HOFFMEISTER BARRETO"]},
             {"categoria": "EMPRESA-terceiro", "rotulo": "adquirente", "padroes": ["TRANSPORTADORA RIO DO PEIXE"]},
-            {"categoria": "AGENTE-PUBLICO", "rotulo": "juiza", "padroes": ["LUCIANA MARCHETTI DE ALMEIDA"]},
+            {"categoria": "AGENTE-PUBLICO", "rotulo": "juiza", "padroes": ["LUCIANA MONTEFUSCO DE ALMEIDA"]},
         ],
         "ids": [
             {"categoria": "ID", "rotulo": "CPF socio A", "valor": CPF},
@@ -352,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         for _kind, value, role in ENTITIES:
             if role != "magistrado":
                 check(f"sem '{value[:14]}...' em claro (A)", value.casefold() not in text_a.casefold())
-        check("juiza em claro (item H)", "LUCIANA MARCHETTI DE ALMEIDA" in text_a)
+        check("juiza em claro (item H)", "LUCIANA MONTEFUSCO DE ALMEIDA" in text_a)
         for fixed in ("UNIÃO - FAZENDA NACIONAL", "R$ 1.234.567,89", "12/03/2024", "SISBAJUD", "Tema 962 do STJ"):
             check(f"permanece: {fixed}", fixed in text_a)
         check("CPF e CNPJ sem sair em claro", CPF not in text_a and CNPJ not in text_a)
@@ -374,9 +374,9 @@ def main(argv: list[str] | None = None) -> int:
         text_b = second.result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
         check("duas decisoes aplicadas", second.changed == 2)
         check("lote novo (a rodada A fica intacta)", folder_b != folder_a and (folder_a / "AUDITORIA.txt").is_file())
-        check("a socia mantida volta ao claro", "CLAUDETE SCHNEIDER PEDROSO" in text_b)
-        check("a juiza tokenizada some", "LUCIANA MARCHETTI DE ALMEIDA" not in text_b)
-        check("os outros seguem tokenizados", "ANTONIO CARLOS PEDROSO" not in text_b and "MADEIREIRA PINHAL VERDE" not in text_b)
+        check("a socia mantida volta ao claro", "CLAUDETE HOFFMEISTER BARRETO" in text_b)
+        check("a juiza tokenizada some", "LUCIANA MONTEFUSCO DE ALMEIDA" not in text_b)
+        check("os outros seguem tokenizados", "ANTONIO CARLOS BARRETO" not in text_b and "MADEIREIRA PINHAL VERDE" not in text_b)
         check("exportacao liberada", second.result.job.export_allowed, second.result.job.export_block_reason)
         audit_b = (folder_b / "AUDITORIA.txt").read_text(encoding="utf-8")
         check("AUDITORIA da B registra o modo sem rede", "Modo sem rede" in audit_b and f"motor LLM: {CHANNEL}" in audit_b)

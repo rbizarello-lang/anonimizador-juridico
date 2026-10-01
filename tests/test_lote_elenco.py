@@ -113,8 +113,8 @@ class TodasAsCapasTests(unittest.TestCase):
         self.assertEqual(self.cast.count("## Processo "), 3)
         self.assertIn("## Processo [PROCESSO_3] — Agravo de Instrumento", self.cast)
         self.assertIn("## Processo [PROCESSO_4] — Agravo de Instrumento", self.cast)
-        self.assertIn("| [EMPRESA_10] | agravado | pessoa jurídica | [PESSOA_12] |", self.cast)
-        self.assertIn("| [EMPRESA_10] | agravante | pessoa jurídica | [PESSOA_12] |", self.cast)
+        self.assertIn("| [EMPRESA_10·G1] | agravado | pessoa jurídica | [PESSOA_12] |", self.cast)
+        self.assertIn("| [EMPRESA_10·G1] | agravante | pessoa jurídica | [PESSOA_12] |", self.cast)
         self.assertIn("| UNIÃO - FAZENDA NACIONAL | agravante | entidade | [PESSOA_30] |", self.cast)
 
     def test_process_label_is_the_process_of_the_cover_not_a_related_one(self) -> None:
@@ -145,8 +145,8 @@ class VinculosTests(unittest.TestCase):
 
     def test_renamed_company_is_linked_when_the_document_states_the_renaming(self) -> None:
         cast = self._cast(("contrato.md", CONTRATO + " [EMPRESA_1] [EMPRESA_10]"))
-        self.assertIn("| [EMPRESA_10] | antiga denominação | [EMPRESA_1] |", cast)
-        self.assertIn("| [EMPRESA_1] | denominação posterior | [EMPRESA_10] |", cast)
+        self.assertIn("| [EMPRESA_10·G1] | antiga denominação | [EMPRESA_1·G1] |", cast)
+        self.assertIn("| [EMPRESA_1·G1] | denominação posterior | [EMPRESA_10·G1] |", cast)
         self.assertIn("contrato.md, fl. 40", cast)
 
     def test_successive_renamings_in_a_narrative_are_linked(self) -> None:
@@ -155,7 +155,7 @@ class VinculosTests(unittest.TestCase):
             "Em 05/05/2005, há nova alteração do nome social para [EMPRESA_7]."
         )
         cast = self._cast(("autos.md", texto))
-        self.assertIn("| [EMPRESA_7] | antiga denominação | [EMPRESA_3] |", cast)
+        self.assertIn("| [EMPRESA_7·G1] | antiga denominação | [EMPRESA_3·G1] |", cast)
 
     def test_far_apart_mentions_are_not_a_renaming(self) -> None:
         texto = (
@@ -169,7 +169,7 @@ class VinculosTests(unittest.TestCase):
     def test_same_cnpj_token_in_two_covers_links_the_two_company_tokens(self) -> None:
         cast = self._cast(("idpj.md", CAPA), ("agravo_a.md", AGRAVO_GRADE))
         # [EMPRESA_1] e [CNPJ_1] na capa do IDPJ; [EMPRESA_10] e o mesmo [CNPJ_1] na do agravo.
-        self.assertIn("| [EMPRESA_1] | mesmo CNPJ | [EMPRESA_10] | [CNPJ_1] nas capas dos processos", cast)
+        self.assertIn("| [EMPRESA_1·G1] | mesmo CNPJ | [EMPRESA_10·G1] | [CNPJ_1] nas capas dos processos", cast)
 
     def test_different_cnpj_is_no_link(self) -> None:
         outro = AGRAVO_GRADE.replace("[CNPJ_1]", "[CNPJ_2]")
@@ -183,8 +183,9 @@ class VinculosTests(unittest.TestCase):
 
     def test_tokens_are_not_merged_and_no_names_leak(self) -> None:
         cast = self._cast(("contrato.md", CONTRATO + " [EMPRESA_1] [EMPRESA_10]"))
-        self.assertIn("[EMPRESA_1]", cast)
-        self.assertIn("[EMPRESA_10]", cast)
+        self.assertIn("[EMPRESA_1·G1]", cast)
+        self.assertIn("[EMPRESA_10·G1]", cast)
+        self.assertNotIn("[EMPRESA_1]", cast)  # o token separado fica, mas sempre com o sufixo do grupo
         self.assertNotIn("FICTIC", cast)
 
 

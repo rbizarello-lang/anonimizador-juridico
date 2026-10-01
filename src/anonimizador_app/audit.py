@@ -11,8 +11,8 @@ from .fidelity import FidelityDropStats
 from .gemini_detector import KEEP_TERMS
 from .header_heuristic import street_values
 
-_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)\]")
-_TOKEN_MARK = r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]"
+_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)(?:·G\d+)?\]")
+_TOKEN_MARK = r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]"
 # Colado a R$ sem espaço, ou token no meio do valor (R$ [TOKEN],28).
 # Não usa \s: CAPITAL R$ + pessoa na linha seguinte e "[TOKEN] R$2.971,28" não alertam.
 _MONEY_TOUCH = re.compile(
@@ -22,8 +22,8 @@ _MONEY_TOUCH = re.compile(
     re.IGNORECASE,
 )
 _DATE_GLUED = re.compile(
-    r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]\d{1,2}/\d{1,2}/\d{2,4}"
-    r"|\d{1,2}/\d{1,2}/\d{2,4}\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]"
+    r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]\d{1,2}/\d{1,2}/\d{2,4}"
+    r"|\d{1,2}/\d{1,2}/\d{2,4}\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]"
 )
 _CNPJ_LEFT = re.compile(r"(?<!\d)\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}(?!\d)")
 _CPF_LEFT = re.compile(r"(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)")

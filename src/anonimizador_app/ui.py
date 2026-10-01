@@ -18,7 +18,6 @@ from nicegui import app, run, ui
 
 from anonimizador_juridico import PseudonymMap, StructuredDetector
 
-from .audit import write_audit_report
 from .catalog import (
     CONTEXTUAL_TAGS,
     FIDELITY_PRINCIPLE,
@@ -44,9 +43,7 @@ from .pipeline import (
     new_job_id,
     prepare_file,
     resolve_lote_dirs,
-    build_audit_notes,
-    write_lote_guides,
-    write_outcomes_index,
+    finalize_lote,
 )
 from .rules import InvalidRuleError, build_recognizers, slug_entity_type, validate_custom_rule
 from .settings import CustomRule, load_settings, save_settings
@@ -343,7 +340,7 @@ _TAG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-_TOKEN_IN_TEXT = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9_]+?)_(\d+)\]")
+_TOKEN_IN_TEXT = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9_]+?)_(\d+(?:·G\d+)?)\]")
 _PAGE_MARK = re.compile(r"&lt;!--\s*pagina-origem:\s*(\d+)\s*--&gt;\n?")
 _OTHER_COMMENT = re.compile(r"&lt;!--.*?--&gt;", re.DOTALL)
 _PREVIEW_CHARS = 3000
@@ -900,18 +897,14 @@ def _build_lote_tab(
 
             status.text = "Gravando mapa privado"
             progress.value = 0.97
-            await run.io_bound(mapping.dump, map_path)
-            write_audit_report(export_dir, build_audit_notes(outcomes, mapping))
-            write_outcomes_index(export_dir, outcomes)
-            write_lote_guides(
+            await run.io_bound(
+                finalize_lote,
                 job_id=identifier,
                 export_dir=export_dir,
                 map_path=map_path,
-                markdown_names=[
-                    outcome.markdown_path.name
-                    for outcome in outcomes
-                    if outcome.ok and outcome.markdown_path is not None
-                ],
+                outcomes=outcomes,
+                mapping=mapping,
+                roster=roster,
             )
         except Exception as exc:  # noqa: BLE001
             status.text = "A execução falhou."

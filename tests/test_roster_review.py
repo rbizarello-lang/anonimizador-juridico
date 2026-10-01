@@ -111,12 +111,12 @@ class ReapplyWithFakeDiscovererTests(_Base):
         paths = dict(export_root=base / "exp", private_root=base / "priv")
         first = run_llm_job([source], discoverer=FakeDiscoverer(), use_cache=False, **paths)
         first_text = first.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
-        self.assertNotIn("MARIA OLIVEIRA SANTOS", first_text)
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", first_text)
 
         with block_network() as attempts:
             done = reapply_offline(
                 first,
-                {"pessoa:maria oliveira santos": KEEP, "pessoa:luciana marchetti de almeida": TOKENIZE},
+                {"pessoa:marlene oliveira sampaio": KEEP, "pessoa:luciana montefusco de almeida": TOKENIZE},
                 [source],
                 discoverer=FakeDiscoverer(),
                 **paths,
@@ -126,17 +126,17 @@ class ReapplyWithFakeDiscovererTests(_Base):
         new = done.result
         self.assertNotEqual(new.job.export_dir, first.job.export_dir)
         text = new.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
-        self.assertIn("MARIA OLIVEIRA SANTOS", text)
-        self.assertNotIn("LUCIANA MARCHETTI DE ALMEIDA", text)
-        self.assertNotIn("PAULO ROBERTO SOUZA", text)
+        self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
+        self.assertNotIn("LUCIANA MONTEFUSCO DE ALMEIDA", text)
+        self.assertNotIn("OLAVO RICARDO TEIXEIRA", text)
         # Rodada anterior intacta.
         self.assertEqual(first.job.outcomes[0].markdown_path.read_text(encoding="utf-8"), first_text)
         # Decisao guardada so na pasta privada, fixa.
         self.assertEqual(done.reviewed_path.name, REVIEWED_FILENAME)
         self.assertEqual(done.reviewed_path.parent, first.roster_path.parent)
         reviewed = Roster.load(done.reviewed_path)
-        self.assertEqual(reviewed.get("pessoa:maria oliveira santos").action, KEEP)
-        self.assertTrue(reviewed.get("pessoa:maria oliveira santos").pinned)
+        self.assertEqual(reviewed.get("pessoa:marlene oliveira sampaio").action, KEEP)
+        self.assertTrue(reviewed.get("pessoa:marlene oliveira sampaio").pinned)
         self.assertFalse((first.job.export_dir / REVIEWED_FILENAME).exists())
         self.assertFalse((new.job.export_dir / REVIEWED_FILENAME).exists())
         self.assertFalse((new.job.export_dir / ROSTER_FILENAME).exists())
@@ -157,10 +157,10 @@ class ReapplyWithFakeDiscovererTests(_Base):
         )
         payload = json.loads(first.roster_path.read_text(encoding="utf-8"))
         by_name = {item["nome"]: item for item in payload["entradas"]}
-        self.assertEqual(by_name["PAULO ROBERTO SOUZA"]["ocorrencias"], 2)
-        self.assertEqual(by_name["PAULO ROBERTO SOUZA"]["token"], first.tokens["pessoa:paulo roberto souza"])
-        self.assertEqual(by_name["LUCIANA MARCHETTI DE ALMEIDA"]["acao"], KEEP)
-        self.assertEqual(by_name["LUCIANA MARCHETTI DE ALMEIDA"]["ocorrencias"], 1)
+        self.assertEqual(by_name["OLAVO RICARDO TEIXEIRA"]["ocorrencias"], 2)
+        self.assertEqual(by_name["OLAVO RICARDO TEIXEIRA"]["token"], first.tokens["pessoa:olavo ricardo teixeira"])
+        self.assertEqual(by_name["LUCIANA MONTEFUSCO DE ALMEIDA"]["acao"], KEEP)
+        self.assertEqual(by_name["LUCIANA MONTEFUSCO DE ALMEIDA"]["ocorrencias"], 1)
 
 
 def _fake_langextract_model(names: dict):
@@ -208,15 +208,15 @@ class ReapplyOfflineEndToEndTests(_Base):
             self.assertEqual(first.engine, "gemini-pago")
 
             rows = build_rows(first.roster, occurrences=first.occurrences, tokens=first.tokens)
-            maria = next(row for row in rows if row.name == "MARIA OLIVEIRA SANTOS")
+            maria = next(row for row in rows if row.name == "MARLENE OLIVEIRA SAMPAIO")
             self.assertEqual((maria.action, maria.token, maria.occurrences), (TOKENIZE, "[PESSOA_2]", 1))
 
             done = reapply_offline(first, {maria.key: KEEP}, [source], **paths)
         self.assertEqual(attempts, [])
         self.assertEqual(len(created), made_first, "reaplicar nao pode criar modelo")
         text = done.result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
-        self.assertIn("MARIA OLIVEIRA SANTOS", text)
-        self.assertNotIn("PAULO ROBERTO SOUZA", text)
+        self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
+        self.assertNotIn("OLAVO RICARDO TEIXEIRA", text)
         self.assertTrue(done.result.job.export_allowed, done.result.job.export_block_reason)
         self.assertEqual(done.result.engine, "gemini-pago")
         audit = (done.result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")

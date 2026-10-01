@@ -108,9 +108,9 @@ class SpanHygieneTests(unittest.TestCase):
         self.assertEqual(kept, [])
 
     def test_cnpj_line_break_span_is_kept(self) -> None:
-        text = "inscrita no CNPJ/MF n° 01.294.953/0001-\n72, estabelecida"
-        start = text.index("01.294.953")
-        end = text.index("72,") + 2
+        text = "inscrita no CNPJ/MF n° 38.915.670/0001-\n00, estabelecida"
+        start = text.index("38.915.670")
+        end = text.index("00,") + 2
         kept = sanitize_spans(
             text,
             [EntitySpan(start, end, "BR_CNPJ", 0.9, "BrCnpjRecognizer")],

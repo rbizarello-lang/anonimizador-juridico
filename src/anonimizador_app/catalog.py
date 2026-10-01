@@ -29,7 +29,7 @@ STRUCTURED_TAGS: tuple[TagInfo, ...] = (
     TagInfo("BR_NASCIMENTO", "[NASCIMENTO_n]", "Data de nascimento com rótulo de formulário", True),
     TagInfo("BR_TITULO_ELEITOR", "[TITULO_n]", "Título de eleitor com rótulo de formulário", True),
     TagInfo("BR_PIS", "[PIS_n]", "PIS/PASEP/NIT com rótulo e dígito verificador", True),
-    TagInfo("BR_EPROC", "[EPROC_n]", "Código eproc do procurador na capa (PR077705, P3412557)", True),
+    TagInfo("BR_EPROC", "[EPROC_n]", "Código eproc do procurador na capa (PR900001, P9000001)", True),
 )
 
 CONTEXTUAL_TAGS: tuple[TagInfo, ...] = (

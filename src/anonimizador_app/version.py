@@ -10,7 +10,13 @@
   ficam no texto e o valor inteiro vai no token; CNPJ com a filial partida; CEP de 8 digitos em tabela;
   2.5 = + identidade do lote, E13: hifen de quebra de linha ("ME-TAIS"), pontuacao de OCR, forma curta
   do nome com varias capturas, prenome e ramo de atividade sem juntar por uma letra, "Filho"/"Junior"
-  separados, marca de empresa usada sozinha com token proprio).
+  separados, marca de empresa usada sozinha com token proprio;
+  2.6 = + endurecimento antes do L4, B3: a marca de uma palavra nunca e nome de municipio ou de estado
+  (lista do IBGE) nem ocorrencia em contexto de foro ou de endereco;
+  2.7 = + matricula por cartorio: o token distingue o cartorio de registro de imoveis mais proximo, e o
+  nome do cartorio/oficio/tabelionato fica em claro;
+  2.8 = + grupo de empresas ligadas: o token de empresa que o ELENCO liga por vinculo declarado (mudanca de
+  nome, mesmo CNPJ nas capas) leva o sufixo ·Gn no texto, ex. [EMPRESA_3·G1]; os tokens seguem separados).
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -28,7 +34,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.5"
+DETECTION_VERSION = "2.8"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent

@@ -37,7 +37,7 @@ class FidelityMentionTests(unittest.TestCase):
         self.assertFalse(is_too_generic("PERSON", "Helena Ficticia da Silva"))
         self.assertFalse(is_too_generic("LOCATION", "Rua das Acacias 100"))
         self.assertFalse(is_too_generic("LOCATION", "Rua\nRaposo Tavares n° 281"))
-        self.assertFalse(is_too_generic("LOCATION", "Avn. Jules Verne. nº674"))
+        self.assertFalse(is_too_generic("LOCATION", "Avn. Santos Dumont. nº674"))
         self.assertFalse(is_too_generic("LOCATION", "R GAMA 120"))
         self.assertTrue(is_too_generic("LOCATION", "4a Vara Federal de Santa Maria"))
         self.assertTrue(is_too_generic("ORGANIZATION", "4a Vara Federal de Santa Maria"))

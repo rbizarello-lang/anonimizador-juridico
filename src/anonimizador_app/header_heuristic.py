@@ -83,7 +83,7 @@ _PESSOA_JURIDICA = re.compile(r"(?i)pessoa\s+jur[ií]dica")
 _ROLE_TAIL = re.compile(
     r"(?i)\s*[-–—]?\s*(?:pessoa\s+jur[ií]dica|pessoa\s+f[ií]sica|entidade)\s*$"
 )
-_TOKEN_MARK = re.compile(r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]")
+_TOKEN_MARK = re.compile(r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]")
 _PAREN_ID = re.compile(r"\((?:CNPJ|CGC|CPF)[^)]*\)", re.IGNORECASE)
 _LABELED_ID = re.compile(r"(?i)\b(?:CNPJ|CGC|CPF)\s*:?\s*[\dA-Z./-]{8,}")
 _OAB_COMPACT = re.compile(r"\b[A-Z]{2}\.?\s?\d{3,7}\b")

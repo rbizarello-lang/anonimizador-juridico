@@ -132,7 +132,7 @@ com a instituicao acima) e a lista de veiculos do RENAJUD tambem. So em layout
 reconhecido pelos rotulos fixos, e so se nenhuma palavra da folha se perder: se
 perder, a folha sai como antes. Como a extracao mudou (versao |14) mas so no texto
 nativo, o primeiro lote depois da atualizacao aproveita o cache da |13: as folhas
-lidas por OCR nao sao lidas de novo (AÇOCARGAS inteiro leva uns 3 minutos nessa etapa,
+lidas por OCR nao sao lidas de novo (C1 inteiro leva uns 3 minutos nessa etapa,
 nao 90).
 
 Deteccao 2.5: um token por entidade, sem juntar homonimos. Hifen de quebra de linha
@@ -149,6 +149,32 @@ proprio quando sao varias (irmas do grupo, nome antigo e novo). A capa do agravo
 "Chave Processo:") passa a sair com as tabelas de grade, e a "Partes e Representantes" dela
 alimenta o ELENCO.md (versao de extracao |15, so a capa mudou: o cache |14 serve de ponto
 de partida, sem OCR).
+
+Deteccao 2.6: nome de cidade ou de estado nao vira empresa. A palavra que e nome de
+municipio ou de estado (lista do IBGE, guardada no pacote) nunca e "marca de uma palavra",
+e a ocorrencia da marca em contexto de foro ou de endereco ("Vara ... de X", "Comarca de
+X", "X/SC", linha de endereco, cabecalho em CAIXA ALTA) fica como estava. Cada lote traz
+`AUDITORIA_PRIVADA.txt` na pasta privada, com as palavras-marca aprovadas e as recusadas
+para voce conferir; a `AUDITORIA.txt` dos textos so tem tokens e contagens.
+
+Deteccao 2.7: o token da matricula distingue o cartorio. A matricula 12.345 do 1o Registro
+de Imoveis e a do 2o Registro de Imoveis sao tokens diferentes; vale a mencao do cartorio
+mais proxima (numero de ordem e lugar: "2o Oficio", "da Comarca de X"). Sem cartorio por
+perto, o token continua sendo por numero. O nome do cartorio, oficio ou tabelionato fica
+em claro (nao vira [EMPRESA_n]).
+
+Deteccao 2.8: empresas ligadas levam o mesmo grupo. Os tokens de empresa que o `ELENCO.md`
+liga em "Vinculos" (mudanca de nome declarada em documento, ou o mesmo CNPJ nas capas) ganham
+no proprio texto o sufixo do grupo: `[EMPRESA_3·G1]`, `[EMPRESA_7·G1]`. Os tokens continuam
+separados (cada um com o nome da epoca do ato); o `ELENCO.md` explica cada grupo ("G1: cadeia
+de mudancas de nome", "G2: mesmo CNPJ [CNPJ_2]") e lista os membros. Semelhanca de nome
+nunca forma grupo. O mapa privado tem `[EMPRESA_3]`: ao reverter, ignore o sufixo.
+
+O modelo de reconhecimento de nomes (GLiNER) nunca vai a rede sozinho: o app roda
+com `HF_HUB_OFFLINE=1` por padrao e usa a revisao do modelo fixada no codigo. Em uma
+maquina nova o modelo ainda nao esta no cache local; baixe-o uma vez, de proposito,
+com `python tools\instalar_modelo_ner.py --baixar` (sem a opcao, so mostra o que
+baixaria). Sem o modelo o app cai no spaCy PT, como antes, e avisa no log.
 
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar

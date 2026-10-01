@@ -8,7 +8,9 @@ tokens (o mesmo CNPJ/CPF nas capas; a denominacao anterior, quando um documento 
 mudou) e toda pessoa e empresa tokenizada do lote, com o numero de ocorrencias, os arquivos e o
 papel que o cabecalho das pecas da ("EXECUTADO: [EMPRESA_2]") para quem nao esta em capa.
 
-Os tokens nao sao unificados aqui: o vinculo e dito, nao decidido.
+Os tokens nao sao unificados aqui: o vinculo e dito, nao decidido. A unica marca e o sufixo de grupo no
+proprio texto (``[EMPRESA_3·G1]``, ``[EMPRESA_7·G1]``): so para empresas ligadas por vinculo DECLARADO (cadeia
+de mudancas de nome, mesmo CNPJ nas capas); semelhanca de nome nunca cria grupo. A legenda explica cada Gn.
 """
 
 from __future__ import annotations
@@ -16,15 +18,17 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .lote_index import document_code, is_standalone, standalone_facts
+from .token_syntax import strip_groups, with_group
 
 CAST_NAME = "ELENCO.md"
 
-_TOKEN = re.compile(r"\[([A-Z_]+)_\d+\]")
-_PARTY_TOKEN = re.compile(r"\[(?:PESSOA|EMPRESA)_\d+\]")
-_ID_TOKEN = re.compile(r"\[(?:CNPJ|CPF)_\d+\]")
+_TOKEN = re.compile(r"\[([A-Z_]+)_\d+(?:·G\d+)?\]")
+_PARTY_TOKEN = re.compile(r"\[(?:PESSOA|EMPRESA)_\d+(?:·G\d+)?\]")
+_ID_TOKEN = re.compile(r"\[(?:CNPJ|CPF)_\d+(?:·G\d+)?\]")
 _PARTIES = re.compile(r"Partes e Representantes[ \t]*\n+((?:\|[^\n]*\n)+)")
 _PROCESS = re.compile(r"\[PROCESSO_\d+\]")
 _PROCESS_NUMBER = re.compile(r"N[ºo°.]{0,2}\s*do processo:?\s*(\[PROCESSO_\d+\])")
@@ -43,7 +47,7 @@ _HEADER_ROLE = re.compile(
     r"(?im)^[ \t>*_|-]*(EXEQUENTE|EXECUTAD[OA]S?|REQUERENTE|REQUERID[OA]S?|AGRAVANTE|AGRAVAD[OA]S?|"
     r"EMBARGANTE|EMBARGAD[OA]S?|RECORRENTE|RECORRID[OA]S?|APELANTE|APELAD[OA]S?|AUTOR(?:A|ES)?|"
     r"R[ÉE]U|R[ÉE]|IMPETRANTE|IMPETRAD[OA]S?|INTERESSAD[OA]S?)[ \t]*:[ \t]*"
-    r"((?:\[(?:PESSOA|EMPRESA)_\d+\][ \t,;e]*)+)"
+    r"((?:\[(?:PESSOA|EMPRESA)_\d+(?:·G\d+)?\][ \t,;e]*)+)"
 )
 _ROLE_NAMES = {
     "exequente": "exequente", "requerente": "requerente", "agravante": "agravante",
@@ -57,7 +61,7 @@ _ROLE_STEMS = (
 )
 
 # Mudanca de nome dita no documento. So empresa com empresa.
-_COMPANY = r"\[EMPRESA_\d+\]"
+_COMPANY = r"\[EMPRESA_\d+(?:·G\d+)?\]"
 _RENAME_PAIR = re.compile(
     rf"(?is)NOME\s+INICIAL\s*:\s*({_COMPANY})[^\[]{{0,60}}?ALTERAD[OA]\s+PARA\s*:?\s*({_COMPANY})"
 )
@@ -78,7 +82,7 @@ _RENAME_NOW = re.compile(
 _STEP_GAP = 900
 
 # Contrato avulso (E14): socios e administradores, so quando o proprio texto os diz.
-_TOKEN_ANY = r"\[(?:PESSOA|EMPRESA)_\d+\]"
+_TOKEN_ANY = r"\[(?:PESSOA|EMPRESA)_\d+(?:·G\d+)?\]"
 _TOKEN_RUN = rf"{_TOKEN_ANY}(?:\s*(?:,|e/ou|e|ou|/)\s*{_TOKEN_ANY})*"
 _ADMIN_CLAUSE = (
     re.compile(
@@ -103,9 +107,120 @@ _QUALIFIED = re.compile(
 _PREAMBLE_WINDOW = 3500
 
 
-def build_cast(documents: Sequence[tuple[str, str]]) -> str:
-    """``documents``: (nome do .md, texto tokenizado), na ordem do lote."""
+@dataclass(frozen=True, slots=True)
+class CompanyGroup:
+    """Empresas ligadas por vinculo declarado: ``members`` sao tokens sem sufixo, em ordem de numero."""
 
+    number: int
+    members: tuple[str, ...]
+    reasons: tuple[str, ...]
+
+
+_RENAME_KINDS = frozenset({"antiga denominação", "denominação posterior"})
+_COMPANY_ONLY = re.compile(r"\[EMPRESA_\d+\]")
+
+
+def company_groups(documents: Sequence[tuple[str, str]]) -> list[CompanyGroup]:
+    """Grupos de empresas: componentes do grafo de vinculos declarados (cadeia de mudancas de nome e mesmo
+    CNPJ nas capas), so entre tokens de empresa. Semelhanca de nome nunca liga ninguem. Gn numera por
+    menor numero de token do grupo; o resultado nao depende de o texto ja ter o sufixo."""
+
+    docs = [(name, strip_groups(text)) for name, text in documents]
+    links = _links(docs, _cover_ids(docs))
+    parent: dict[str, str] = {}
+
+    def find(token: str) -> str:
+        parent.setdefault(token, token)
+        while parent[token] != token:
+            parent[token] = parent[parent[token]]
+            token = parent[token]
+        return token
+
+    reasons: dict[str, set[str]] = defaultdict(set)
+    edges: list[tuple[str, str, str]] = []
+    for first, kind, second, evidence in links:
+        if not (_COMPANY_ONLY.fullmatch(first) and _COMPANY_ONLY.fullmatch(second)):
+            continue
+        if kind in _RENAME_KINDS:
+            reason = "cadeia de mudanças de nome"
+        elif kind == "mesmo CNPJ":
+            identifier = _ID_TOKEN.search(evidence)
+            reason = f"mesmo CNPJ {identifier.group(0)}" if identifier else "mesmo CNPJ"
+        else:
+            continue
+        edges.append((first, second, reason))
+        parent[find(first)] = find(second)
+    for first, _second, reason in edges:
+        reasons[find(first)].add(reason)
+    components: dict[str, list[str]] = defaultdict(list)
+    for token in parent:
+        components[find(token)].append(token)
+    ordered = sorted(
+        (sorted(members, key=_token_order), root) for root, members in components.items() if len(members) > 1
+    )
+    ordered.sort(key=lambda item: _token_order(item[0][0]))
+    return [
+        CompanyGroup(number, tuple(members), tuple(sorted(reasons[root], key=_reason_order)))
+        for number, (members, root) in enumerate(ordered, start=1)
+    ]
+
+
+def _reason_order(reason: str) -> tuple[int, str]:
+    return (0 if reason.startswith("cadeia") else 1, reason)
+
+
+def apply_groups(text: str, groups: Sequence[CompanyGroup]) -> str:
+    """Poe o sufixo ``·Gn`` nos tokens de empresa dos grupos. Idempotente: so toca token sem sufixo."""
+
+    numbers = {member: group.number for group in groups for member in group.members}
+    if not numbers:
+        return text
+    return _COMPANY_ONLY.sub(lambda match: with_group(match.group(0), numbers.get(match.group(0))), text)
+
+
+def apply_company_groups(markdown_paths: Sequence[Path]) -> list[CompanyGroup]:
+    """Acha os grupos do lote e grava o sufixo nos Markdown (bytes exatos: so os tokens mudam).
+    Sem grupo, nenhum arquivo e tocado."""
+
+    paths = list(markdown_paths)
+    texts = [path.read_bytes().decode("utf-8") for path in paths]
+    groups = company_groups([(path.name, text) for path, text in zip(paths, texts)])
+    if groups:
+        for path, text in zip(paths, texts):
+            grouped = apply_groups(text, groups)
+            if grouped != text:
+                path.write_bytes(grouped.encode("utf-8"))
+    return groups
+
+
+def _cover_label(name: str, before: str) -> str:
+    process = _PROCESS_NUMBER.findall(before) or _PROCESS.findall(before)
+    return process[-1] if process else name
+
+
+def _cover_ids(documents: Sequence[tuple[str, str]]) -> dict[str, dict[str, set[str]]]:
+    """CNPJ/CPF das tabelas de partes das capas: identificador -> token -> processos."""
+
+    cover_ids: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for name, text in documents:
+        for table in _PARTIES.finditer(text):
+            label = _cover_label(name, text[: table.start()])
+            for party, _role, _kind, _reps, ids in _parse_parties(table.group(1)):
+                for identifier in ids:
+                    cover_ids[identifier][party].add(label)
+    return cover_ids
+
+
+def build_cast(documents: Sequence[tuple[str, str]]) -> str:
+    """``documents``: (nome do .md, texto tokenizado), na ordem do lote. O sufixo de grupo ja gravado nos
+    tokens nao muda o resultado: o ELENCO sai com o sufixo de todo membro de grupo."""
+
+    groups = company_groups(documents)
+    documents = [(name, strip_groups(text)) for name, text in documents]
+    return apply_groups(_build_cast(documents, groups), groups)
+
+
+def _build_cast(documents: Sequence[tuple[str, str]], groups: Sequence[CompanyGroup]) -> str:
     occurrences: Counter[str] = Counter()
     files: dict[str, set[str]] = defaultdict(set)
     for name, text in documents:
@@ -116,12 +231,11 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
 
     sections: list[str] = []
     listed: set[str] = set()
-    cover_ids: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    cover_ids = _cover_ids(documents)
     for name, text in documents:
         for table in _PARTIES.finditer(text):
             before = text[: table.start()]
-            process = _PROCESS_NUMBER.findall(before) or _PROCESS.findall(before)
-            label = process[-1] if process else name
+            label = _cover_label(name, before)
             kinds = _CLASS.findall(before)
             title = f"## Processo {label}" + (f" — {kinds[-1].strip()}" if kinds else "")
             lines = [title, "", f"Capa em {name}.", ""]
@@ -133,8 +247,6 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
                 reps = ", ".join(representatives)
                 lines.append(f"| {party} | {role} | {party_kind} | {reps} | {count} |")
                 listed.add(party)
-                for identifier in ids:
-                    cover_ids[identifier][party].add(label)
                 for representative in representatives:
                     represented[representative].append(party)
             party_tokens = {party for party, *_rest in parties}
@@ -169,6 +281,10 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
             "(CNPJ ou CPF igual nas capas; documento que registra a mudança de nome). Os tokens "
             "não foram unificados: cada um mantém a numeração e a contagem dele.",
             "",
+        ]
+        if groups:
+            out += _group_legend(groups, occurrences)
+        out += [
             "| Token | Vínculo | Token | Evidência |",
             "|---|---|---|---|",
         ]
@@ -208,6 +324,20 @@ def build_cast(documents: Sequence[tuple[str, str]]) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _group_legend(groups: Sequence[CompanyGroup], occurrences: Counter[str]) -> list[str]:
+    out = [
+        "**Grupos.** No texto, o token de empresa ligado a outros leva o sufixo do grupo "
+        "(`[EMPRESA_3·G1]`, `[EMPRESA_7·G1]`): são tokens **separados** (nome da época de cada ato), que o "
+        "vínculo abaixo declara serem a mesma empresa. Semelhança de nome não forma grupo.",
+        "",
+    ]
+    for group in groups:
+        members = ", ".join(f"{member} ({occurrences.get(member, 0)})" for member in group.members)
+        out.append(f"- G{group.number}: {'; '.join(group.reasons)}. Tokens (ocorrências no lote): {members}.")
+    out.append("")
+    return out
+
+
 def write_lote_cast(export_dir: Path, markdown_paths: Sequence[Path]) -> Path:
     documents = [(path.name, path.read_text(encoding="utf-8")) for path in markdown_paths]
     target = Path(export_dir) / CAST_NAME
@@ -234,6 +364,7 @@ def cast_summary(cast: str) -> dict[str, int]:
             cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
             if line.startswith("|") and len(cells) >= 5 and _PARTY_TOKEN.fullmatch(cells[0]) and cells[3]:
                 header_roles.add(cells[0])
+    groups = len(re.findall(r"(?m)^- G\d+: ", cast))
     links = 0
     block = cast.split("## Vínculos entre tokens", 1)
     if len(block) == 2:
@@ -244,6 +375,7 @@ def cast_summary(cast: str) -> dict[str, int]:
         "tokens_com_papel_de_capa": len(cover_roles),
         "tokens_com_papel_de_cabecalho": len(header_roles),
         "vinculos": links,
+        "grupos": groups,
     }
 
 
@@ -332,7 +464,7 @@ def _where(name: str, text: str, position: int) -> str:
 
 
 def _token_order(token: str) -> tuple[str, int]:
-    match = re.match(r"\[([A-Z_]+)_(\d+)\]", token)
+    match = re.match(r"\[([A-Z_]+)_(\d+)(?:·G\d+)?\]", token)
     return (match.group(1), int(match.group(2))) if match else (token, 0)
 
 

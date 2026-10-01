@@ -241,9 +241,9 @@ class PseudonymMap:
             self._counters[label] = max(self._counters.get(label, 0), int(number))
 
     def _location_alias(self, canonical: str) -> str | None:
-        """Fundir via sem numero com a mesma via+numero (Saul Elkind).
+        """Fundir via sem numero com a mesma via+numero (Itamar Rodriguez).
 
-        Nao funde numeros prediais distintos (Machado 563 vs 579).
+        Nao funde numeros prediais distintos (Meireles 563 vs 579).
         OCR que corta o ultimo digito (57 vs 579) cai no mesmo token.
         """
 
@@ -306,6 +306,11 @@ class PseudonymMap:
         )
         self._insert(record)
         return token
+
+    def token_for(self, entity_type: str, canonical: str) -> str:
+        """Token ja atribuido a essa entidade canonica ("" se nenhum); nao cria token."""
+
+        return self._index.get((entity_type, canonical), "")
 
     def to_dict(self) -> dict[str, Any]:
         records = []

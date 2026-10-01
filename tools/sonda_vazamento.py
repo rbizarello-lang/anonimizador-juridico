@@ -48,9 +48,9 @@ DOC = """\
 A UNIÃO (FAZENDA NACIONAL), por intermédio da PGFN, ajuíza execução fiscal
 contra FAZENDA SANTA RITA AGROPECUARIA LTDA, conforme CDA anexa.
 
-A PGFN requer a citação do sócio PAULO ROBERTO SOUZA, administrador da executada.
+A PGFN requer a citação do sócio OLAVO RICARDO TEIXEIRA, administrador da executada.
 
-Consta que MARIA OLIVEIRA SANTOS, sócia, reside na Rua das Acácias, 120.
+Consta que MARLENE OLIVEIRA SAMPAIO, sócia, reside na Rua das Acácias, 120.
 
 No Tema 1.209/STJ discute-se a responsabilidade; aqui, a empresa UNIÃO COMERCIAL DE GRÃOS LTDA
 recebeu os bens em sucessão empresarial (art. 133 do CTN).
@@ -68,8 +68,8 @@ Ana Lu Costa, contadora da empresa, prestou declarações.
 # (tipo interno, texto, papel) — o que um detector perfeito devolveria.
 TRUTH = [
     ("ORGANIZATION", "FAZENDA SANTA RITA AGROPECUARIA LTDA", "parte"),
-    ("PERSON", "PAULO ROBERTO SOUZA", "socio"),
-    ("PERSON", "MARIA OLIVEIRA SANTOS", "socio"),
+    ("PERSON", "OLAVO RICARDO TEIXEIRA", "socio"),
+    ("PERSON", "MARLENE OLIVEIRA SAMPAIO", "socio"),
     ("LOCATION", "Rua das Acácias, 120", "socio"),
     ("ORGANIZATION", "UNIÃO COMERCIAL DE GRÃOS LTDA", "terceiro"),
     ("PERSON", "CARLOS PEREIRA LIMA", "terceiro"),

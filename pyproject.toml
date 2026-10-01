@@ -31,3 +31,6 @@ llm = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+anonimizador_app = ["data/*.txt"]

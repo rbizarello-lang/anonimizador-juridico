@@ -29,7 +29,7 @@ from .coverage import pages_label, unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import UnsupportedDocumentError
 from .fidelity import FidelityDropStats, drop_protected_spans
-from .lote_elenco import CAST_NAME, write_lote_cast
+from .lote_elenco import CAST_NAME, apply_company_groups, write_lote_cast
 from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
 from .gemini_detector import ContextualEngine
 from .span_hygiene import sanitize_spans
@@ -162,6 +162,11 @@ def write_lote_guides(
             "1. Abra o mapa.json na pasta privada do mesmo lote.\n"
             "2. Cada registro tem \"token\" (ex.: [EMPRESA_1]) e \"originals\".\n"
             "3. No Markdown, troque o token pelo texto original correspondente.\n"
+            "\n"
+            "Sufixo de grupo: token de empresa como [EMPRESA_3·G1] e [EMPRESA_7·G1] sao tokens\n"
+            "SEPARADOS (cada um com o seu nome) que o ELENCO.md declara ligados (mudanca de nome\n"
+            "ou mesmo CNPJ nas capas); G1 e o grupo. Para reverter, ignore o sufixo: o mapa tem\n"
+            "[EMPRESA_3] e [EMPRESA_7].\n"
             "Nao envie o mapa junto com estes .md.\n"
         ),
         encoding="utf-8",
@@ -177,7 +182,10 @@ def write_lote_guides(
             f"Os textos anonimizados deste lote estao em:\n  {export_dir}\n"
             "\n"
             "Como reverter: no mapa.json, cada item liga um token ao texto original.\n"
+            "O sufixo de grupo do texto ([EMPRESA_3·G1]) nao esta no mapa: procure [EMPRESA_3].\n"
             "Nao envie esta pasta para fora desta maquina.\n"
+            f"{PRIVATE_AUDIT_NAME}: as palavras da marca aprovada e dos municipios recusados (a\n"
+            "AUDITORIA dos textos traz so tokens e contagens).\n"
             "A configuracao do app (regras, motor local) fica em config.json,\n"
             "na pasta privada raiz, nao dentro deste lote.\n"
         ),
@@ -192,6 +200,58 @@ def write_outcomes_index(export_dir: Path, outcomes: Sequence[FileOutcome]) -> P
     paths = [outcome.markdown_path for outcome in outcomes if outcome.ok and outcome.markdown_path]
     write_lote_cast(export_dir, paths)
     return write_lote_index(export_dir, paths)
+
+
+PRIVATE_AUDIT_NAME = "AUDITORIA_PRIVADA.txt"
+
+
+def finalize_lote(
+    *,
+    job_id: str,
+    export_dir: Path,
+    map_path: Path,
+    outcomes: Sequence[FileOutcome],
+    mapping: PseudonymMap,
+    roster: BatchRoster | None = None,
+) -> None:
+    """Depois da troca de todos os arquivos: mapa, AUDITORIA (e a privada), INDICE, ELENCO e LEIA-ME."""
+
+    mapping.dump(map_path)
+    # Empresas ligadas por vinculo declarado levam o sufixo de grupo no texto, antes da AUDITORIA, do INDICE e
+    # do ELENCO (que leem o texto ja com o sufixo).
+    apply_company_groups([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None])
+    write_audit_report(export_dir, build_audit_notes(outcomes, mapping, roster))
+    if roster is not None:
+        write_private_audit(map_path.parent, roster, mapping)
+    write_outcomes_index(export_dir, outcomes)
+    write_lote_guides(
+        job_id=job_id,
+        export_dir=export_dir,
+        map_path=map_path,
+        markdown_names=[
+            outcome.markdown_path.name
+            for outcome in outcomes
+            if outcome.ok and outcome.markdown_path is not None
+        ],
+    )
+
+
+def write_private_audit(private_dir: Path, roster: BatchRoster, mapping: PseudonymMap) -> Path:
+    """AUDITORIA com as palavras (marca aprovada, municipio recusado), na pasta privada do lote.
+    A exportavel traz so tokens e contagens."""
+
+    lines = [
+        "AUDITORIA PRIVADA DESTE LOTE",
+        "Contem palavras reais do caso. NAO ENVIAR: fica com o mapa, fora da pasta dos textos.",
+        "",
+        "## Marca de uma palavra (confira se cada palavra aprovada e mesmo nome proprio da empresa)",
+        *(f"- {line}" for line in roster.brand_report(mapping, private=True)),
+        "",
+    ]
+    path = Path(private_dir) / PRIVATE_AUDIT_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def new_job_id(now: datetime | None = None) -> str:
@@ -271,18 +331,13 @@ def run_job(
         )
 
     _report(on_progress, "Gravando mapa privado", 0.97)
-    mapping.dump(map_path)
-    write_audit_report(export_dir, build_audit_notes(outcomes, mapping))
-    write_outcomes_index(export_dir, outcomes)
-    write_lote_guides(
+    finalize_lote(
         job_id=identifier,
         export_dir=export_dir,
         map_path=map_path,
-        markdown_names=[
-            outcome.markdown_path.name
-            for outcome in outcomes
-            if outcome.ok and outcome.markdown_path is not None
-        ],
+        outcomes=outcomes,
+        mapping=mapping,
+        roster=roster,
     )
     _report(on_progress, "Concluido", 1.0)
     return build_job_result(
@@ -507,12 +562,15 @@ def build_job_result(
 def build_audit_notes(
     outcomes: Sequence[FileOutcome],
     mapping: PseudonymMap,
+    roster: BatchRoster | None = None,
 ) -> list[tuple[str, list[str]]]:
-    """AUDITORIA.txt: primeiro o mapa (sem PII), depois cada Markdown."""
+    """AUDITORIA.txt: primeiro o mapa (sem PII), a marca de uma palavra (so tokens), depois cada Markdown."""
 
     notes: list[tuple[str, list[str]]] = [
         ("mapa.json", audit_map_records(mapping.records)),
     ]
+    if roster is not None:
+        notes.append(("elenco do lote: marca de uma palavra (so tokens e contagens)", roster.brand_report(mapping)))
     for outcome in outcomes:
         if outcome.ok and outcome.markdown_path is not None:
             text = outcome.markdown_path.read_text(encoding="utf-8")

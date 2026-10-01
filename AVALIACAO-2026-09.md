@@ -74,8 +74,8 @@ um detector que acerta tudo. Resultado:
 | Entidade (fictícia) | Tipo | Vazou? | Regra que descartou o acerto |
 |---|---|---|---|
 | FAZENDA SANTA RITA AGROPECUARIA LTDA | empresa (executada) | **sim** | "Fazenda" é marcador de órgão público; janela de precedente |
-| PAULO ROBERTO SOUZA | sócio | **sim** | linha contém "PGFN"; nome só de partículas comuns |
-| MARIA OLIVEIRA SANTOS | sócia | **sim** | nome só de partículas comuns |
+| OLAVO RICARDO TEIXEIRA | sócio | **sim** | linha contém "PGFN"; nome só de partículas comuns |
+| MARLENE OLIVEIRA SAMPAIO | sócia | **sim** | nome só de partículas comuns |
 | Rua das Acácias, 120 | endereço | não | — |
 | UNIÃO COMERCIAL DE GRÃOS LTDA | empresa (sucessora) | **sim** | começa com "União" (KEEP_TERMS por prefixo) |
 | CARLOS PEREIRA LIMA | terceiro | **sim** | nome só de partículas comuns |
@@ -114,7 +114,7 @@ vez". O problema é estrutural: regras sem contexto, acumuladas, afinadas num ú
 (PARTE_1), avaliadas só pelo que foi trocado a mais — nunca pelo que deixou de ser trocado.
 "Fidelidade > recall" virou, na prática, "na dúvida, descarta". A cada ciclo a peça ficou mais
 íntegra e o vazamento mais silencioso. O próprio código registra o sobreajuste: constantes como
-`BROGGI`, `CRITÉRIUM`, `vidros`, `esquadrias`, `ETDA/LIDA` e o comentário de CNPJ "neste lote".
+`BERNARDELLI`, `CRISALIDA`, `vidros`, `esquadrias`, `ETDA/LIDA` e o comentário de CNPJ "neste lote".
 
 ---
 
@@ -231,7 +231,7 @@ exato do original).
 |---|---|
 | Poucos exemplos (few-shot) + instrução | Ensina o que é parte, sócio, advogado, juiz, órgão, sem treinar modelo. |
 | Saída com esquema (controlled generation no Gemini) | JSON confiável; o modelo só pode responder `pessoa`/`empresa`/`endereco` com `papel` e `nome_canonico`. |
-| Ancoragem com alinhamento aproximado | Nome com erro de OCR ("SCHNElDER") é ancorado; o trecho real vira variante para a busca. |
+| Ancoragem com alinhamento aproximado | Nome com erro de OCR ("Hoffmelster") é ancorado; o trecho real vira variante para a busca. |
 | Trechos + chamadas paralelas + passes múltiplos | Processo de milhares de folhas em minutos. |
 | Provedores: Gemini API, **Vertex AI (com região)**, OpenAI, **Ollama (local)** | O mesmo código roda na nuvem institucional ou 100% local (peça curta, ou máquina com GPU). |
 | Modo lote (Vertex/Gemini Batch) | ~50% mais barato para reprocessar acervos sem pressa. |
