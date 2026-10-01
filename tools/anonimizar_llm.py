@@ -81,8 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--canal",
         choices=tuple(CHANNELS),
-        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo; "
-        "ollama-local = modelo neste computador. Sem canal, nada roda.",
+        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo. Sem canal, nada roda.",
     )
     parser.add_argument("--ciente", action="store_true", help="Li o aviso do canal (impresso na tela).")
     parser.add_argument(
@@ -109,7 +108,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--regiao", default=DEFAULT_LOCATION, help=f"Regiao do Vertex AI (padrao {DEFAULT_LOCATION})."
     )
-    parser.add_argument("--ollama-url", default="http://localhost:11434")
     parser.add_argument("--paralelo", type=int, default=16, help="Chamadas simultaneas ao LLM.")
     parser.add_argument("--trecho", type=int, default=4000, help="Caracteres por chamada.")
     parser.add_argument(
@@ -176,10 +174,9 @@ def main(argv: list[str] | None = None) -> int:
         project=args.projeto,
         model_id=args.modelo,
         location=args.regiao,
-        model_url=args.ollama_url,
     )
     decision = check_engine(choice, private_root=config_source)
-    if channel in CHANNELS and CHANNELS[channel].leaves_machine:
+    if channel in CHANNELS:
         print(f"AVISO (versao {WARNING_VERSION}, canal {channel}):", file=sys.stderr)
         print(warning_text(channel), file=sys.stderr)
         print(f"Faturamento: {billing_statement(channel)}", file=sys.stderr)

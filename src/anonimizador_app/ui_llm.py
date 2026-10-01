@@ -207,7 +207,7 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                     ui.html(f"<p>{html.escape(paragraph)}</p>")
 
         confirm_box.clear()
-        if spec is not None and spec.leaves_machine:
+        if spec is not None:
             with confirm_box:
                 ui.checkbox(
                     "Li o aviso acima.",

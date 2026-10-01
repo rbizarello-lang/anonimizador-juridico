@@ -1,4 +1,4 @@
-"""Descoberta de entidades por LLM com LangExtract (Gemini pago, Vertex AI ou Ollama local).
+"""Descoberta de entidades por LLM com LangExtract (Gemini API paga ou Vertex AI).
 
 O LLM le trechos do texto — ja com CPF, CNPJ e afins trocados por token nesta
 maquina — e devolve quem aparece e com que papel. Nao reescreve nada: a troca
@@ -177,22 +177,20 @@ class LlmConfigError(RuntimeError):
 class LlmConfig:
     """Provedor do LLM. Conta gratuita do Gemini e vedada: o conteudo treina o modelo.
 
-    ``channel`` e o canal liberado pelo portao (``gemini-pago``, ``vertex-sp``,
-    ``ollama-local``). ``api_key`` nao aparece no ``repr``.
+    ``channel`` e o canal liberado pelo portao (``gemini-pago`` ou ``vertex-sp``).
+    ``api_key`` nao aparece no ``repr``.
     """
 
-    provider: str = "gemini"  # gemini (API paga) | vertex | ollama
+    provider: str = "gemini"  # gemini (API paga) | vertex
     channel: str = ""
     api_key: ApiKey | None = field(default=None, repr=False, compare=False)
     model_id: str = DEFAULT_MODEL
     project: str = ""
     location: str = DEFAULT_LOCATION
-    model_url: str = "http://localhost:11434"
     max_workers: int = 16
     chunk_chars: int = 4000
     max_output_tokens: int = 8192
     retries: int = 1
-    timeout: int = 180
 
     def describe(self) -> str:
         if self.channel:
@@ -200,7 +198,6 @@ class LlmConfig:
         where = {
             "gemini": "Gemini API",
             "vertex": f"Vertex AI ({self.location})",
-            "ollama": f"Ollama local ({self.model_url})",
         }.get(self.provider, self.provider)
         return f"{self.model_id} via {where}"
 
@@ -516,13 +513,6 @@ class LangExtractDiscoverer:
                     )
                 kwargs["api_key"] = cfg.api_key.reveal()
             provider = "gemini"
-        elif cfg.provider == "ollama":
-            if not _is_loopback(cfg.model_url):
-                raise LlmConfigError(
-                    "Ollama so e aceito neste computador (localhost): o texto nao pode sair."
-                )
-            kwargs.update(model_url=cfg.model_url, timeout=cfg.timeout)
-            provider = "ollama"
         else:
             raise LlmConfigError(f"Provedor desconhecido: {cfg.provider!r}")
         config = lx.factory.ModelConfig(
@@ -574,12 +564,6 @@ class LangExtractDiscoverer:
             "extracoes": items,
         }
         path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _is_loopback(url: str) -> bool:
-    from urllib.parse import urlparse
-
-    return (urlparse(url).hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _to_item(extraction: Any, chunk_text: str) -> dict:

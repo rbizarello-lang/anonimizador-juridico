@@ -82,11 +82,13 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(LlmConfigError):
             discoverer._build_model()
 
-    @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
-    def test_ollama_outside_this_computer_is_refused(self) -> None:
-        discoverer = LangExtractDiscoverer(
-            LlmConfig(provider="ollama", channel="ollama-local", model_url="http://192.0.2.10:11434")
-        )
+    def test_there_is_no_ollama_provider(self) -> None:
+        import inspect
+
+        from anonimizador_app import llm_discovery
+
+        self.assertNotIn("ollama", inspect.getsource(llm_discovery).casefold())
+        discoverer = LangExtractDiscoverer(LlmConfig(provider="ollama", channel="ollama-local"))
         with self.assertRaises(LlmConfigError):
             discoverer._build_model()
 

@@ -4,9 +4,8 @@ O app abre sempre no motor **local**. O motor LLM nao e uma preferencia que
 se grava: e uma escolha da sessao, e roda somente se TODAS as condicoes
 valerem:
 
-1. um canal conhecido e permitido foi escolhido (``gemini-pago``,
-   ``vertex-sp``; ``ollama-local`` nao sai do computador). ``gemini-gratuito``,
-   canal vazio e canal desconhecido sao BLOQUEADOS;
+1. um dos dois canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``).
+   ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
 2. ha chave (``credentials``) ou, no Vertex AI, projeto e credencial local;
 3. o aviso do canal foi lido e confirmado;
 4. o faturamento do projeto foi confirmado de forma explicita;
@@ -33,7 +32,6 @@ from .llm_discovery import (
     LangExtractDiscoverer,
     LlmConfig,
     LlmConfigError,
-    _is_loopback,
 )
 from .settings import config_path
 from .version import ENGINE_LOCAL
@@ -43,7 +41,6 @@ WARNING_VERSION = "2026-10-01.1"
 
 CHANNEL_GEMINI_PAGO = "gemini-pago"
 CHANNEL_VERTEX_SP = "vertex-sp"
-CHANNEL_OLLAMA_LOCAL = "ollama-local"
 CHANNEL_GEMINI_GRATUITO = "gemini-gratuito"
 
 
@@ -51,10 +48,9 @@ CHANNEL_GEMINI_GRATUITO = "gemini-gratuito"
 class Channel:
     id: str
     label: str
-    provider: str  # gemini | vertex | ollama
+    provider: str  # gemini | vertex
     needs_key: bool = False
     needs_project: bool = False
-    leaves_machine: bool = True
 
 
 CHANNELS: dict[str, Channel] = {
@@ -69,12 +65,6 @@ CHANNELS: dict[str, Channel] = {
         "Vertex AI, São Paulo (projeto institucional do Google Cloud)",
         "vertex",
         needs_project=True,
-    ),
-    CHANNEL_OLLAMA_LOCAL: Channel(
-        CHANNEL_OLLAMA_LOCAL,
-        "Ollama neste computador (o texto não sai da máquina)",
-        "ollama",
-        leaves_machine=False,
     ),
 }
 
@@ -94,11 +84,6 @@ _KEY_VALUE = re.compile(r"AIza[0-9A-Za-z_\-]{25,}")
 def warning_paragraphs(channel: str) -> tuple[str, ...]:
     """O aviso que o usuario confirma antes de o texto sair da máquina."""
 
-    spec = CHANNELS.get(channel)
-    if spec is not None and not spec.leaves_machine:
-        return (
-            "O modelo roda neste computador: o texto das peças não é enviado a terceiros.",
-        )
     common = (
         "O texto das peças será enviado ao provedor do modelo. CPF, CNPJ, OAB, conta, placa "
         "e demais identificadores são trocados por token ANTES do envio, nesta máquina; "
@@ -150,7 +135,6 @@ class EngineChoice:
     project: str = ""
     model_id: str = DEFAULT_MODEL
     location: str = DEFAULT_LOCATION
-    model_url: str = "http://localhost:11434"
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,13 +269,10 @@ def check_engine(
             reasons.append(
                 "Sem credencial local do Google Cloud (gcloud auth application-default login)."
             )
-    if spec.provider == "ollama" and not _is_loopback(choice.model_url):
-        reasons.append("O Ollama só é aceito em localhost: o texto não pode sair da máquina.")
-    if spec.leaves_machine:
-        if not choice.acknowledged:
-            reasons.append("Falta confirmar que o aviso foi lido.")
-        if not choice.billing_confirmed:
-            reasons.append("Falta confirmar o faturamento do projeto.")
+    if not choice.acknowledged:
+        reasons.append("Falta confirmar que o aviso foi lido.")
+    if not choice.billing_confirmed:
+        reasons.append("Falta confirmar o faturamento do projeto.")
     missing = (missing_fn or missing_packages)(channel)
     if missing:
         reasons.append(
@@ -309,7 +290,6 @@ def check_engine(
         model_id=choice.model_id or DEFAULT_MODEL,
         project=choice.project.strip(),
         location=choice.location or DEFAULT_LOCATION,
-        model_url=choice.model_url,
     )
     return EngineDecision(
         True, channel, (), key=key, config=config, key_source=key.source if key else ""
@@ -369,7 +349,7 @@ def audit_lines(decision: EngineDecision, choice: EngineChoice | None = None) ->
         lines.append(f"Modelo: {decision.config.model_id}")
         if decision.config.provider == "vertex":
             lines.append(f"Projeto Vertex AI e regiao: {decision.config.location}")
-    if spec is not None and spec.leaves_machine:
+    if spec is not None:
         lines.append(
             "O texto das pecas, com os IDs mascarados, foi enviado ao provedor; "
             "nomes, fatos e valores seguiram em claro."
@@ -382,6 +362,4 @@ def audit_lines(decision: EngineDecision, choice: EngineChoice | None = None) ->
                 "pelo usuario: "
                 + ("sim" if choice.acknowledged and choice.billing_confirmed else "NAO")
             )
-    elif spec is not None:
-        lines.append("Modelo local: o texto nao saiu deste computador.")
     return lines

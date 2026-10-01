@@ -207,8 +207,7 @@ atribuidos pelo LLM" no `ELENCO.md`.
 **Canais.** `gemini-pago` (Gemini API, chave de projeto do Google Cloud **com
 faturamento**; sem garantia de residencia de dados) e `vertex-sp` (Vertex AI em
 Sao Paulo, projeto institucional). O canal gratuito, canal vazio e canal
-desconhecido sao bloqueados. `ollama-local` roda no proprio computador
-(so `localhost`). Uma chave de projeto sem faturamento cai nos termos do nivel
+desconhecido sao bloqueados. O app so cadastra esses dois canais (o antigo `ollama-local` foi retirado). Uma chave de projeto sem faturamento cai nos termos do nivel
 gratuito: confirme o faturamento antes.
 
 **Chave.** Nunca em arquivo do projeto, `config.json`, log ou AUDITORIA. Fica

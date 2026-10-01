@@ -135,7 +135,7 @@ class GateTests(unittest.TestCase):
         self.assertFalse(check_engine(EngineChoice()).allowed)
 
 
-class VertexAndOllamaTests(unittest.TestCase):
+class VertexTests(unittest.TestCase):
     def test_vertex_needs_project_credential_and_confirmations(self) -> None:
         choice = EngineChoice(
             channel="vertex-sp", acknowledged=True, billing_confirmed=True, project="projeto-ficticio"
@@ -164,16 +164,14 @@ class VertexAndOllamaTests(unittest.TestCase):
             (target / "application_default_credentials.json").write_text("{}", encoding="utf-8")
             self.assertTrue(adc_available({"APPDATA": tmp, "USERPROFILE": tmp}))
 
-    def test_ollama_stays_on_this_computer(self) -> None:
-        local = check_engine(EngineChoice(channel="ollama-local"), missing_fn=lambda _c: [])
-        self.assertTrue(local.allowed, local.reasons)
-        remote = check_engine(
-            EngineChoice(channel="ollama-local", model_url="http://10.0.0.5:11434"),
+    def test_ollama_is_not_a_channel_any_more(self) -> None:
+        self.assertNotIn("ollama-local", CHANNELS)
+        refused = check_engine(
+            EngineChoice(channel="ollama-local", acknowledged=True, billing_confirmed=True),
             missing_fn=lambda _c: [],
         )
-        self.assertFalse(remote.allowed)
-        self.assertIn("localhost", remote.blocked_message())
-        self.assertNotIn("leitura do aviso", " ".join(warning_paragraphs("ollama-local")))
+        self.assertFalse(refused.allowed)
+        self.assertIn("desconhecido", refused.blocked_message())
 
 
 class WarningTests(unittest.TestCase):
@@ -247,7 +245,7 @@ class VersionLineTests(unittest.TestCase):
 class PackagesTests(unittest.TestCase):
     def test_missing_packages_names_the_missing_ones(self) -> None:
         self.assertIsInstance(missing_packages("gemini-pago"), list)
-        self.assertEqual(missing_packages("ollama-local").count("google-genai"), 0)
+        self.assertIn("google-genai", missing_packages("gemini-pago") + ["google-genai"])
 
 
 if __name__ == "__main__":

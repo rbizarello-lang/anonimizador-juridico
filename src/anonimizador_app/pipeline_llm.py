@@ -458,8 +458,9 @@ def _guard(source: Path, errors: dict[Path, FileOutcome], step: Callable):
 
 
 def _is_remote(discoverer: Discoverer) -> bool:
-    config = getattr(discoverer, "config", None)
-    return getattr(config, "provider", "") != "ollama"
+    """Os dois canais (Gemini API paga e Vertex AI) mandam o texto ao provedor."""
+
+    return True
 
 
 def _append_roster_guide(path: Path) -> None:
