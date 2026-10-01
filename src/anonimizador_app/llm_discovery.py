@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .credentials import ApiKey
-from .llm_gate import GateError, RunPermit
+from .llm_gate import GateError, NetworkCheck, RunPermit, check_network_point, verify_client_endpoint
 from .roster import Mention
 
 PROMPT_VERSION = "2026-10-01.1"
@@ -398,6 +398,8 @@ class LangExtractDiscoverer:
         self.offline = offline
         # B2: a confirmacao da rodada. Sem ela ativa, o modelo (e a rede) nao e criado.
         self.permit = permit
+        # I4: o que o portao conferiu no ponto da rede na ultima vez que o modelo foi criado.
+        self.network_check: NetworkCheck | None = None
 
     def describe(self) -> str:
         if self._model_factory is not None:
@@ -543,12 +545,24 @@ class LangExtractDiscoverer:
                 "Canal nao liberado: o provedor so e chamado depois do portao do motor "
                 "(llm_engine.check_engine)."
             )
+        # I4: o portao reconferido AQUI, onde o texto sai da maquina (nao basta ter passado pela tela).
+        try:
+            check = check_network_point(
+                channel=cfg.channel,
+                provider=cfg.provider,
+                location=cfg.location,
+                project=cfg.project,
+            )
+        except GateError as exc:
+            raise LlmConfigError(str(exc)) from None
         kwargs: dict[str, Any] = {"temperature": 0.0}
         if cfg.provider in {"gemini", "vertex"}:
             kwargs.update(
                 max_workers=1,
                 max_output_tokens=cfg.max_output_tokens,
                 safety_settings=_SAFETY_OFF,
+                # O endereco vai fixo, pelo canal: nenhuma variavel de ambiente o troca.
+                http_options={"base_url": check.base_url},
             )
             if cfg.provider == "vertex":
                 if not cfg.project:
@@ -568,12 +582,18 @@ class LangExtractDiscoverer:
         config = lx.factory.ModelConfig(
             model_id=cfg.model_id, provider=provider, provider_kwargs=kwargs
         )
-        return lx.factory.create_model(
+        model = lx.factory.create_model(
             config=config,
             examples=build_examples(),
             use_schema_constraints=True,
             fence_output=False,
         )
+        try:
+            verify_client_endpoint(model, check)
+        except GateError as exc:
+            raise LlmConfigError(str(exc)) from None
+        self.network_check = check
+        return model
 
     def _cache_path(self, chunk: Chunk) -> Path | None:
         if self.cache_dir is None:

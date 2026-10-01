@@ -36,7 +36,7 @@ from .llm_discovery import (
     LlmConfig,
     LlmConfigError,
 )
-from .llm_gate import RunPermit, SendPlan
+from .llm_gate import RunPermit, SendPlan, env_refusals, env_warnings
 from .settings import config_path
 from .version import ENGINE_LOCAL
 
@@ -274,6 +274,9 @@ def check_engine(
             reasons.append(
                 "Sem credencial local do Google Cloud (gcloud auth application-default login)."
             )
+    # I4: variavel do SDK que desvia o trafego para outro endereco recusa ja na configuracao (e de novo no
+    # ponto da rede, em ``llm_gate.check_network_point``).
+    reasons.extend(env_refusals(env))
     missing = (missing_fn or missing_packages)(channel)
     if missing:
         reasons.append(
@@ -376,6 +379,7 @@ def confirmation_lines(
             "do mesmo tamanho."
         )
     lines.append("Os IDs (CPF, CNPJ, OAB, conta...) vão mascarados; nomes, fatos e valores vão em claro.")
+    lines.extend(f"Atenção: {warning}" for warning in env_warnings())
     return lines
 
 

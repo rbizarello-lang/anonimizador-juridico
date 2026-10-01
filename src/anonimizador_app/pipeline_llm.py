@@ -393,7 +393,13 @@ def _run_llm_job(
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
     }
     guide_notes = _fallback_lines(fallback_by_file, held)
-    notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes, *guide_notes]))
+    network = getattr(discoverer, "network_check", None)
+    network_notes = (
+        network.audit_lines()
+        if network is not None
+        else ["Nenhuma chamada ao provedor nesta rodada (tudo veio do cache local ou nada foi enviado)."]
+    )
+    notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes, *network_notes, *guide_notes]))
     write_audit_report(export_dir, notes, engine=engine_id)
     write_lote_guides(
         job_id=identifier,
