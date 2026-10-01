@@ -43,23 +43,45 @@ class FoldedText:
         return self.index[start], self.index[end - 1] + 1
 
 
+_HYPHENS = frozenset("-‐‑‒")
+_BLANKS = " \t\r\n"
+
+
 def fold_with_index(text: str) -> FoldedText:
-    """Minusculas, sem acento nem apostrofo, espacos (inclusive quebra) colapsados."""
+    """Minusculas, sem acento nem apostrofo, espacos (inclusive quebra) colapsados.
+
+    Hifen entre letras, inclusive o de quebra de linha (hifen no fim da linha, resto da palavra
+    na seguinte), some: "ME-TAIS" e "METAIS" viram a mesma palavra (o OCR parte a palavra no
+    fim da linha). Hifen com espaco dos dois lados ("ACME - MATRIZ") fica."""
 
     chars: list[str] = []
     index = array("q")
-    for position, char in enumerate(text):
+    size = len(text)
+    position = 0
+    while position < size:
+        char = text[position]
+        if char in _HYPHENS and chars and chars[-1].isalpha():
+            ahead = position + 1
+            while ahead < size and text[ahead] in _BLANKS and ahead - position <= 3:
+                ahead += 1
+            # Colado ("ME-TAIS") ou quebra de linha ("ME-" no fim, "TAIS" na seguinte).
+            if ahead < size and text[ahead].isalpha() and (ahead == position + 1 or "\n" in text[position + 1 : ahead]):
+                position = ahead
+                continue
         if char.isspace():
             if chars and chars[-1] != " ":
                 chars.append(" ")
                 index.append(position)
+            position += 1
             continue
         if char in _APOSTROPHES:
+            position += 1
             continue
         folded = char.lower() if char.isascii() else _fold_char(char)
         for item in folded:
             chars.append(item)
             index.append(position)
+        position += 1
     return FoldedText("".join(chars), index)
 
 

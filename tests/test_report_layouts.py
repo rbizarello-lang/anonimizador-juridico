@@ -323,6 +323,72 @@ class ProcessCoverTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PYMUPDF, "PyMuPDF nao instalado")
+class AppealCoverTests(unittest.TestCase):
+    """E13: a capa do agravo (2o grau) nao tem "Chave Processo:", mas a tabela "Partes e
+    Representantes" tem de sair em grade: e dela que o ELENCO.md tira os papeis."""
+
+    def _cover(self, directory: Path) -> Path:
+        import pymupdf
+
+        path = directory / "agravo.pdf"
+        with pymupdf.open() as document:
+            page = document.new_page()
+            _put(page, 40, 40, "Capa do Processo", size=10)
+            _put(page, 40, 60, "Nº do processo 0001234-56.2026.4.04.0000")
+            _put(page, 40, 70, "Classe da ação: Agravo de Instrumento")
+            _put(page, 40, 80, "Processos relacionados:")
+            for index in range(8):
+                _put(page, 70, 90 + 10 * index, f"000{index}999-11.2020.4.04.7200/SC | Relacionado no 1o. grau | EXECUCAO FISCAL | VARA{index}")
+            _put(page, 40, 260, "Partes e Representantes", size=10)
+            # Grade de 2 colunas x 2 linhas.
+            shape = page.new_shape()
+            for y in (275, 289, 320):
+                shape.draw_line((40, y), (555, y))
+            for x in (40, 297, 555):
+                shape.draw_line((x, 275), (x, 320))
+            for y in (205, 219, 233):  # grade dos assuntos
+                shape.draw_line((40, y), (555, y))
+            for x in (40, 150, 555):
+                shape.draw_line((x, 205), (x, 233))
+            _put(page, 44, 215, "Codigo")
+            _put(page, 154, 215, "Descricao")
+            _put(page, 44, 229, "0312")
+            _put(page, 154, 229, "Divida Ativa")
+            shape.finish(width=0.6)
+            shape.commit()
+            _put(page, 120, 285, "AGRAVANTE")
+            _put(page, 400, 285, "AGRAVADO")
+            _put(page, 44, 300, "UNIAO - FAZENDA NACIONAL - Entidade")
+            _put(page, 44, 310, "Procuradora Ficticia PFN-4R")
+            _put(page, 302, 300, "ACME FICTICIA LTDA (00.000.000/0001-00)")
+            _put(page, 302, 310, "- Pessoa Juridica")
+            _put(page, 40, 350, "Informações Adicionais", size=10)
+            _put(page, 95, 370, "Valor da Causa:")
+            _put(page, 160, 370, "R$ 0,00")
+            _put(page, 205, 370, "Nivel de Sigilo do Processo:")
+            _put(page, 310, 370, "Sigiloso")
+            for index in range(30):  # lista longa de movimentos fora de qualquer grade
+                _put(page, 40, 400 + 9 * index, f"Linha {index} do rodape sem grade com bastante texto corrido ficticio para a capa do agravo")
+            document.save(path)
+        return path
+
+    def test_parties_table_of_the_appeal_cover_comes_out_as_a_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = _page_text(self._cover(Path(tmp)))
+        rows = [line for line in text.splitlines() if line.startswith("|")]
+        # Os dois polos na mesma linha da tabela, cada um na sua coluna (nao em linhas soltas).
+        party_row = next(line for line in rows if "UNIAO - FAZENDA NACIONAL" in line)
+        self.assertIn("ACME FICTICIA LTDA (00.000.000/0001-00) - Pessoa Juridica", party_row)
+        self.assertTrue(any("AGRAVANTE" in line and "AGRAVADO" in line for line in rows))
+        self.assertIn("Valor da Causa: R$ 0,00", text)
+
+    def test_cover_kind_needs_the_parties_table_or_the_process_key(self) -> None:
+        self.assertIn("capa", report_layouts._kinds("Informações Adicionais Partes e Representantes"))
+        self.assertIn("capa", report_layouts._kinds("Informações Adicionais Chave Processo:"))
+        self.assertNotIn("capa", report_layouts._kinds("Informações Adicionais"))
+
+
+@unittest.skipUnless(HAS_PYMUPDF, "PyMuPDF nao instalado")
 class OcrReuseTests(unittest.TestCase):
     """A |14 so mudou o texto nativo: o OCR da |13 nao roda de novo."""
 
@@ -377,6 +443,7 @@ class OcrReuseTests(unittest.TestCase):
 
     def test_cache_of_the_compatible_version_feeds_the_new_one(self) -> None:
         self.assertIn("pymupdf-rapido|13", FAST_OCR_REUSABLE_FROM)
+        self.assertIn("pymupdf-rapido|14", FAST_OCR_REUSABLE_FROM)
         self.assertNotIn(FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

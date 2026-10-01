@@ -6,9 +6,12 @@ olhando so o contexto local), e cada grafia virava um token proprio (um socio so
 8 tokens; a razao social curta e a longa sob tokens diferentes).
 
 1. Elenco do lote: as grafias de pessoa e empresa detectadas em todos os arquivos
-   se juntam por entidade: mesma forma dobrada; empresa sem sufixo societario;
+   se juntam por entidade: mesma forma dobrada (sem acento, caixa, pontuacao solta,
+   hifen de quebra de linha: "ME-TAIS" = "METAIS"); empresa sem sufixo societario;
    prefixo com 2+ palavras que so aponta para uma entidade; pessoa com o mesmo
-   primeiro e ultimo nome (ultimo com ate 1 letra de diferenca, por OCR).
+   primeiro e ultimo nome (palavra com 1 letra de diferenca no meio, por OCR; nunca
+   a ultima letra: "Adriano" e "Adriana" sao pessoas diferentes; nunca "Filho",
+   "Junior", "Neto"). Na duvida, separado (item E13).
 2. Cada grafia com 2+ palavras de conteudo e buscada no texto inteiro (maiuscula,
    acento, quebra de linha) e passa pelas mesmas travas da deteccao (juiz,
    procurador, precedente, termo protegido, higiene). So preenche lacuna: o que
@@ -25,8 +28,9 @@ rotulo (P10): e o valor que a deteccao ja achou com rotulo.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 
@@ -34,7 +38,7 @@ from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.pseudonymizer import canonicalize, fold_lexical
 
 from .fidelity import PUBLIC_CNPJ_ROOTS, drop_protected_spans
-from .propagation import FoldedText, fold_with_index, is_protected, protected_forms, spans_for_roster
+from .propagation import FoldedText, _find_all, fold_with_index, is_protected, protected_forms, spans_for_roster
 from .roster import TOKENIZE, RosterEntry, entity_core, has_token
 from .span_hygiene import ROLE_BEFORE_NAME, sanitize_spans
 
@@ -44,6 +48,16 @@ _NAME_KINDS = {"PERSON": "pessoa", "ORGANIZATION": "empresa"}
 _ID_TYPES = frozenset({"BR_PLACA", "BR_CHASSI", "BR_RENAVAM", "EMAIL_ADDRESS"})
 _CONTENT = re.compile(r"[^\W\d_]{3,}")
 _CONNECTIVES = frozenset({"de", "da", "do", "das", "dos", "e"})
+# Geracao no fim do nome: "Fulano Silva" e "Fulano Silva Filho" sao pessoas diferentes (E13).
+_GENERATION = frozenset(
+    {
+        "filho", "filha", "junior", "jr", "neto", "neta", "sobrinho", "sobrinha",
+        "segundo", "segunda", "terceiro", "terceira",
+    }
+)
+_STRAY = re.compile(r"[^\w\s'’`´./,-]|_")
+_PUNCTUATION = re.compile(r"[^\w\s]|_")
+_HYPHEN_JOIN = re.compile(r"(?<=[^\W\d_])[-‐‑‒]\s*(?=[^\W\d_])")
 # Palavras de rotulo de tabela/formulario: "pessoa" feita so delas e rotulo, nao nome.
 _LABEL_WORDS = frozenset(
     {
@@ -108,6 +122,8 @@ class _Entity:
     # "executada X": papel + nome de uma palavra so (E11). A higiene deixa o papel fora do token;
     # sem esta forma o nome curto deixaria de ser achado onde so o papel o ancora.
     role_phrases: list[str] = field(default_factory=list)
+    # Captura de duas pessoas coladas: tem token proprio e nao recebe forma curta (E13).
+    glued: bool = False
 
     @property
     def is_street(self) -> bool:
@@ -148,16 +164,24 @@ class BatchRoster:
         self._by_core: dict[tuple[str, str], _Entity] = {}
         # Empresa vista em posicao de instituicao financeira (SISBAJUD) na fase 1.
         self._financial: set[str] = set()
+        # Marca de uma palavra (E13): a palavra inicial dos nomes de empresa que o lote usa sozinha.
+        self._brands: dict[str, str] = {}
+        # Nome de 2+ palavras que a deteccao ja achou, por texto: dentro dele a marca nao esta "sozinha".
+        self._named: dict[int, list[tuple[int, int]]] = {}
+        self.brand_stats: dict[str, tuple[int, int, int, int]] = {}
 
     # --- fase 1 -------------------------------------------------------------
     def add(self, text: str, spans: Iterable[EntitySpan]) -> None:
+        named = self._named.setdefault(hash(text), [])
         for span in spans:
             value = span.value_from(text)
             kind = _NAME_KINDS.get(span.entity_type)
             if kind is not None:
                 if has_token(value) or is_protected(value, self._protected):
                     continue
-                core = entity_core(kind, value)
+                core = norm_core(kind, value)
+                if len(_CONTENT.findall(core)) >= 2:
+                    named.append((span.start, span.end))
                 if _CONTENT.search(core):
                     self._names[(span.entity_type, core)].append(value)
                     if len(_CONTENT.findall(core)) < 2:
@@ -193,14 +217,19 @@ class BatchRoster:
         return tuple(self._id_records)
 
     def review(self, texts: Iterable[str]) -> None:
-        """Antes da troca: entidade vista em contexto de juiz ou procurador nao se propaga."""
+        """Antes da troca: entidade vista em contexto de juiz ou procurador nao se propaga;
+        palavra de marca usada sozinha no lote e contada (item E13)."""
 
         entries = self._entries(include_public=True)
         if not entries:
             return
         by_key = {entity.key: entity for entity in self._ensure()}
+        candidates = self._brand_candidates()
+        bare: dict[str, list[int]] = {word: [0, 0, 0, 0] for word in candidates}
         for text in texts:
-            for span in spans_for_roster(text, entries, extra_keep=self._extra_keep):
+            folded = fold_with_index(text)
+            spans = spans_for_roster(text, entries, extra_keep=self._extra_keep, folded=folded)
+            for span in spans:
                 entity = by_key.get(span.canonical_key)
                 if entity is None:
                     continue
@@ -215,6 +244,72 @@ class BatchRoster:
                 entity.street_hits += street
                 if not entity.public_agent and _public_role(text, span.start, span.end):
                     entity.public_agent = True
+            if candidates:
+                taken = [(span.start, span.end) for span in spans] + self._named.get(hash(text), [])
+                for word in candidates:
+                    for start, end in _find_all(folded.text, word):
+                        written = text[slice(*folded.to_original(start, end))]
+                        bare[word][2] += written.islower()
+                        bare[word][3] += 1
+                    for start, end in _brand_hits(text, folded, word, taken):
+                        bare[word][0] += 1
+                        bare[word][1] += _capitalized(text[start:end])
+        self._brands = self._approve_brands(candidates, bare)
+
+    def _brand_candidates(self) -> dict[str, list[_Entity]]:
+        """Palavra inicial de nome de empresa (2+ palavras de conteudo) que pode ser marca."""
+
+        persons = {
+            word
+            for entity in self._ensure()
+            if entity.entity_type == "PERSON"
+            for core in entity.cores
+            for word in core.split()
+        }
+        candidates: dict[str, list[_Entity]] = defaultdict(list)
+        for entity in self._ensure():
+            if entity.entity_type != "ORGANIZATION" or entity.financial:
+                continue
+            for core in entity.cores:
+                words = [word for word in core.split() if word not in _CONNECTIVES]
+                if len(words) < 2 or core.split()[0] in _CONNECTIVES:
+                    continue
+                word = words[0]
+                if (
+                    len(word) < _BRAND_MIN_LETTERS
+                    or not word.isalpha()
+                    or word in persons
+                    or word in _ACTIVITY
+                    or word in _LABEL_WORDS
+                    or word in _GENERIC_BRAND
+                    or is_protected(word, self._protected)
+                ):
+                    continue
+                if entity not in candidates[word]:
+                    candidates[word].append(entity)
+        return dict(candidates)
+
+    def _approve_brands(
+        self, candidates: dict[str, list[_Entity]], bare: dict[str, list[int]]
+    ) -> dict[str, str]:
+        """Marca = palavra que o lote escreve sempre como nome proprio: nunca em minuscula (palavra
+        comum, "aco", aparece em minuscula no meio da frase) e sozinha em quantidade que cabe numa
+        sigla da empresa, nao num uso geral. Soma das mencoes do nome completo: o minimo."""
+
+        approved: dict[str, str] = {}
+        self.brand_stats = {}
+        for word, owners in candidates.items():
+            alone, capitalized, lower, total = bare.get(word, (0, 0, 0, 0))
+            full = sum(entity.occurrences for entity in owners)
+            self.brand_stats[word] = (len(owners), full, alone, capitalized, lower, total)
+            if alone == 0 or full < _BRAND_MIN_FULL or alone > _BRAND_MAX_RATIO * full:
+                continue
+            if lower > _BRAND_MAX_LOWER or lower * 50 > total:
+                continue
+            # Uma so empresa do lote comeca por essa palavra: a marca e dela. Mais de uma (irmas do
+            # mesmo grupo, nome antigo e novo): a marca tem token proprio, sem decidir de quem e.
+            approved[word] = owners[0].key if len(owners) == 1 else word
+        return approved
 
     # --- elenco -------------------------------------------------------------
     def entities(self) -> list[_Entity]:
@@ -224,7 +319,10 @@ class BatchRoster:
         kind = _NAME_KINDS.get(entity_type)
         if kind is None:
             return ""
-        entity = self._by_core.get((entity_type, entity_core(kind, value))) if self._ensure() else None
+        core = norm_core(kind, value)
+        if entity_type == "ORGANIZATION" and core in self._brands:
+            return self._brands[core]  # a marca sozinha, achada pela deteccao, leva o mesmo token da propagada
+        entity = self._by_core.get((entity_type, core)) if self._ensure() else None
         return entity.key if entity is not None else ""
 
     def _ensure(self) -> list[_Entity]:
@@ -241,14 +339,23 @@ class BatchRoster:
         entities: list[_Entity] = []
         for entity_type, kind in _NAME_KINDS.items():
             cores = {core: names for (etype, core), names in self._names.items() if etype == entity_type}
+            known = frozenset(cores)
+            support = {core: len(names) for core, names in cores.items()}
             groups: list[_Entity] = []
             # Cabeca de grupo: mais palavras, depois a grafia mais vista (o nome certo antes do OCR).
             order = sorted(cores, key=lambda item: (-len(item.split()), -len(cores[item]), -len(item), item))
             for core in order:
-                matches = [group for group in groups if any(_same(entity_type, core, head) for head in group.cores)]
-                target = _pick(entity_type, matches)
+                matches = [
+                    group
+                    for group in groups
+                    if not group.glued and any(_same(entity_type, core, head, support) for head in group.cores)
+                ]
+                if entity_type == "PERSON" and _generation_sibling(core, known):
+                    matches = []  # "Fulano Silva" com "Fulano Silva Filho" no lote: pai ou filho?
+                target = _pick(entity_type, matches, core)
                 if target is None:
                     target = _Entity(entity_type, kind)
+                    target.glued = entity_type == "PERSON" and _glued(core, known)
                     groups.append(target)
                 target.cores.append(core)
                 target.names.extend(cores[core])
@@ -296,9 +403,34 @@ class BatchRoster:
         ]
         found.extend(self._id_spans(text))
         found = drop_protected_spans(text, found, self._extra_keep, source_name=source_name)
+        if self._brands:
+            # Depois da trava de termo generico: palavra unica de empresa e, ali, "generica"; a marca
+            # foi julgada no elenco (palavra inicial do nome completo de empresa do lote).
+            found.extend(self._brand_spans(text, [*found, *unified], folded))
         found = sanitize_spans(text, found)
         merged = sorted([*unified, *_gaps(found, unified)], key=lambda span: (span.start, span.end))
         return self._retype(merged)
+
+    def _brand_spans(self, text: str, taken: Sequence[EntitySpan], folded: FoldedText | None) -> list[EntitySpan]:
+        """A marca sozinha, escrita como nome proprio, tem token proprio (nao se funde a empresa nenhuma)."""
+
+        source = folded or fold_with_index(text)
+        occupied = [(span.start, span.end) for span in taken]
+        spans: list[EntitySpan] = []
+        for word, key in self._brands.items():
+            for start, end in _brand_hits(text, source, word, occupied):
+                if _capitalized(text[start:end]):
+                    spans.append(
+                        EntitySpan(
+                            start=start,
+                            end=end,
+                            entity_type="ORGANIZATION",
+                            score=_SCORE,
+                            recognizer=RECOGNIZER,
+                            canonical_key=key,
+                        )
+                    )
+        return spans
 
     def _retype(self, spans: list[EntitySpan]) -> list[EntitySpan]:
         """Rua com nome de pessoa vira endereco; banco do SISBAJUD fica em claro."""
@@ -338,6 +470,37 @@ class BatchRoster:
             for match in pattern.finditer(text):
                 spans.append(_id_span(match.start(), match.end(), "BR_CNPJ", canonical))
         return spans
+
+
+def _merged(intervals: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Intervalos ordenados e sem sobreposicao (uniao)."""
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _brand_hits(text: str, folded: FoldedText, word: str, occupied: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Ocorrencias da palavra inteira que nao estao dentro de nome ja achado."""
+
+    spans = _merged(occupied)
+    starts = [start for start, _end in spans]
+    hits: list[tuple[int, int]] = []
+    for start, end in _find_all(folded.text, word):
+        original_start, original_end = folded.to_original(start, end)
+        position = bisect_left(starts, original_end) - 1
+        inside = position >= 0 and spans[position][1] > original_start
+        if not inside and "\n" not in text[original_start:original_end]:
+            hits.append((original_start, original_end))
+    return hits
+
+
+def _capitalized(value: str) -> int:
+    return int(value.isupper() or value.istitle())
 
 
 def _id_span(start: int, end: int, entity_type: str, canonical: str) -> EntitySpan:
@@ -410,55 +573,199 @@ def _is_label(value: str) -> bool:
     return bool(words) and all(word in _LABEL_WORDS for word in words)
 
 
-def _pick(entity_type: str, matches: list[_Entity]) -> _Entity | None:
-    """Uma so entidade combina: e ela. Varias: pessoa fica de fora ("Jose Carlos" pode ser
-    qualquer um); empresa vai para a que domina o lote (3x mais grafias que a seguinte)."""
+def _edge_trim(value: str) -> str:
+    """Tira da borda a palavra minuscula curta que a captura trouxe junto ("a Fulano Tal", "Fulano Tal e").
+
+    So em texto de caixa mista (nome todo em minuscula pode ter prenome de 3 letras) e sem
+    deixar menos de 2 palavras."""
+
+    words = value.split()
+    if len(words) < 3 or value == value.lower():
+        return value
+
+    def junk(word: str) -> bool:
+        bare = re.sub(r"\W", "", word)
+        return not bare or (len(bare) <= 3 and bare.isalpha() and bare.islower())
+
+    start, end = 0, len(words)
+    while end - start > 2 and junk(words[start]):
+        start += 1
+    while end - start > 2 and junk(words[end - 1]):
+        end -= 1
+    return " ".join(words[start:end])
+
+
+def norm_core(kind: str, value: str) -> str:
+    """Forma de comparacao da grafia: sem acento, caixa, pontuacao solta (``}`` do OCR, ponto de
+    abreviatura), com o hifen de quebra de linha desfeito ("ME-TAIS" = "METAIS"), sem sufixo
+    societario, sem palavra minuscula solta na borda."""
+
+    cleaned = _edge_trim(value).replace("&", " e ")
+    cleaned = _HYPHEN_JOIN.sub("", cleaned)
+    cleaned = _STRAY.sub(" ", cleaned)
+    # O sufixo societario ("S/A", "S.A.", "Ltda.") sai antes de a pontuacao virar espaco.
+    core = _PUNCTUATION.sub(" ", entity_core(kind, cleaned))
+    return re.sub(r"\s+", " ", core).strip()
+
+
+def _skeleton(core: str) -> str:
+    """Letras das palavras de conteudo coladas: espaco, hifen e conectivo ("da", "e") nao distinguem."""
+
+    return "".join(word for word in core.split() if word not in _CONNECTIVES)
+
+
+def _generation(words: Sequence[str]) -> frozenset[str]:
+    return frozenset(word for word in words if word in _GENERATION)
+
+
+def _pick(entity_type: str, matches: list[_Entity], core: str = "") -> _Entity | None:
+    """Uma so entidade combina: e ela. Varias: so a que domina o lote, com folga larga.
+
+    Empresa: 3x mais grafias que a seguinte. Pessoa ("Jose Carlos" pode ser qualquer um): so nome
+    com 3+ palavras de conteudo, e a cabeca tem de ter 10+ grafias e 10x as da seguinte."""
 
     if len(matches) == 1:
         return matches[0]
-    if len(matches) < 2 or entity_type != "ORGANIZATION":
+    if len(matches) < 2:
         return None
     ranked = sorted(matches, key=lambda group: len(group.names), reverse=True)
-    return ranked[0] if len(ranked[0].names) >= 3 * len(ranked[1].names) else None
+    top, second = len(ranked[0].names), len(ranked[1].names)
+    if entity_type == "ORGANIZATION":
+        return ranked[0] if top >= 3 * second else None
+    content = [word for word in core.split() if word not in _CONNECTIVES]
+    return ranked[0] if len(content) >= 3 and top >= 10 and top >= 10 * second else None
 
 
-def _close(left: str, right: str) -> bool:
-    """Mesma palavra salvo OCR/digitacao: 1 letra (4-7 letras) ou 2 letras (8+)."""
+def _glued(core: str, known: frozenset[str]) -> bool:
+    """Captura de duas pessoas coladas ("A B C" + "D E" na linha de assinaturas): a forma e a soma
+    de duas formas ja vistas, com 2+ palavras cada. Nao e a identidade de ninguem."""
+
+    words = core.split()
+    return any(
+        " ".join(words[:cut]) in known and " ".join(words[cut:]) in known
+        for cut in range(2, len(words) - 1)
+    )
+
+
+def _generation_sibling(core: str, known: frozenset[str]) -> bool:
+    """Existe, no lote, esta mesma pessoa com "Filho", "Junior", "Neto"...: a forma curta e dos dois."""
+
+    words = core.split()
+    if _generation(words):
+        return False
+    return any(
+        other != core and other.split()[: len(words)] == words and _generation(other.split()[len(words) :])
+        for other in known
+    )
+
+
+def _distance(left: str, right: str) -> int:
+    """Edicao com troca de letras vizinhas (OCR e digitacao)."""
+
+    rows = [list(range(len(right) + 1))]
+    for row, a in enumerate(left, start=1):
+        current = [row]
+        for column, b in enumerate(right, start=1):
+            best = min(rows[-1][column] + 1, current[column - 1] + 1, rows[-1][column - 1] + (a != b))
+            if row > 1 and column > 1 and a == right[column - 2] and left[row - 2] == b:
+                best = min(best, rows[-2][column - 2] + 1)
+            current.append(best)
+        rows.append(current)
+    return rows[-1][-1]
+
+
+_VOWELS = frozenset("aeiou")
+# Marca de uma palavra (E13): minimo de letras e de mencoes do nome completo; a palavra sozinha pode
+# aparecer ate 2x o que o nome completo aparece e quase nunca em minuscula.
+_BRAND_MIN_LETTERS = 5
+_BRAND_MIN_FULL = 20
+_BRAND_MAX_RATIO = 2
+_BRAND_MAX_LOWER = 2
+# Palavra de uso geral que abre nome de empresa e nao e marca de ninguem.
+_GENERIC_BRAND = frozenset(
+    {
+        "banco", "caixa", "grupo", "companhia", "sociedade", "associacao", "cooperativa", "fundacao",
+        "instituto", "sindicato", "condominio", "prefeitura", "municipio", "estado", "brasil",
+        "brasileira", "nacional", "central", "centro", "sistema", "sistemas", "nova", "novo", "norte",
+        "sul", "leste", "oeste", "super", "mega", "agro", "auto", "casa", "rede", "unidade", "posto",
+        "loja", "lojas",
+    }
+)
+# Palavra de ramo de atividade: empresas irmas diferem so por ela ("Comercio"/"Comercial"), nao por erro.
+_ACTIVITY = frozenset(
+    {
+        "comercio", "comercial", "comerciais", "industria", "industrial", "industriais", "servico",
+        "servicos", "transporte", "transportes", "transportadora", "engenharia", "construcao",
+        "construcoes", "construtora", "empreendimento", "empreendimentos", "participacao",
+        "participacoes", "administradora", "administracao", "imobiliaria", "imobiliarias",
+        "incorporadora", "distribuidora", "distribuicao", "metalurgica", "siderurgica", "agricola",
+        "agropecuaria", "alimentos", "materiais", "metais", "supermercados", "tecnologia",
+        "consultoria", "assessoria", "representacoes", "locacao", "locacoes", "importacao",
+        "exportacao", "investimentos", "empresarial", "holding", "ferragens", "equipamentos",
+    }
+)
+
+
+def _close(left: str, right: str, *, person: bool = False, first: bool = False) -> bool:
+    """Mesma palavra salvo OCR/digitacao: 1 letra (5+ letras; 4+ no sobrenome) ou 2 letras (10+).
+
+    A diferenca no fim da palavra e a que separa o par que nao se pode juntar: "Adriano"/"Adriana"
+    e "Marcos"/"Marco" (prenome de pessoa), "Comercio"/"Comercial" e "Industria"/"Industrial"
+    (ramo de atividade de empresa irma). Vale a troca de duas letras vizinhas ("Servicso"), a
+    letra final dobrada ("Tavaress") e, no prenome, a consoante final lida errado (n/m). Duas
+    palavras com digito ("FILIAL01"/"FILIAL02") nunca; uma so, e o OCR lendo "l" como "1"."""
 
     if left == right:
         return True
     shortest = min(len(left), len(right))
-    if shortest < 4:
+    if shortest < (4 if person and not first else 5):
         return False
-    limit = 2 if shortest >= 8 else 1
-    if abs(len(left) - len(right)) > limit:
+    if any(char.isdigit() for char in left) and any(char.isdigit() for char in right):
         return False
-    previous = list(range(len(right) + 1))
-    for row, a in enumerate(left, start=1):
-        current = [row]
-        for column, b in enumerate(right, start=1):
-            current.append(min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + (a != b)))
-        if min(current) > limit:
+    if left == right + right[-1] or right == left + left[-1]:
+        return True
+    swap = len(left) == len(right) and sorted(left) == sorted(right) and _distance(left, right) == 1
+    extends = left.startswith(right) or right.startswith(left)
+    if not swap:
+        if person and first and (extends or (left[-1] != right[-1] and left[-1] in _VOWELS and right[-1] in _VOWELS)):
             return False
-        previous = current
-    return previous[-1] <= limit
+        if not person and (extends or left[-1] != right[-1]) and (left in _ACTIVITY or right in _ACTIVITY):
+            return False
+    return _distance(left, right) <= (2 if shortest >= 10 else 1)
 
 
-def _same(entity_type: str, short: str, long: str) -> bool:
-    """A grafia curta e a mesma entidade da longa? (a longa ja e cabeca de grupo)"""
+def _same(entity_type: str, short: str, long: str, support: Mapping[str, int] | None = None) -> bool:
+    """A grafia curta e a mesma entidade da longa? (a longa ja e cabeca de grupo)
 
-    if short == long or short.replace(" ", "") == long.replace(" ", ""):
+    ``support``: quantas vezes cada grafia foi vista; o prenome com 1 letra de diferenca so se
+    junta quando uma das duas e rara (erro de OCR), nunca quando as duas sao bem atestadas."""
+
+    if short == long:
         return True
     small, large = short.split(), long.split()
     content = [word for word in small if word not in _CONNECTIVES]
     if len(content) < 2:
         return False
+    if _generation(small) != _generation(large):
+        return False
+    if short.replace(" ", "") == long.replace(" ", "") or _skeleton(short) == _skeleton(long):
+        return True
     if large[: len(small)] == small:
         return True
     if len(small) == len(large):
-        diffs = [(a, b) for a, b in zip(small, large) if a != b]
-        return len(diffs) == 1 and _close(*diffs[0])
-    if entity_type != "PERSON" or small[0] != large[0] or not _close(small[-1], large[-1]):
+        diffs = [(index, a, b) for index, (a, b) in enumerate(zip(small, large)) if a != b]
+        if len(diffs) != 1:
+            return False
+        index, left, right = diffs[0]
+        person = entity_type == "PERSON"
+        if not _close(left, right, person=person, first=person and index == 0):
+            return False
+        if index > 0 or entity_type != "PERSON":
+            return True
+        # Prenome ("Marina"/"Marita"): uma das duas grafias tem de ser rara; duas bem vistas sao duas pessoas.
+        seen = sorted((support or {}).get(core, 0) for core in (short, long))
+        return len(seen) == 2 and seen[0] * 4 <= seen[1]
+    if entity_type != "PERSON" or small[0] != large[0] or not _close(small[-1], large[-1], person=True):
         return False
     # Primeiro e ultimo nome batem; os do meio da curta aparecem, na ordem, na longa.
     middle = iter(large[1:-1])

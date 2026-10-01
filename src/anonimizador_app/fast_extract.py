@@ -32,11 +32,11 @@ from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 from .report_layouts import report_plan
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|14"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|15"
 # Versoes cujas folhas lidas por OCR saem iguais as desta (a |14 so mudou o texto nativo: relatorios
-# SISBAJUD/RENAJUD/capa, fila 3.x E12). O cache delas serve de ponto de partida: so as folhas nativas
-# sao refeitas, e o OCR (~90 min no lote AÇOCARGAS) nao roda de novo.
-FAST_OCR_REUSABLE_FROM = ("pymupdf-rapido|13",)
+# SISBAJUD/RENAJUD/capa, fila 3.x E12; a |15 so a capa do agravo, E13). O cache delas serve de ponto
+# de partida: so as folhas nativas sao refeitas, e o OCR (~90 min no lote AÇOCARGAS) nao roda de novo.
+FAST_OCR_REUSABLE_FROM = ("pymupdf-rapido|14", "pymupdf-rapido|13")
 # Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
 # documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
 # tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").

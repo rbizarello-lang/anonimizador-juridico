@@ -101,7 +101,10 @@ inclusive a de evento sem documento (intimacao, prazo, ciencia). Cada lote traz
 o INDICE.md: por arquivo, eventos e documentos com a faixa de folhas, a data,
 as folhas lidas por OCR e as tabelas; e a linha do tempo do processo.
 E traz o ELENCO.md: quem e quem (requerido, executado, procurador...) pelos
-tokens, sem nomes, tirado da capa de cada processo.
+tokens, sem nomes, tirado da capa de TODO processo do lote (a de agravo tambem), com o
+papel que o cabecalho das pecas da a quem nao esta em capa ("EXECUTADO: [EMPRESA_2]") e
+os vinculos entre tokens que o proprio texto diz (mesmo CNPJ nas capas; "nome inicial ...
+alterado para ..."). Os tokens nao sao unificados: o vinculo e dito, nao decidido.
 Cada folha comeca com a linha de citacao, por exemplo
 "[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]" (folha do arquivo, evento, documento e
 pagina do carimbo do eproc).
@@ -125,6 +128,21 @@ perder, a folha sai como antes. Como a extracao mudou (versao |14) mas so no tex
 nativo, o primeiro lote depois da atualizacao aproveita o cache da |13: as folhas
 lidas por OCR nao sao lidas de novo (AÇOCARGAS inteiro leva uns 3 minutos nessa etapa,
 nao 90).
+
+Deteccao 2.5: um token por entidade, sem juntar homonimos. Hifen de quebra de linha
+("ME-TAIS" = "METAIS"), pontuacao solta do OCR ("DE}") e palavra partida pelo OCR deixam de
+criar token novo; a forma curta de um nome com varias capturas ("Fulana X Y" e "Fulana X Y Z")
+passa a seguir a forma completa quando esta domina o lote com folga larga. Nao se junta:
+prenome diferente por uma letra ("Adriano"/"Adriana"), "Filho"/"Junior"/"Neto", ramo de
+atividade de empresa irma ("Comercio"/"Comercial", "Industria"/"Industrial"), filial ("Filial 1"/
+"Filial 2"), nome curto que cabe em duas pessoas, duas pessoas colhidas juntas numa linha de
+assinaturas. A marca de uma palavra que o lote usa sozinha (so em maiuscula/Titulo, nunca em
+minuscula no meio da frase, pelo menos 20 mencoes do nome completo) passa a ser trocada em
+todo o lote: com o token da empresa quando so uma empresa do lote comeca por ela, com token
+proprio quando sao varias (irmas do grupo, nome antigo e novo). A capa do agravo (2o grau, sem
+"Chave Processo:") passa a sair com as tabelas de grade, e a "Partes e Representantes" dela
+alimenta o ELENCO.md (versao de extracao |15, so a capa mudou: o cache |14 serve de ponto
+de partida, sem OCR).
 
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar

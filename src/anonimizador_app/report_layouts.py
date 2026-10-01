@@ -190,7 +190,9 @@ def _kinds(native: str) -> frozenset[str]:
         kinds.add("sisbajud")
     if "Lista de Veículos" in native and "Placa Anterior" in native and "Restrições Existentes" in native:
         kinds.add("renajud")
-    if "Informações Adicionais" in native and "Chave Processo:" in native:
+    # Capa do processo: a de 1o grau traz "Chave Processo:"; a do agravo (2o grau) nao, mas traz
+    # "Partes e Representantes" (sem isto a capa do agravo perdia as tabelas de grade, E13).
+    if "Informações Adicionais" in native and ("Chave Processo:" in native or "Partes e Representantes" in native):
         kinds.add("capa")
     return frozenset(kinds)
 
