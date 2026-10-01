@@ -184,7 +184,11 @@ def apply_company_groups(markdown_paths: Sequence[Path]) -> list[CompanyGroup]:
 
     paths = list(markdown_paths)
     texts = [path.read_bytes().decode("utf-8") for path in paths]
-    groups = company_groups([(path.name, text) for path, text in zip(paths, texts)])
+    # No Windows o Markdown sai com CRLF (``write_text``); as capas ("Partes e Representantes\n") so se
+    # leem com LF. A deteccao usa o texto com LF; a gravacao parte dos bytes originais (so o token muda).
+    groups = company_groups(
+        [(path.name, text.replace("\r\n", "\n")) for path, text in zip(paths, texts)]
+    )
     if groups:
         for path, text in zip(paths, texts):
             grouped = apply_groups(text, groups)
