@@ -1,6 +1,6 @@
 """Codigos eproc de procurador na capa e em linhas Procurador(es)/Advogado(s) (Ciclo 4c).
 
-Apos um PERSON da lista de alvos, ``PR077705`` / ``P3412557`` viram [EPROC_n].
+Apos um PERSON da lista de alvos, ``PR900001`` / ``P9000001`` viram [EPROC_n].
 ``PFN`` + digitos ao lado de PFN permanece em claro. ``REsp 1.259.018`` nao casa.
 Uma vez visto, o mesmo codigo e propagado no restante do documento.
 """

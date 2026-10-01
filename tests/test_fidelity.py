@@ -222,31 +222,31 @@ class FidelityFilterTests(unittest.TestCase):
 
     def test_pfn_officer_from_ner_is_dropped(self) -> None:
         text = (
-            "Juliano Ficticio Reis, Procurador da Fazenda Nacional, "
+            "Rafael Ficticio Neves, Procurador da Fazenda Nacional, "
             "requereu SISBAJUD. A Uniao permanece."
         )
-        start = text.index("Juliano")
-        end = start + len("Juliano Ficticio Reis")
+        start = text.index("Rafael")
+        end = start + len("Rafael Ficticio Neves")
         self.assertTrue(is_pfn_officer(text, start, end))
-        kept = drop_protected_spans(text, [_person(text, "Juliano Ficticio Reis")])
+        kept = drop_protected_spans(text, [_person(text, "Rafael Ficticio Neves")])
         self.assertEqual(kept, [])
 
     def test_pfn_event_code_on_same_line_is_dropped(self) -> None:
         text = (
-            "26/08/2025 15:45:55 PFN2041305 - Juliano Ficticio Reis - "
+            "26/08/2025 15:45:55 PFN2041305 - Rafael Ficticio Neves - "
             "PROCURADOR 5017674-26.2025.4.04.7001/PR 1"
         )
-        start = text.index("Juliano")
-        end = start + len("Juliano Ficticio Reis")
+        start = text.index("Rafael")
+        end = start + len("Rafael Ficticio Neves")
         self.assertTrue(is_pfn_officer(text, start, end))
-        kept = drop_protected_spans(text, [_person(text, "Juliano Ficticio Reis")])
+        kept = drop_protected_spans(text, [_person(text, "Rafael Ficticio Neves")])
         self.assertEqual(kept, [])
 
     def test_pfn_does_not_protect_target_list(self) -> None:
-        text = "Roger Ficticio Bizarello, Procurador da Fazenda Nacional."
+        text = "Marcos Ficticio Souza, Procurador da Fazenda Nacional."
         kept = drop_protected_spans(
             text,
-            [_person(text, "Roger Ficticio Bizarello", recognizer="ListaDeAlvos")],
+            [_person(text, "Marcos Ficticio Souza", recognizer="ListaDeAlvos")],
         )
         self.assertEqual(len(kept), 1)
 

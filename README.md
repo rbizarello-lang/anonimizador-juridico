@@ -132,7 +132,7 @@ com a instituicao acima) e a lista de veiculos do RENAJUD tambem. So em layout
 reconhecido pelos rotulos fixos, e so se nenhuma palavra da folha se perder: se
 perder, a folha sai como antes. Como a extracao mudou (versao |14) mas so no texto
 nativo, o primeiro lote depois da atualizacao aproveita o cache da |13: as folhas
-lidas por OCR nao sao lidas de novo (AÇOCARGAS inteiro leva uns 3 minutos nessa etapa,
+lidas por OCR nao sao lidas de novo (C1 inteiro leva uns 3 minutos nessa etapa,
 nao 90).
 
 Deteccao 2.5: um token por entidade, sem juntar homonimos. Hifen de quebra de linha

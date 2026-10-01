@@ -34,7 +34,7 @@ FORD
 """
 
 NEGATIVES = """\
-Procurador(es): DANILO MORAES PR077705 EDSON JOSE GIOCONDO JUNIOR PR077717
+Procurador(es): CARLOS TESTE PR900001 PAULO JOSE EXEMPLO JUNIOR PR900002
 Pago em 14/06/1996 no Evento 12, valor R$ 9.473,86.
 Placa PR/SDS3A82 no texto corrido sem tabela.
 """
@@ -91,7 +91,7 @@ class TableLabelsTests(unittest.TestCase):
     def test_negatives_are_not_vehicle_ids(self) -> None:
         spans = TableLabelsEngine().detect(NEGATIVES)
         blob = " ".join(NEGATIVES[span.start : span.end] for span in spans)
-        self.assertNotIn("PR077705", blob)
+        self.assertNotIn("PR900001", blob)
         self.assertNotIn("14/06/1996", blob)
         self.assertNotIn("9.473,86", blob)
         self.assertEqual(spans, [])

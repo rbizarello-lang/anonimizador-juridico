@@ -347,12 +347,12 @@ class TargetListCiclo3Tests(unittest.TestCase):
             {street[span.start : span.end] for span in engine.detect(street)},
             set(),
         )
-        judge = "Juiz(a):\n\nGILSON LUIZ INACIO\n\nPartes"
+        judge = "Juiz(a):\n\nOSVALDO LUIZ FICTICIO\n\nPartes"
         values = {judge[span.start : span.end] for span in engine.detect(judge)}
-        self.assertNotIn("GILSON", values)
-        pfn = "Juliano Franco Dias dos Reis, Procurador da Fazenda Nacional, juntou."
+        self.assertNotIn("OSVALDO", values)
+        pfn = "Rafael Teste das Neves, Procurador da Fazenda Nacional, juntou."
         pfn_values = {pfn[span.start : span.end] for span in engine.detect(pfn)}
-        self.assertFalse(any("Juliano" in item for item in pfn_values))
+        self.assertFalse(any("Rafael" in item for item in pfn_values))
 
     def test_listed_full_name_is_tokenized_near_pgfn(self) -> None:
         engine = TargetListEngine(
