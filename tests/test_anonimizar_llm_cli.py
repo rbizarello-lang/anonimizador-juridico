@@ -70,21 +70,38 @@ class GateCliTests(_Workspace):
         self.assertIn("invalid choice", err)
         self.assertFalse((self.base / "exp").exists())
 
-    def test_missing_confirmations_block_and_the_warning_is_printed(self) -> None:
-        code, _out, err = _run(
-            [str(self.source), "--canal", "gemini-pago", *self.roots],
-            env={ENV_VAR: FAKE},
-            vault=FakeVault(),
-        )
+    def test_without_the_per_run_flag_it_lists_what_would_be_sent_and_sends_nothing(self) -> None:
+        discoverer = FakeChannelDiscoverer()
+        with patch.object(cli, "build_discoverer", lambda *a, **k: discoverer):
+            code, out, err = _run(
+                [str(self.source), "--canal", "gemini-pago", *self.roots],
+                env={ENV_VAR: FAKE},
+                vault=FakeVault(),
+            )
         self.assertEqual(code, 2)
+        # Os avisos so informam (sigilo, residencia, faturamento).
         self.assertIn("nomes, endereços, fatos e valores seguem em claro", err)
-        self.assertIn("aviso foi lido", err)
-        self.assertIn("faturamento", err)
-        self.assertNotIn(FAKE, err)
+        self.assertIn("Faturamento", err)
+        self.assertIn("so informacao", err)
+        # A lista do que iria ao provedor: canal, arquivo, caracteres.
+        self.assertIn("O QUE ESTA RODADA VAI ENVIAR AO PROVEDOR", out)
+        self.assertIn("Canal: gemini-pago", out)
+        self.assertIn("autos.md", out)
+        self.assertIn("caracteres", out)
+        self.assertIn("--confirmo-envio", err)
+        self.assertIn("Nada foi enviado", err)
+        self.assertEqual(discoverer.calls, [])
+        self.assertFalse((self.base / "exp").exists())
+        self.assertNotIn(FAKE, out + err)
+
+    def test_the_old_per_session_flags_are_gone(self) -> None:
+        code, _out, err = _run([str(self.source), "--canal", "gemini-pago", "--ciente", *self.roots])
+        self.assertEqual(code, 2)
+        self.assertIn("unrecognized arguments", err)
 
     def test_verify_reports_without_sending(self) -> None:
         code, out, _err = _run(
-            ["--verificar", "--canal", "gemini-pago", "--ciente", "--faturamento-confirmado", *self.roots],
+            ["--verificar", "--canal", "gemini-pago", *self.roots],
             env={ENV_VAR: FAKE},
             vault=FakeVault(),
         )
@@ -97,9 +114,7 @@ class GateCliTests(_Workspace):
         self.assertIn("BLOQUEADO", out)
 
     def test_allowed_run_records_the_engine_and_never_the_key(self) -> None:
-        argv = [
-            str(self.source), "--canal", "gemini-pago", "--ciente", "--faturamento-confirmado", *self.roots,
-        ]
+        argv = [str(self.source), "--canal", "gemini-pago", "--confirmo-envio", *self.roots]
         with patch.object(cli, "build_discoverer", lambda *a, **k: FakeChannelDiscoverer()):
             code, out, err = _run(argv, env={ENV_VAR: FAKE}, vault=FakeVault())
         self.assertEqual(code, 0, err)
@@ -109,6 +124,8 @@ class GateCliTests(_Workspace):
         self.assertIn("motor LLM: gemini-pago", audit)
         self.assertIn("Chave lida de: variavel de ambiente", audit)
         self.assertIn("Aviso (versao", audit)
+        self.assertIn("Confirmacao desta rodada", audit)
+        self.assertIn("1 arquivo(s)", audit)
         for path in self.base.rglob("*"):
             if path.is_file():
                 self.assertNotIn(FAKE, path.read_text(encoding="utf-8", errors="ignore"), path.name)
@@ -174,10 +191,7 @@ class OfflineCliTests(_Workspace):
 
 class FallbackExitCodeTests(_Workspace):
     def _argv(self, *extra):
-        return [
-            str(self.source), "--canal", "gemini-pago", "--ciente", "--faturamento-confirmado",
-            *self.roots, *extra,
-        ]
+        return [str(self.source), "--canal", "gemini-pago", "--confirmo-envio", *self.roots, *extra]
 
     def _run_with(self, discoverer, engine, *extra):
         with patch.object(cli, "build_discoverer", lambda *a, **k: discoverer), patch(

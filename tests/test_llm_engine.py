@@ -10,6 +10,7 @@ from pathlib import Path
 
 from anonimizador_app.credentials import ENV_VAR, VAULT_SERVICE, VAULT_USER
 from anonimizador_app.llm_discovery import LlmConfigError
+from anonimizador_app.llm_gate import FilePlan, RunPermit, SendPlan
 from anonimizador_app.llm_engine import (
     BLOCKED_CHANNELS,
     CHANNELS,
@@ -17,10 +18,12 @@ from anonimizador_app.llm_engine import (
     EngineChoice,
     adc_available,
     audit_lines,
+    billing_note,
     build_discoverer,
     build_offline_discoverer,
     check_engine,
     config_key_findings,
+    confirmation_lines,
     missing_packages,
     warning_paragraphs,
     warning_text,
@@ -30,7 +33,14 @@ from anonimizador_app.settings import AppSettings, CustomRule, save_settings
 from anonimizador_app.version import ENGINE_LOCAL, VersionInfo, engine_label
 from test_credentials import FAKE, FakeVault
 
-GOOD = EngineChoice(channel="gemini-pago", acknowledged=True, billing_confirmed=True)
+GOOD = EngineChoice(channel="gemini-pago")
+PLAN = SendPlan(
+    files=(
+        FilePlan("PARTE_1.pdf", 10, 3000, 2, 0, 3000),
+        FilePlan("PARTE_2.pdf", 8, 2000, 1, 1, 0),
+    ),
+    verification_rounds=1,
+)
 
 
 def _env(**extra: str) -> dict[str, str]:
@@ -47,7 +57,7 @@ def _ready(**kwargs):
 class ChannelTests(unittest.TestCase):
     def test_empty_free_and_unknown_channels_are_blocked(self) -> None:
         for channel in ("", "  ", "gemini-gratuito", "GEMINI-GRATUITO", "gemini", "openai", "qualquer"):
-            choice = EngineChoice(channel=channel, acknowledged=True, billing_confirmed=True)
+            choice = EngineChoice(channel=channel)
             decision = check_engine(
                 choice, env=_env(), vault=FakeVault(), missing_fn=lambda _c: []
             )
@@ -81,8 +91,6 @@ class GateTests(unittest.TestCase):
     def test_each_missing_condition_blocks_alone(self) -> None:
         cases = {
             "chave": dict(env={}, vault=FakeVault()),
-            "aviso": dict(choice=dataclasses.replace(GOOD, acknowledged=False)),
-            "faturamento": dict(choice=dataclasses.replace(GOOD, billing_confirmed=False)),
             "pacotes": dict(missing_fn=lambda _c: ["langextract"]),
         }
         for name, change in cases.items():
@@ -136,10 +144,8 @@ class GateTests(unittest.TestCase):
 
 
 class VertexTests(unittest.TestCase):
-    def test_vertex_needs_project_credential_and_confirmations(self) -> None:
-        choice = EngineChoice(
-            channel="vertex-sp", acknowledged=True, billing_confirmed=True, project="projeto-ficticio"
-        )
+    def test_vertex_needs_project_and_credential(self) -> None:
+        choice = EngineChoice(channel="vertex-sp", project="projeto-ficticio")
         ready = check_engine(choice, missing_fn=lambda _c: [], adc_fn=lambda: True)
         self.assertTrue(ready.allowed, ready.reasons)
         self.assertEqual(ready.config.provider, "vertex")
@@ -167,7 +173,7 @@ class VertexTests(unittest.TestCase):
     def test_ollama_is_not_a_channel_any_more(self) -> None:
         self.assertNotIn("ollama-local", CHANNELS)
         refused = check_engine(
-            EngineChoice(channel="ollama-local", acknowledged=True, billing_confirmed=True),
+            EngineChoice(channel="ollama-local"),
             missing_fn=lambda _c: [],
         )
         self.assertFalse(refused.allowed)
@@ -196,11 +202,96 @@ class WarningTests(unittest.TestCase):
 
     def test_audit_lines_name_channel_and_source_but_never_the_key(self) -> None:
         decision = _ready()
-        lines = "\n".join(audit_lines(decision, GOOD))
+        permit = RunPermit.for_plan("gemini-pago", PLAN)
+        lines = "\n".join(audit_lines(decision, GOOD, permit))
         self.assertIn("Canal: gemini-pago", lines)
         self.assertIn("variavel de ambiente", lines)
         self.assertIn(WARNING_VERSION, lines)
+        self.assertIn("a decisao de enviar foi do Operador", lines)
+        self.assertIn("Confirmacao desta rodada", lines)
+        self.assertIn("2 arquivo(s), 5000 caractere(s)", lines)
+        # A AUDITORIA exportavel nao leva nome de arquivo.
+        self.assertNotIn("PARTE_1", lines)
         self.assertNotIn(FAKE, lines)
+
+    def test_the_warnings_inform_and_do_not_block(self) -> None:
+        # Decisao do Operador: o app avisa (sigilo, residencia, faturamento), nao bloqueia por politica.
+        self.assertTrue(_ready().allowed)
+        self.assertIn("é do Operador", warning_text("gemini-pago"))
+        self.assertIn("Faturamento", billing_note("gemini-pago"))
+        self.assertIn("institucional", billing_note("vertex-sp"))
+
+
+class ConfirmationTests(unittest.TestCase):
+    """O que o Operador ve antes de cada envio."""
+
+    def test_confirmation_shows_channel_files_and_total(self) -> None:
+        text = "\n".join(confirmation_lines(_ready(), PLAN))
+        self.assertIn("Canal: gemini-pago", text)
+        self.assertIn("PARTE_1.pdf: 3.000 caracteres", text)
+        self.assertIn("PARTE_2.pdf: 2.000 caracteres", text)
+        self.assertIn("Total: 5.000 caracteres", text)
+        self.assertIn("3.000 ainda não estão no cache", text)
+        self.assertIn("nomes, fatos e valores vão em claro", text)
+        self.assertNotIn(FAKE, text)
+
+    def test_vertex_confirmation_shows_the_region_and_does_not_force_it(self) -> None:
+        for region in ("southamerica-east1", "us-central1"):
+            choice = EngineChoice(channel="vertex-sp", project="projeto-ficticio", location=region)
+            decision = check_engine(choice, missing_fn=lambda _c: [], adc_fn=lambda: True)
+            self.assertTrue(decision.allowed, decision.reasons)
+            text = "\n".join(confirmation_lines(decision, PLAN))
+            self.assertIn(f"Região do Vertex AI: {region}", text)
+            self.assertIn("projeto-ficticio", text)
+            permit = RunPermit.for_plan("vertex-sp", PLAN, region=region)
+            self.assertIn(f"Regiao do Vertex AI confirmada: {region}", "\n".join(permit.audit_lines()))
+
+    def test_unreadable_file_is_listed_as_not_sent(self) -> None:
+        plan = SendPlan(files=PLAN.files, errors=(("quebrado.pdf", "arquivo corrompido"),))
+        text = "\n".join(confirmation_lines(_ready(), plan))
+        self.assertIn("quebrado.pdf: NÃO será enviado", text)
+
+
+class PermitTests(unittest.TestCase):
+    def test_a_permit_lives_for_one_run_only(self) -> None:
+        from anonimizador_app.llm_gate import GateError
+
+        permit = RunPermit.for_plan("gemini-pago", PLAN)
+        self.assertFalse(permit.active)
+        with self.assertRaises(GateError):
+            permit.require_active()
+        permit.start()
+        self.assertTrue(permit.active)
+        permit.require_active()
+        with self.assertRaises(GateError):
+            permit.start()  # nao reinicia
+        permit.finish()
+        self.assertFalse(permit.active)
+        with self.assertRaises(GateError):
+            permit.require_active()
+        with self.assertRaises(GateError):
+            permit.start()  # expirou: a proxima rodada precisa de confirmacao nova
+
+    def test_the_real_discoverer_will_not_reach_the_provider_without_an_active_permit(self) -> None:
+        from anonimizador_app.llm_discovery import LangExtractDiscoverer
+
+        decision = _ready()
+        text = "<!-- pagina-origem: 1 -->\nO sócio FULANO DE TAL foi citado e consta no processo.\n"
+        with block_network() as attempts:
+            no_permit = build_discoverer(decision, cache_dir=None)
+            with self.assertRaises(LlmConfigError) as caught:
+                no_permit.discover(text)
+            self.assertIn("confirmacao desta rodada", str(caught.exception))
+            fresh = RunPermit.for_plan("gemini-pago", PLAN)
+            armed = build_discoverer(decision, cache_dir=None, permit=fresh)
+            with self.assertRaises(LlmConfigError):  # confirmacao ainda nao iniciada
+                armed.discover(text)
+            fresh.start()
+            fresh.finish()
+            with self.assertRaises(LlmConfigError):  # confirmacao expirada
+                armed.discover(text)
+        self.assertEqual(attempts, [])
+        self.assertIsInstance(armed, LangExtractDiscoverer)
 
 
 class BuilderTests(unittest.TestCase):

@@ -592,9 +592,15 @@ def _build_lote_tab(
                         run_kicker = ui.label("Fila vazia").classes("aj-label aj-run-kicker")
                         run_count = ui.label("Nenhum arquivo").classes("aj-run-count")
                         run_size = ui.label("Escolha os documentos do lote.").classes("aj-run-sub")
-                        run_button = ui.button("Anonimizar lote", icon="play_arrow").props(
+                        run_button = ui.button("Anonimizar lote · motor local", icon="play_arrow").props(
                             "unelevated no-caps"
                         ).classes("aj-cta")
+
+                        def sync_run_button() -> None:
+                            """O botao diz o motor: local, ou LLM com o canal (e a confirmacao a seguir)."""
+                            run_button.text = session.engine.button_label()
+                            run_button.props(f"icon={session.engine.button_icon()}")
+
                         progress = ui.linear_progress(value=0, show_value=False).props(
                             "instant-feedback"
                         ).classes("aj-progress w-full")
@@ -637,7 +643,7 @@ def _build_lote_tab(
                             ui.label(
                                 "Roda neste computador. Na dúvida, o trecho original fica."
                             ).classes("aj-card-note")
-                            build_engine_section(session)
+                            build_engine_section(session, on_change=sync_run_button)
                 with ui.row().classes("aj-principle no-wrap items-start"):
                     ui.icon("verified_user")
                     ui.label(

@@ -76,8 +76,13 @@ class FakeDiscoverer:
         self.fail_pass = fail_pass
         self.calls: list[str] = []
 
+    permit = None
+
     def describe(self) -> str:
         return "descobridor falso"
+
+    def plan(self, text: str) -> tuple[int, int, int, int]:
+        return 1, len(text), 0, len(text)
 
     def discover(self, text: str) -> Discovery:
         self.calls.append(text)

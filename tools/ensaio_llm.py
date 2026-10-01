@@ -8,12 +8,17 @@ Credenciais real nao e tocado.
 
 Passos:
 
-  1. portao do motor: bloqueia sem canal, sem aviso, sem faturamento, canal gratuito;
-  2. rodada A: PDF -> lote (ancoras, INDICE, ELENCO, AUDITORIA com o motor);
+  1. portao do motor: bloqueia sem canal, canal gratuito, canal desconhecido, sem chave, config.json com chave;
+  1c. confirmacao por rodada: a escolha do motor nao arma o envio; o descobridor real recusa sem a
+      confirmacao ativa; a confirmacao mostra canal, arquivos e caracteres e expira no fim da rodada;
+  2. rodada A: PDF -> lote (ancoras, INDICE, ELENCO, AUDITORIA com o motor e a confirmacao);
   3. revisao do elenco: linhas com tipo, papel, mencoes e token; decisoes fixas;
   4. rodada B: elenco revisado reaplicado SEM rede (so cache);
   5. as duas reguas (tools/medir_estrutura.py e tools/medir_vazamento.py) nas rodadas A e B;
-  6. varredura: a chave falsa nao aparece em nenhum arquivo gerado nem na saida do ensaio.
+  6. falha forcada do LLM (resposta quebrada, resposta vazia, motor local que tambem falha): a folha passa
+     pelo motor local, nunca sai com nome em claro, resposta vazia e falha nao vao para o cache, e se o motor
+     local tambem falhar o arquivo fica retido na quarentena, fora da pasta exportavel;
+  7. varredura: a chave falsa nao aparece em nenhum arquivo gerado nem na saida do ensaio.
 
 Uso:  python tools/ensaio_llm.py [--saida PASTA] [--manter]
 Codigo de saida: 0 se todas as conferencias passaram; 1 se alguma falhou.
@@ -49,9 +54,14 @@ from anonimizador_app.llm_engine import (  # noqa: E402
     audit_lines,
     build_discoverer,
     check_engine,
+    confirmation_lines,
 )
+from anonimizador_app.llm_discovery import LlmConfigError  # noqa: E402
+from anonimizador_app.llm_gate import RunPermit  # noqa: E402
 from anonimizador_app.netblock import block_network  # noqa: E402
-from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, run_llm_job  # noqa: E402
+from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, plan_send, run_llm_job  # noqa: E402
+from anonimizador_app.contextual import build_contextual_engine  # noqa: E402
+from anonimizador_app.settings import AppSettings  # noqa: E402
 from anonimizador_app.roster import KEEP, TOKENIZE  # noqa: E402
 from anonimizador_app.roster_review import build_rows, reapply_offline, summarize  # noqa: E402
 
@@ -237,14 +247,12 @@ def scan_for_key(folders: list[Path], extra_text: str = "") -> list[str]:
 def step_gate(private_root: Path, vault: MemoryVault) -> None:
     print("\n== 1. Portao do motor ==")
     env = {ENV_VAR: FAKE_KEY}
-    good = EngineChoice(channel=CHANNEL, acknowledged=True, billing_confirmed=True)
+    good = EngineChoice(channel=CHANNEL)
     base = dict(private_root=private_root, env=env, vault=vault)
     for name, choice in (
         ("sem canal", EngineChoice()),
-        ("canal gratuito", EngineChoice(channel="gemini-gratuito", acknowledged=True, billing_confirmed=True)),
-        ("canal desconhecido", EngineChoice(channel="outro", acknowledged=True, billing_confirmed=True)),
-        ("sem aviso lido", EngineChoice(channel=CHANNEL, billing_confirmed=True)),
-        ("sem faturamento confirmado", EngineChoice(channel=CHANNEL, acknowledged=True)),
+        ("canal gratuito", EngineChoice(channel="gemini-gratuito")),
+        ("canal desconhecido", EngineChoice(channel="outro")),
     ):
         check(f"bloqueia: {name}", not check_engine(choice, **base).allowed)
     check(
@@ -289,6 +297,95 @@ def step_real_model_is_built_with_the_explicit_key(decision, cache_dir: Path) ->
         check("o modelo usa a chave do cofre, nao a GEMINI_API_KEY do ambiente", used == FAKE_KEY)
 
 
+def broken_model(mode: str):
+    """Modelo falso que FALHA: ``quebrado`` (resposta fora do formato) ou ``vazio`` (JSON valido, sem nada)."""
+
+    from langextract.core import base_model
+    from langextract.core import types as lx_types
+
+    class BrokenModel(base_model.BaseLanguageModel):
+        def infer(self, batch_prompts, **kwargs):
+            for _prompt in batch_prompts:
+                output = "{truncado" if mode == "quebrado" else json.dumps({"extractions": []})
+                yield [lx_types.ScoredOutput(score=1.0, output=output)]
+
+    return BrokenModel()
+
+
+def local_engine():
+    """O motor local do ensaio: reconhecedores e lista de alvos (sem NER, que e opcional e pesado)."""
+
+    people = [value for kind, value, role in ENTITIES if kind == "pessoa" and role != "magistrado"]
+    companies = [value for kind, value, _role in ENTITIES if kind == "empresa"]
+    return build_contextual_engine(
+        AppSettings(local_ner_enabled=False, target_people=people, target_companies=companies)
+    )
+
+
+class ExplodingEngine:
+    def detect(self, text):
+        raise RuntimeError("motor local indisponivel (simulado)")
+
+    def scan_residual(self, text):
+        return []
+
+
+def step_forced_failure(pdf: Path, export_root: Path, private_root: Path, decision, choice) -> None:
+    print("\n== 6. Falha forcada do LLM: motor local, nada em claro, nada no cache ==")
+    private_names = [value for _kind, value, role in ENTITIES if role != "magistrado"]
+    for mode in ("quebrado", "vazio"):
+        cache = private_root / f"cache_llm_falha_{mode}"
+        permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
+        broken = LangExtractDiscoverer(
+            decision.config, cache_dir=cache, model_factory=lambda mode=mode: broken_model(mode), permit=permit
+        )
+        result = run_llm_job(
+            [pdf],
+            export_root=export_root,
+            private_root=private_root,
+            discoverer=broken,
+            verification_rounds=0,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, permit),
+            fallback_engine=local_engine(),
+            job_id=f"lote_falha_{mode}",
+        )
+        outcome = result.job.outcomes[0]
+        text = outcome.markdown_path.read_text(encoding="utf-8") if outcome.ok else ""
+        check(f"LLM {mode}: o arquivo e gravado (o motor local tratou as folhas)", outcome.ok and bool(text), outcome.error)
+        leaked = [value for value in private_names if value.casefold() in text.casefold()]
+        check(f"LLM {mode}: nenhum nome privado em claro", not leaked, f"{len(leaked)} em claro")
+        check(f"LLM {mode}: CPF e CNPJ nao saem em claro", CPF not in text and CNPJ not in text)
+        listed = result.fallback_pages.get(PDF_NAME, [])
+        check(f"LLM {mode}: as folhas tratadas pelo motor local aparecem no resultado", bool(listed), str(listed))
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        check(f"LLM {mode}: AUDITORIA e LEIA-ME dizem 'folhas tratadas pelo motor local por falha do LLM'",
+              "olhas tratadas pelo motor local por falha do LLM" in audit and "olhas tratadas pelo motor local por falha do LLM" in guide)
+        cached = list(cache.glob("*.json")) if cache.exists() else []
+        check(f"LLM {mode}: resposta {mode} nao foi guardada no cache", not cached, f"{len(cached)} arquivo(s)")
+    # O motor local tambem cai: o arquivo nao vai para a pasta exportavel.
+    permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
+    broken = LangExtractDiscoverer(
+        decision.config, cache_dir=None, model_factory=lambda: broken_model("quebrado"), permit=permit
+    )
+    held = run_llm_job(
+        [pdf],
+        export_root=export_root,
+        private_root=private_root,
+        discoverer=broken,
+        verification_rounds=0,
+        engine=decision.channel,
+        fallback_engine=ExplodingEngine(),
+        job_id="lote_falha_retido",
+    )
+    exported = [path for path in held.job.export_dir.glob("*.md") if path.name not in {"INDICE.md", "ELENCO.md"}]
+    quarantine = list((held.job.map_path.parent / "quarentena").glob("*.md"))
+    check("motor local tambem falhou: nada e exportado, o arquivo fica retido na pasta privada",
+          not exported and len(quarantine) == 1 and not held.job.export_allowed)
+    check("motor local tambem falhou: a AUDITORIA e o LEIA-ME avisam", "quarentena" in (held.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--saida", help="Pasta de trabalho (padrao: temporaria, apagada no fim).")
@@ -310,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     pdf = make_pdf(pdf_dir)
     step_gate(private_root, vault)
 
-    choice = EngineChoice(channel=CHANNEL, acknowledged=True, billing_confirmed=True)
+    choice = EngineChoice(channel=CHANNEL)
     decision = check_engine(choice, private_root=private_root, env={ENV_VAR: FAKE_KEY}, vault=vault)
     if not decision.allowed:
         check("portao liberado para a rodada", False, decision.blocked_message())
@@ -324,12 +421,28 @@ def main(argv: list[str] | None = None) -> int:
     write_gabarito(gabarito)
 
     with block_network() as attempts:
-        print("\n== 2. Rodada A: PDF sintetico -> lote ==")
+        print("\n== 1c. Confirmacao por rodada ==")
         live = LangExtractDiscoverer(
             decision.config,
             cache_dir=private_root / LLM_CACHE_SUBDIR,
             model_factory=fake_langextract_model,
         )
+        plan = plan_send([pdf], private_root=private_root, discoverer=live)
+        shown = "\n".join(confirmation_lines(decision, plan))
+        check("a confirmacao mostra canal, arquivo e total de caracteres",
+              f"Canal: {CHANNEL}" in shown and PDF_NAME in shown and "Total:" in shown and plan.total_chars > 0, shown.splitlines()[0])
+        real = build_discoverer(decision, cache_dir=private_root / LLM_CACHE_SUBDIR)
+        try:
+            real.discover("<!-- pagina-origem: 1 -->\nTexto com nome PESSOA FICTICIA DE TESTE para ler.\n")
+            refused = False
+        except LlmConfigError:
+            refused = True
+        check("escolher o motor nao arma o envio: o descobridor real recusa sem a confirmacao", refused)
+        permit = RunPermit.for_plan(decision.channel, plan)
+        check("a confirmacao nasce inativa e so vale na rodada", not permit.active)
+
+        print("\n== 2. Rodada A: PDF sintetico -> lote ==")
+        live.permit = permit
         first = run_llm_job(
             [pdf],
             export_root=export_root,
@@ -337,8 +450,15 @@ def main(argv: list[str] | None = None) -> int:
             discoverer=live,
             verification_rounds=1,
             engine=decision.channel,
-            engine_notes=audit_lines(decision, choice),
+            engine_notes=audit_lines(decision, choice, permit),
         )
+        check("a confirmacao expirou ao fim da rodada", permit.state == "expirada" and not permit.active)
+        try:
+            permit.start()
+            reused = True
+        except Exception:  # noqa: BLE001
+            reused = False
+        check("a mesma confirmacao nao vale para a rodada seguinte", not reused)
         folder_a = first.job.export_dir
         text_a = first.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
         check("exportacao liberada", first.job.export_allowed, first.job.export_block_reason)
@@ -348,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
         check("ELENCO.md tem a secao de papeis do LLM", "## Papéis atribuídos pelo LLM" in cast)
         audit = (folder_a / "AUDITORIA.txt").read_text(encoding="utf-8")
         check("AUDITORIA registra o motor e a fonte da chave", f"motor LLM: {CHANNEL}" in audit and "variavel de ambiente" in audit)
+        check("AUDITORIA registra a confirmacao da rodada (so contagens)", "Confirmacao desta rodada" in audit and PDF_NAME not in audit)
+        check("sem falha do LLM, nenhuma folha vai ao motor local", "tratadas pelo motor local" not in audit and not first.fallback_pages)
         check("LEIA-ME registra o motor", f"motor LLM: {CHANNEL}" in (folder_a / "LEIA-ME.txt").read_text(encoding="utf-8"))
         for _kind, value, role in ENTITIES:
             if role != "magistrado":
@@ -398,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
         counts = leak_counts(leak_out)
         check("vazamento: 0 em claro nas entidades e IDs privados (A)", all(c[0] == 0 for label, c in counts.items() if label not in {"juiza"}))
         check("vazamento: a regua enxerga a decisao (socia B 0 -> mais; juiza mais -> 0)", counts.get("socia B", [1, 0])[1] > 0 and counts.get("juiza", [0, 1])[1] == 0)
+
+        step_forced_failure(pdf, export_root, private_root, decision, choice)
 
     check("nenhuma tentativa de rede", not attempts, f"{len(attempts)} tentativa(s)")
     check("o Gerenciador de Credenciais real nao foi tocado (keyring nem importado)", KEYRING_WAS_LOADED or "keyring" not in sys.modules)

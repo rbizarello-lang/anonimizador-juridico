@@ -1,9 +1,12 @@
-"""Tela do motor LLM (NiceGUI): escolha do motor, aviso do canal, chave e revisao do elenco.
+"""Tela do motor LLM (NiceGUI): escolha do motor, avisos do canal, chave, confirmacao por rodada e
+revisao do elenco.
 
-Camada fina sobre ``llm_engine`` (portao), ``credentials`` (chave) e
-``roster_review`` (L3). Nada daqui e gravado: o app SEMPRE abre no motor local
-e a escolha do motor vale so para a sessao. A chave so e digitada num campo de
-senha e vai direto ao Gerenciador de Credenciais; a tela mostra apenas a fonte.
+Camada fina sobre ``llm_engine`` (portao), ``llm_gate`` (confirmacao da rodada), ``credentials`` (chave)
+e ``roster_review`` (L3). Nada daqui e gravado: o app SEMPRE abre no motor local e a escolha do motor
+vale so para a sessao. A escolha NAO autoriza envio: a cada rodada a tela mostra o canal (e a regiao),
+a lista de arquivos e o total de caracteres, com os avisos (sigilo fiscal, residencia, faturamento) como
+informacao, e so envia se o Operador confirmar; a confirmacao expira quando a rodada termina. A chave so e
+digitada num campo de senha e vai direto ao Gerenciador de Credenciais; a tela mostra apenas a fonte.
 """
 
 from __future__ import annotations
@@ -25,13 +28,15 @@ from .llm_engine import (
     EngineChoice,
     EngineDecision,
     audit_lines,
-    billing_statement,
+    billing_note,
     build_discoverer,
     check_engine,
+    confirmation_lines,
     warning_paragraphs,
 )
+from .llm_gate import RunPermit, SendPlan
 from .pipeline import JobResult
-from .pipeline_llm import LLM_CACHE_SUBDIR, LlmJobResult, run_llm_job
+from .pipeline_llm import LLM_CACHE_SUBDIR, LlmJobResult, plan_send, run_llm_job
 from .roster import KEEP, TOKENIZE
 from .roster_review import (
     ACTION_LABELS,
@@ -52,6 +57,7 @@ class EngineSession:
     decision: EngineDecision | None = None
     last: LlmJobResult | None = None
     last_files: list[Path] = field(default_factory=list)
+    last_permit: RunPermit | None = None
 
     @property
     def active(self) -> bool:
@@ -60,6 +66,17 @@ class EngineSession:
     def back_to_local(self) -> None:
         self.choice = EngineChoice()
         self.decision = None
+
+    def button_label(self) -> str:
+        """Texto do botao de executar: diz o motor. Com LLM, as reticencias avisam que vem uma
+        confirmacao (canal, arquivos, caracteres) antes de qualquer envio."""
+
+        if self.active:
+            return f"Anonimizar lote com LLM · {self.decision.channel}…"
+        return "Anonimizar lote · motor local"
+
+    def button_icon(self) -> str:
+        return "cloud_upload" if self.active else "play_arrow"
 
 
 def build_engine_section(session, *, on_change: Callable[[], None] = lambda: None) -> None:
@@ -73,8 +90,8 @@ def build_engine_section(session, *, on_change: Callable[[], None] = lambda: Non
     def refresh() -> None:
         if engine.active:
             status.text = (
-                f"LLM ativo: {engine.decision.channel}. O texto, com os IDs mascarados, "
-                "será enviado ao provedor."
+                f"LLM escolhido: {engine.decision.channel}. Nada é enviado até você confirmar cada "
+                "rodada (canal, arquivos e total de caracteres); a confirmação expira ao fim da rodada."
             )
             toggle.value = LLM
         else:
@@ -107,7 +124,7 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
         draft["choice"] = replace(draft["choice"], **changes)
 
     def on_channel(value: str) -> None:
-        set_choice(channel=value, acknowledged=False, billing_confirmed=False)
+        set_choice(channel=value)
         redraw()
 
     def on_field(**changes) -> None:
@@ -125,8 +142,9 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                 'flat round aria-label="Fechar"'
             )
         ui.label(
-            "O motor local segue sendo o padrão e o app sempre abre nele. O LLM só roda depois "
-            "de todas as conferências abaixo, e a escolha vale apenas para esta sessão."
+            "O motor local segue sendo o padrão e o app sempre abre nele. Os dois canais ficam "
+            "cadastráveis aqui; a escolha vale apenas para esta sessão e NÃO autoriza envio: a cada "
+            "rodada o app pede a sua confirmação."
         ).classes("aj-card-note")
         ui.select(
             {key: spec.label for key, spec in CHANNELS.items()},
@@ -137,7 +155,6 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
         project_box = ui.column().classes("w-full gap-1")
         key_box = ui.column().classes("w-full gap-1")
         warning_box = ui.column().classes("w-full gap-2")
-        confirm_box = ui.column().classes("w-full gap-1")
         reasons_box = ui.column().classes("w-full gap-1")
         with ui.row().classes("w-full items-center justify-end gap-2"):
             ui.button("Usar o motor local", on_click=lambda: use_local()).props("flat no-caps")
@@ -155,7 +172,9 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
             if decision.allowed:
                 with ui.row().classes("aj-callout info items-start"):
                     ui.icon("check_circle")
-                    ui.label("Tudo em ordem: o motor LLM pode ser usado nesta sessão.")
+                    ui.label(
+                        "Configuração em ordem. O envio só acontece depois da sua confirmação, a cada rodada."
+                    )
             else:
                 for reason in decision.reasons:
                     with ui.row().classes("aj-callout warn items-start"):
@@ -175,8 +194,15 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                     value=choice.project,
                     on_change=lambda event: on_field(project=event.value or ""),
                 ).classes("w-full")
+                ui.input(
+                    "Região do Vertex AI",
+                    value=choice.location,
+                    on_change=lambda event: on_field(location=(event.value or "").strip()),
+                ).classes("w-full")
                 ui.label(
-                    f"Região: {choice.location}. Credencial: gcloud auth application-default login."
+                    "Credencial: gcloud auth application-default login (ou o arquivo de conta de serviço "
+                    "indicado em GOOGLE_APPLICATION_CREDENTIALS). A região aparece na confirmação de cada "
+                    "rodada e na AUDITORIA; o app não a força."
                 ).classes("aj-card-note")
 
         key_box.clear()
@@ -201,24 +227,11 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
 
         warning_box.clear()
         with warning_box:
-            ui.label("Aviso").classes("aj-label")
-            with ui.column().classes("aj-callout warn gap-2"):
+            ui.label("Avisos (informação; a decisão de enviar é sua)").classes("aj-label")
+            with ui.column().classes("aj-callout info gap-2"):
                 for paragraph in warning_paragraphs(choice.channel):
                     ui.html(f"<p>{html.escape(paragraph)}</p>")
-
-        confirm_box.clear()
-        if spec is not None:
-            with confirm_box:
-                ui.checkbox(
-                    "Li o aviso acima.",
-                    value=choice.acknowledged,
-                    on_change=lambda event: on_field(acknowledged=bool(event.value)),
-                )
-                ui.checkbox(
-                    billing_statement(choice.channel),
-                    value=choice.billing_confirmed,
-                    on_change=lambda event: on_field(billing_confirmed=bool(event.value)),
-                )
+                ui.html(f"<p>{html.escape(billing_note(choice.channel))}</p>")
 
         draw_reasons()
 
@@ -270,18 +283,23 @@ async def run_llm_flow(
     render_results: Callable[..., None],
     token_labels: Callable[[], dict[str, str]],
 ) -> None:
-    """Rodada com LLM no lugar do fluxo local. Reconfere o portao a cada rodada."""
+    """Rodada com LLM no lugar do fluxo local.
+
+    1. confere a configuracao (nada e enviado);
+    2. prepara: extrai e mascara os IDs aqui, e conta o que iria ao provedor;
+    3. MOSTRA o canal (e a regiao), os arquivos e o total de caracteres, com os avisos como informacao;
+    4. so envia se o Operador confirmar. A confirmacao vale para esta rodada e expira no fim."""
 
     engine: EngineSession = session.engine
     decision = check_engine(engine.choice, private_root=session.private_dir)
     if not decision.allowed:
         engine.back_to_local()
-        ui.notify("Motor LLM bloqueado: " + decision.blocked_message(), type="negative")
+        ui.notify("Motor LLM indisponível: " + decision.blocked_message(), type="negative")
         return
     engine.decision = decision
 
     session.running = True
-    run_kicker.text = "Executando (LLM)"
+    run_kicker.text = "Preparando o envio (LLM)"
     run_button.disable()
     progress.visible = True
     progress.value = 0
@@ -289,16 +307,63 @@ async def run_llm_flow(
     with result_area:
         with ui.row().classes("items-center gap-3"):
             ui.spinner(size="md", color="accent")
-            ui.label("Lendo o lote com o LLM…").classes("aj-muted")
+            ui.label("Extraindo e mascarando os IDs. Nada foi enviado ainda.").classes("aj-muted")
 
-    state = {"message": "Iniciando", "fraction": 0.0}
+    state = {"message": "Preparando", "fraction": 0.0}
 
     def on_progress(message: str, fraction: float) -> None:
         state["message"], state["fraction"] = message, fraction
 
     ticker = ui.timer(0.4, lambda: _tick(status, progress, state))
+    discoverer = build_discoverer(decision, cache_dir=session.private_dir / LLM_CACHE_SUBDIR)
     try:
-        discoverer = build_discoverer(decision, cache_dir=session.private_dir / LLM_CACHE_SUBDIR)
+        plan = await run.io_bound(
+            lambda: plan_send(
+                sources,
+                private_root=session.private_dir,
+                discoverer=discoverer,
+                settings=session.settings,
+                on_progress=on_progress,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        ticker.cancel()
+        _fail(session, status, progress, result_area, run_kicker, run_button, f"A preparação falhou: {exc}")
+        return
+    ticker.cancel()
+
+    confirmed = await confirm_send(decision, plan)
+    if not confirmed:
+        status.text = "Envio cancelado. Nada foi enviado."
+        result_area.clear()
+        with result_area:
+            with ui.row().classes("aj-callout info items-start"):
+                ui.icon("info")
+                ui.label("Envio cancelado: nada foi enviado ao provedor. Use o motor local ou confirme a rodada.")
+        session.running = False
+        run_kicker.text = "Pronto para executar"
+        run_button.enable()
+        progress.visible = False
+        return
+
+    config = decision.config
+    permit = RunPermit.for_plan(
+        decision.channel,
+        plan,
+        region=config.location if config is not None and config.provider == "vertex" else "",
+        project=config.project if config is not None else "",
+    )
+    discoverer.permit = permit
+    engine.last_permit = permit
+    run_kicker.text = "Executando (LLM)"
+    result_area.clear()
+    with result_area:
+        with ui.row().classes("items-center gap-3"):
+            ui.spinner(size="md", color="accent")
+            ui.label("Lendo o lote com o LLM…").classes("aj-muted")
+    state["message"], state["fraction"] = "Iniciando", 0.0
+    ticker = ui.timer(0.4, lambda: _tick(status, progress, state))
+    try:
         result = await run.io_bound(
             lambda: run_llm_job(
                 sources,
@@ -307,30 +372,66 @@ async def run_llm_flow(
                 discoverer=discoverer,
                 settings=session.settings,
                 engine=decision.channel,
-                engine_notes=audit_lines(decision, engine.choice),
+                engine_notes=audit_lines(decision, engine.choice, permit),
                 on_progress=on_progress,
             )
         )
     except Exception as exc:  # noqa: BLE001
         ticker.cancel()
-        status.text = "A execução falhou."
-        ui.notify(str(exc), type="negative")
-        result_area.clear()
-        with result_area:
-            with ui.row().classes("aj-callout warn items-start"):
-                ui.icon("error")
-                ui.label(f"A execução falhou: {exc}")
-        session.running = False
-        run_kicker.text = "Falhou"
-        run_button.enable()
-        progress.visible = False
+        _fail(session, status, progress, result_area, run_kicker, run_button, f"A execução falhou: {exc}")
         return
+    finally:
+        permit.finish()  # a confirmacao expira com a rodada, haja o que houver
     ticker.cancel()
 
     engine.last, engine.last_files = result, list(sources)
     show_result(session, result, status=status, progress=progress, result_area=result_area,
                 run_kicker=run_kicker, run_button=run_button, render_results=render_results,
                 token_labels=token_labels)
+
+
+def _fail(session, status, progress, result_area, run_kicker, run_button, message: str) -> None:
+    status.text = message
+    ui.notify(message, type="negative")
+    result_area.clear()
+    with result_area:
+        with ui.row().classes("aj-callout warn items-start"):
+            ui.icon("error")
+            ui.label(message)
+    session.running = False
+    run_kicker.text = "Falhou"
+    run_button.enable()
+    progress.visible = False
+
+
+async def confirm_send(decision: EngineDecision, plan: SendPlan) -> bool:
+    """Confirmacao da rodada: canal, regiao, arquivos, total de caracteres e os avisos (informacao).
+    Devolve ``True`` so se o Operador mandar enviar. Cada rodada pede de novo."""
+
+    with ui.dialog() as dialog, ui.column().classes("aj-dialog"):
+        with ui.row().classes("w-full items-center no-wrap"):
+            with ui.column().classes("gap-1"):
+                ui.label("Confirmar o envio").classes("aj-kicker")
+                ui.label("O que esta rodada vai mandar ao provedor").classes("aj-title").style("font-size:22px")
+        with ui.column().classes("aj-callout warn gap-1"):
+            for line in confirmation_lines(decision, plan):
+                ui.label(line).style("white-space:pre-wrap")
+        ui.label("Avisos (informação; a decisão é sua)").classes("aj-label")
+        with ui.column().classes("aj-callout info gap-2"):
+            for paragraph in warning_paragraphs(decision.channel):
+                ui.html(f"<p>{html.escape(paragraph)}</p>")
+            ui.html(f"<p>{html.escape(billing_note(decision.channel))}</p>")
+        ui.label(
+            "Esta confirmação vale só para esta rodada. Para não enviar, use o motor local."
+        ).classes("aj-card-note")
+        with ui.row().classes("w-full items-center justify-end gap-2"):
+            ui.button("Cancelar (nada é enviado)", on_click=lambda: dialog.submit(False)).props("flat no-caps")
+            send = ui.button(
+                f"Enviar ao provedor ({decision.channel})", icon="cloud_upload", on_click=lambda: dialog.submit(True)
+            ).props("unelevated no-caps color=primary")
+            send.set_enabled(bool(plan.files))
+    answer = await dialog
+    return bool(answer)
 
 
 def show_result(

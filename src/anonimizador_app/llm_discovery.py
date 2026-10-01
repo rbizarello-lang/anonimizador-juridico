@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .credentials import ApiKey
+from .llm_gate import GateError, RunPermit
 from .roster import Mention
 
 PROMPT_VERSION = "2026-10-01.1"
@@ -389,11 +390,14 @@ class LangExtractDiscoverer:
         cache_dir: Path | None = None,
         model_factory: Callable[[], Any] | None = None,
         offline: bool = False,
+        permit: RunPermit | None = None,
     ) -> None:
         self.config = config or LlmConfig()
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self._model_factory = model_factory
         self.offline = offline
+        # B2: a confirmacao da rodada. Sem ela ativa, o modelo (e a rede) nao e criado.
+        self.permit = permit
 
     def describe(self) -> str:
         if self._model_factory is not None:
@@ -401,6 +405,15 @@ class LangExtractDiscoverer:
         if self.offline:
             return f"{self.config.describe()} (sem rede: so o cache)"
         return self.config.describe()
+
+    def plan(self, text: str) -> tuple[int, int, int, int]:
+        """(trechos, caracteres, trechos ja no cache, caracteres que seriam enviados) do texto. So le o
+        disco: serve para mostrar ao Operador o que a rodada vai mandar ao provedor."""
+
+        chunks = split_chunks(text, self.config.chunk_chars)
+        cached = sum(1 for chunk in chunks if self._cache_load(chunk) is not None)
+        pending = sum(len(chunk.text) for chunk in chunks if self._cache_load(chunk) is None)
+        return len(chunks), sum(len(chunk.text) for chunk in chunks), cached, pending
 
     def discover(self, text: str) -> Discovery:
         chunks = split_chunks(text, self.config.chunk_chars)
@@ -444,6 +457,18 @@ class LangExtractDiscoverer:
         found: dict[int, list[dict]],
         report: DiscoveryReport,
     ) -> set[int]:
+        if self._model_factory is None:
+            # Ponto da rede: so com a confirmacao desta rodada ativa (B2). A escolha do motor, sozinha,
+            # nao autoriza o envio.
+            if self.permit is None:
+                raise LlmConfigError(
+                    "Envio ao provedor sem a confirmacao desta rodada: confirme canal, arquivos e "
+                    "caracteres antes de cada rodada com LLM."
+                )
+            try:
+                self.permit.require_active()
+            except GateError as exc:
+                raise LlmConfigError(str(exc)) from None
         lx = import_langextract()
         from langextract import prompt_validation
 

@@ -62,7 +62,8 @@ from .contextual import build_contextual_engine
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
-from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges
+from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges, split_chunks
+from .llm_gate import FilePlan, GateError, SendPlan
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
 from .pipeline import (
@@ -153,7 +154,28 @@ class LlmJobResult:
     held: tuple[str, ...] = ()
 
 
-def run_llm_job(
+def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
+    """Tres fases: descobre em todos os arquivos, confere, e so entao troca (ver ``_run_llm_job``).
+
+    A confirmacao da rodada (``discoverer.permit``, ver ``llm_gate.RunPermit``) vale so enquanto esta funcao
+    roda: ela e ativada aqui e expira no fim, com ou sem erro. Descobridor sem confirmacao (o modo sem
+    rede, que so le o cache, ou um falso de teste) segue sem ela; o que chama o provedor exige a
+    confirmacao no ponto da rede (``LangExtractDiscoverer``)."""
+
+    permit = getattr(discoverer, "permit", None)
+    if permit is not None:
+        try:
+            permit.start()
+        except GateError as exc:
+            raise LlmConfigError(str(exc)) from None
+    try:
+        return _run_llm_job(files, discoverer=discoverer, **kwargs)
+    finally:
+        if permit is not None:
+            permit.finish()
+
+
+def _run_llm_job(
     files: Sequence[str | Path],
     *,
     export_root: Path,
@@ -444,20 +466,18 @@ class _FileState:
     offline_discovery: bool = False
 
 
-def _discover_file(
+def _extract_and_mask(
     source: Path,
     *,
     detector: StructuredDetector,
     mapping: PseudonymMap,
-    roster: Roster,
-    discoverer: Discoverer,
     exclusions: Sequence[str],
     use_cache: bool,
     cache_dir: Path | None,
     extract_fn: Callable[[Path], ExtractedDocument],
     extractor_version: str,
-) -> _FileState:
-    """Fase 1: extrai, acha os IDs aqui, mascara e manda o LLM descobrir o elenco."""
+) -> tuple[CachedExtraction, str, FidelityDropStats, list[EntitySpan], PseudonymizationResult, OffsetMap]:
+    """Extrai, acha os IDs aqui e mascara: o texto que (so ele) pode ir ao provedor."""
 
     cached = load_or_extract(
         source,
@@ -474,6 +494,34 @@ def _discover_file(
         drop_protected_spans(text, ids, exclusions, source_name=source.name, stats=stats)
     )
     masked, masked_offsets = pseudonymize_with_offsets(text, ids, mapping)
+    return cached, text, stats, ids, masked, masked_offsets
+
+
+def _discover_file(
+    source: Path,
+    *,
+    detector: StructuredDetector,
+    mapping: PseudonymMap,
+    roster: Roster,
+    discoverer: Discoverer,
+    exclusions: Sequence[str],
+    use_cache: bool,
+    cache_dir: Path | None,
+    extract_fn: Callable[[Path], ExtractedDocument],
+    extractor_version: str,
+) -> _FileState:
+    """Fase 1: extrai, acha os IDs aqui, mascara e manda o LLM descobrir o elenco."""
+
+    cached, text, stats, ids, masked, masked_offsets = _extract_and_mask(
+        source,
+        detector=detector,
+        mapping=mapping,
+        exclusions=exclusions,
+        use_cache=use_cache,
+        cache_dir=cache_dir,
+        extract_fn=extract_fn,
+        extractor_version=extractor_version,
+    )
     discovery = discoverer.discover(masked.text)
     failed = _pages_of(masked.text, discovery.report.failed)
     empty = _pages_of(masked.text, discovery.report.empty)
@@ -490,6 +538,77 @@ def _discover_file(
         suspect_pages=failed | empty,
         failed_discovery=failed,
         offline_discovery=bool(getattr(discovery.report, "offline", False)),
+    )
+
+
+def plan_send(
+    files: Sequence[str | Path],
+    *,
+    private_root: Path,
+    discoverer: Discoverer,
+    settings: AppSettings | None = None,
+    verification_rounds: int = 1,
+    use_cache: bool = True,
+    extract_fn: Callable[[Path], ExtractedDocument] = extract_fast,
+    extractor_version: str = FAST_EXTRACTOR_VERSION,
+    on_progress: ProgressFn | None = None,
+) -> SendPlan:
+    """Previa do que a rodada manda ao provedor: por arquivo, o texto JA MASCARADO que seria enviado
+    (caracteres, trechos, quantos ja estao no cache local). Extrai (com o cache de extracao) e acha os
+    IDs, nesta maquina; nao fala com ninguem. E o que a confirmacao da rodada mostra ao Operador."""
+
+    sources = _dedupe_paths(files)
+    if not sources:
+        raise ValueError("Nenhum arquivo foi informado.")
+    active = settings or AppSettings()
+    detector = StructuredDetector(recognizers=build_recognizers(active))
+    mapping = PseudonymMap(token_labels=active.token_labels())
+    cache_dir = default_cache_dir(Path(private_root)) if use_cache else None
+    exclusions = tuple(active.exclusions)
+    planner = getattr(discoverer, "plan", None)
+    plans: list[FilePlan] = []
+    errors: list[tuple[str, str]] = []
+    for index, source in enumerate(sources):
+        _report(on_progress, f"Preparando {source.name} ({index + 1} de {len(sources)})", index / len(sources))
+        try:
+            cached, _text, _stats, _ids, masked, _offsets = _extract_and_mask(
+                source,
+                detector=detector,
+                mapping=mapping,
+                exclusions=exclusions,
+                use_cache=use_cache,
+                cache_dir=cache_dir,
+                extract_fn=extract_fn,
+                extractor_version=extractor_version,
+            )
+        except LlmConfigError:
+            raise
+        except UnsupportedDocumentError as exc:
+            errors.append((source.name, str(exc)))
+            continue
+        except Exception as exc:  # noqa: BLE001 - a confirmacao lista o arquivo como nao enviado
+            errors.append((source.name, type(exc).__name__))
+            continue
+        if planner is not None:
+            chunks, chars, cached_chunks, pending_chars = planner(masked.text)
+        else:
+            pieces = split_chunks(masked.text, 4000)
+            chunks, chars = len(pieces), sum(len(piece.text) for piece in pieces)
+            cached_chunks, pending_chars = 0, chars
+        plans.append(
+            FilePlan(
+                name=source.name,
+                pages=cached.document.page_count,
+                chars=chars,
+                chunks=chunks,
+                cached_chunks=cached_chunks,
+                pending_chars=pending_chars,
+            )
+        )
+    return SendPlan(
+        files=tuple(plans),
+        verification_rounds=max(0, verification_rounds),
+        errors=tuple(errors),
     )
 
 

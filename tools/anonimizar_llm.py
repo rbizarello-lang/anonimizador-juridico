@@ -1,32 +1,37 @@
 """Anonimiza com o motor LLM (LangExtract) e grava um lote. O padrao do app segue sendo o motor local.
 
-O texto das pecas, com os IDs ja mascarados, vai ao provedor: so com o canal
-escolhido, a chave guardada, o aviso confirmado, o faturamento confirmado, os
-pacotes instalados e o config.json sem chave. ``--verificar`` mostra o que
-falta, sem enviar nada.
+O texto das pecas, com os IDs ja mascarados, vai ao provedor. Quem decide enviar, e quais arquivos, e o
+Operador, A CADA RODADA: o comando mostra o canal (e a regiao, no Vertex AI), a lista de arquivos e o total
+de caracteres, mais os avisos (sigilo fiscal, CTN art. 198; residencia dos dados; faturamento), e SO
+ENVIA se a rodada trouxer --confirmo-envio. O aviso e informacao: o app nao bloqueia por politica. Sem a
+opcao, nada e enviado (codigo 2) e a lista serve de conferencia. A confirmacao vale para esta rodada e expira
+no fim dela.
 
 Exemplos:
 
   # 1. Guardar a chave no Gerenciador de Credenciais do Windows (pede sem mostrar na tela):
   python tools/anonimizar_llm.py --guardar-chave
 
-  # 2. Conferir o portao (nao envia nada):
-  python tools/anonimizar_llm.py --verificar --canal gemini-pago --ciente --faturamento-confirmado
+  # 2. Conferir a configuracao (nao envia nada):
+  python tools/anonimizar_llm.py --verificar --canal gemini-pago
 
-  # 3. Rodar (Gemini API paga; chave de projeto COM faturamento):
-  python tools/anonimizar_llm.py autos.pdf --canal gemini-pago --ciente --faturamento-confirmado
+  # 3. Ver o que seria enviado (lista de arquivos e caracteres; nada e enviado):
+  python tools/anonimizar_llm.py autos.pdf --canal gemini-pago
 
-  # Vertex AI em Sao Paulo (credencial do gcloud; contrato do Google Cloud):
-  python tools/anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO --ciente --faturamento-confirmado
+  # 4. Enviar (Gemini API paga; chave de projeto COM faturamento), confirmando esta rodada:
+  python tools/anonimizar_llm.py autos.pdf --canal gemini-pago --confirmo-envio
 
-  # Depois de revisar o elenco (trocar "acao" de uma entrada), SEM rede (so o cache):
+  # Vertex AI (credencial do gcloud ou arquivo de conta de servico; contrato do Google Cloud):
+  python tools/anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO --confirmo-envio
+
+  # Depois de revisar o elenco (trocar "acao" de uma entrada), SEM rede (so o cache; nada e enviado):
   python tools/anonimizar_llm.py autos.pdf --canal gemini-pago --sem-rede --elenco saidas/privados/lote_.../elenco.json
 
   # Apagar a chave guardada:
   python tools/anonimizar_llm.py --apagar-chave
 
-Codigos de saida: 0 = ok; 1 = lote nao liberado (erro, folha retida); 2 = configuracao, portao ou
-argumento; 3 = alguma folha foi tratada pelo motor local por falha do LLM (use --aceitar-fallback para
+Codigos de saida: 0 = ok; 1 = lote nao liberado (erro, folha retida); 2 = configuracao, portao,
+argumento ou rodada sem --confirmo-envio; 3 = alguma folha foi tratada pelo motor local por falha do LLM (use --aceitar-fallback para
 aceitar). O texto da folha que o LLM nao leu nunca sai em claro: o motor local o trata ou o arquivo fica
 retido na pasta privada.
 
@@ -66,15 +71,17 @@ from anonimizador_app.llm_engine import (  # noqa: E402
     WARNING_VERSION,
     EngineChoice,
     audit_lines,
-    billing_statement,
+    billing_note,
     build_discoverer,
     build_offline_discoverer,
     check_engine,
+    confirmation_lines,
     warning_text,
 )
+from anonimizador_app.llm_gate import RunPermit  # noqa: E402
 from anonimizador_app.netblock import block_network  # noqa: E402
 from anonimizador_app.pipeline import default_export_dir, default_private_dir  # noqa: E402
-from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, run_llm_job  # noqa: E402
+from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, plan_send, run_llm_job  # noqa: E402
 from anonimizador_app.settings import load_settings  # noqa: E402
 
 
@@ -88,11 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(CHANNELS),
         help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo. Sem canal, nada roda.",
     )
-    parser.add_argument("--ciente", action="store_true", help="Li o aviso do canal (impresso na tela).")
     parser.add_argument(
-        "--faturamento-confirmado",
+        "--confirmo-envio",
         action="store_true",
-        help="O projeto da chave tem faturamento ativo (chave gratuita e vedada).",
+        help="Confirmo, para ESTA rodada, o envio ao provedor dos arquivos e do total de caracteres "
+        "listados (impressos antes). Sem esta opcao nada e enviado. Nao vale para a proxima rodada.",
     )
     parser.add_argument(
         "--guardar-chave",
@@ -181,17 +188,15 @@ def main(argv: list[str] | None = None) -> int:
 
     choice = EngineChoice(
         channel=channel,
-        acknowledged=args.ciente,
-        billing_confirmed=args.faturamento_confirmado,
         project=args.projeto,
         model_id=args.modelo,
         location=args.regiao,
     )
     decision = check_engine(choice, private_root=config_source)
     if channel in CHANNELS:
-        print(f"AVISO (versao {WARNING_VERSION}, canal {channel}):", file=sys.stderr)
+        print(f"AVISO (versao {WARNING_VERSION}, canal {channel}), so informacao:", file=sys.stderr)
         print(warning_text(channel), file=sys.stderr)
-        print(f"Faturamento: {billing_statement(channel)}", file=sys.stderr)
+        print(billing_note(channel), file=sys.stderr)
     if args.verificar:
         return report_gate(decision)
     if not decision.allowed:
@@ -207,6 +212,41 @@ def main(argv: list[str] | None = None) -> int:
     discoverer = build_discoverer(
         decision, cache_dir=cache_dir, max_workers=max(1, args.paralelo), chunk_chars=args.trecho
     )
+    settings = load_settings(config_source)
+    sources = [Path(item).expanduser() for item in args.arquivos]
+    try:
+        plan = plan_send(
+            sources,
+            private_root=private_root,
+            discoverer=discoverer,
+            settings=settings,
+            verification_rounds=max(0, args.verificacao),
+            use_cache=not args.sem_cache,
+            on_progress=lambda message, _fraction: print(message, flush=True),
+        )
+    except LlmConfigError as exc:
+        print(f"Configuracao: {exc}", file=sys.stderr)
+        return 2
+    print("O QUE ESTA RODADA VAI ENVIAR AO PROVEDOR:")
+    for line in confirmation_lines(decision, plan):
+        print("  " + line)
+    if not plan.files:
+        print("Nenhum arquivo pode ser enviado.", file=sys.stderr)
+        return 2
+    if not args.confirmo_envio:
+        print(
+            "Nada foi enviado. Confira a lista acima e, se decidir enviar, repita o comando com "
+            "--confirmo-envio (a confirmacao vale so para esta rodada).",
+            file=sys.stderr,
+        )
+        return 2
+    permit = RunPermit.for_plan(
+        decision.channel,
+        plan,
+        region=decision.config.location if decision.config and decision.config.provider == "vertex" else "",
+        project=decision.config.project if decision.config else "",
+    )
+    discoverer.permit = permit
     return run_and_report(
         args,
         discoverer,
@@ -214,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         private_root,
         config_source,
         engine=decision.channel,
-        engine_notes=audit_lines(decision, choice),
+        engine_notes=audit_lines(decision, choice, permit),
     )
 
 

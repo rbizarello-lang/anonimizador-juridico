@@ -1,16 +1,19 @@
 """Portao do motor LLM (3.0): quando, e so quando, o texto pode sair desta maquina.
 
 O app abre sempre no motor **local**. O motor LLM nao e uma preferencia que
-se grava: e uma escolha da sessao, e roda somente se TODAS as condicoes
-valerem:
+se grava: e uma escolha da sessao, e so fica DISPONIVEL se as condicoes de
+configuracao valerem:
 
 1. um dos dois canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``).
    ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
 2. ha chave (``credentials``) ou, no Vertex AI, projeto e credencial local;
-3. o aviso do canal foi lido e confirmado;
-4. o faturamento do projeto foi confirmado de forma explicita;
-5. os pacotes (``langextract``, ``google-genai``) importam;
-6. o ``config.json`` nao guarda chave.
+3. os pacotes (``langextract``, ``google-genai``) importam;
+4. o ``config.json`` nao guarda chave.
+
+O app AVISA (sigilo fiscal, CTN art. 198; residencia dos dados; faturamento), mas nao bloqueia por
+politica: decidir enviar, e quais arquivos, e do Operador. Por isso a escolha do motor nao autoriza
+envio nenhum: cada RODADA exige uma confirmacao (``llm_gate.RunPermit``) com canal, regiao, lista de
+arquivos e total de caracteres, que expira quando a rodada termina.
 
 ``check_engine`` so le o ambiente e o disco: nao abre conexao nenhuma.
 """
@@ -33,6 +36,7 @@ from .llm_discovery import (
     LlmConfig,
     LlmConfigError,
 )
+from .llm_gate import RunPermit, SendPlan
 from .settings import config_path
 from .version import ENGINE_LOCAL
 
@@ -104,7 +108,8 @@ def warning_paragraphs(channel: str) -> tuple[str, ...]:
     else:
         specific = (
             "A Gemini API (Developer API) não oferece garantia de residência de dados: o texto "
-            "pode ser processado fora do Brasil. Só prossiga se a instituição aceita esse canal.",
+            "pode ser processado fora do Brasil. Decidir se esse canal serve para este caso, e quais "
+            "arquivos enviar, é do Operador.",
         )
     return (*common, *specific)
 
@@ -113,15 +118,17 @@ def warning_text(channel: str) -> str:
     return "\n\n".join(warning_paragraphs(channel))
 
 
-def billing_statement(channel: str) -> str:
+def billing_note(channel: str) -> str:
+    """Informacao (nao bloqueio) sobre o faturamento do canal."""
+
     if channel == CHANNEL_VERTEX_SP:
         return (
-            "Confirmo que o projeto é o institucional do Google Cloud, com faturamento ativo "
+            "Faturamento: o projeto deve ser o institucional do Google Cloud, com faturamento ativo "
             "e contrato de nuvem."
         )
     return (
-        "Confirmo que a chave é de um projeto do Google Cloud COM faturamento ativo "
-        "(não é chave gratuita)."
+        "Faturamento: a chave deve ser de um projeto do Google Cloud COM faturamento ativo; sem "
+        "faturamento o conteúdo cai nos termos do nível gratuito."
     )
 
 
@@ -130,8 +137,6 @@ class EngineChoice:
     """Escolha da sessao. NAO e gravada: o app sempre abre no motor local."""
 
     channel: str = ""
-    acknowledged: bool = False
-    billing_confirmed: bool = False
     project: str = ""
     model_id: str = DEFAULT_MODEL
     location: str = DEFAULT_LOCATION
@@ -269,10 +274,6 @@ def check_engine(
             reasons.append(
                 "Sem credencial local do Google Cloud (gcloud auth application-default login)."
             )
-    if not choice.acknowledged:
-        reasons.append("Falta confirmar que o aviso foi lido.")
-    if not choice.billing_confirmed:
-        reasons.append("Falta confirmar o faturamento do projeto.")
     missing = (missing_fn or missing_packages)(channel)
     if missing:
         reasons.append(
@@ -302,8 +303,10 @@ def build_discoverer(
     cache_dir: Path | None,
     max_workers: int | None = None,
     chunk_chars: int | None = None,
+    permit: RunPermit | None = None,
 ) -> LangExtractDiscoverer:
-    """Descobridor com rede, so com o portao liberado."""
+    """Descobridor com rede, so com o portao liberado. Sem ``permit`` ativo (a confirmacao da rodada),
+    ele le o cache mas nao chama o provedor."""
 
     if not decision.allowed or decision.config is None:
         raise LlmConfigError("Motor LLM bloqueado: " + (decision.blocked_message() or "sem decisao."))
@@ -315,7 +318,7 @@ def build_discoverer(
         overrides["chunk_chars"] = max(500, chunk_chars)
     if overrides:
         config = replace(config, **overrides)
-    return LangExtractDiscoverer(config, cache_dir=cache_dir)
+    return LangExtractDiscoverer(config, cache_dir=cache_dir, permit=permit)
 
 
 def build_offline_discoverer(
@@ -340,8 +343,49 @@ def build_offline_discoverer(
 
 
 
-def audit_lines(decision: EngineDecision, choice: EngineChoice | None = None) -> list[str]:
-    """Linhas do bloco "motor" da AUDITORIA: canal, fonte da chave e confirmacoes. Nunca a chave."""
+def confirmation_lines(
+    decision: EngineDecision, plan: SendPlan, *, files_in_full: bool = True
+) -> list[str]:
+    """O que a confirmacao da rodada mostra (tela e CLI): canal, regiao, arquivos, total de caracteres.
+
+    So informa; o Operador decide. Os nomes de arquivo aparecem aqui (e so aqui): a AUDITORIA
+    exportavel nao os leva."""
+
+    spec = CHANNELS.get(decision.channel)
+    lines = [f"Canal: {decision.channel} ({spec.label if spec else '?'})"]
+    config = decision.config
+    if config is not None and config.provider == "vertex":
+        lines.append(f"Região do Vertex AI: {config.location} (projeto {config.project or '?'})")
+    if config is not None:
+        lines.append(f"Modelo: {config.model_id}")
+    lines.append(f"Arquivos que serão enviados ({len(plan.files)}):")
+    for item in plan.files:
+        lines.append(
+            f"  - {item.name}: {item.chars:,} caracteres, {item.chunks} trecho(s)"
+            f" ({item.cached_chunks} já no cache local)".replace(",", ".")
+        )
+    for name, message in plan.errors:
+        lines.append(f"  - {name}: NÃO será enviado ({message})")
+    lines.append(
+        f"Total: {plan.total_chars:,} caracteres na descoberta, dos quais {plan.pending_chars:,} "
+        "ainda não estão no cache local (os do cache não são reenviados).".replace(",", ".")
+    )
+    if plan.verification_rounds:
+        lines.append(
+            f"A conferência reenvia o texto já tokenizado, até {plan.verification_rounds} rodada(s) "
+            "do mesmo tamanho."
+        )
+    lines.append("Os IDs (CPF, CNPJ, OAB, conta...) vão mascarados; nomes, fatos e valores vão em claro.")
+    return lines
+
+
+def audit_lines(
+    decision: EngineDecision,
+    choice: EngineChoice | None = None,
+    permit: RunPermit | None = None,
+) -> list[str]:
+    """Linhas do bloco "motor" da AUDITORIA: canal, regiao, fonte da chave e a confirmacao da rodada.
+    Nunca a chave."""
 
     spec = CHANNELS.get(decision.channel)
     lines = [f"Canal: {decision.channel or ENGINE_LOCAL}"]
@@ -356,10 +400,10 @@ def audit_lines(decision: EngineDecision, choice: EngineChoice | None = None) ->
         )
         if decision.key_source:
             lines.append(f"Chave lida de: {decision.key_source} (o valor nao e gravado em lugar nenhum)")
-        if choice is not None:
-            lines.append(
-                f"Aviso (versao {WARNING_VERSION}) lido e faturamento do projeto confirmado "
-                "pelo usuario: "
-                + ("sim" if choice.acknowledged and choice.billing_confirmed else "NAO")
-            )
+        lines.append(
+            f"Aviso (versao {WARNING_VERSION}: sigilo fiscal, residencia, faturamento) apresentado "
+            "na confirmacao da rodada; a decisao de enviar foi do Operador."
+        )
+        if permit is not None:
+            lines.extend(permit.audit_lines())
     return lines
