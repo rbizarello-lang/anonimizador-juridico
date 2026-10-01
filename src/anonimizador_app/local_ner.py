@@ -1,4 +1,19 @@
+"""NER local (GLiNER; spaCy PT de reserva). O modelo NUNCA vai a rede sozinho (endurecimento I2).
+
+``HF_HUB_OFFLINE`` e ``TRANSFORMERS_OFFLINE`` ficam em ``1`` por padrao, ja aqui, antes de qualquer
+import do gliner/transformers/huggingface_hub (eles leem a variavel ao serem importados), e o modelo
+e fixado na revisao que esta no cache local. Baixar o modelo pela primeira vez e um passo explicito e
+separado: ``python tools/instalar_modelo_ner.py`` (e a unica coisa do app que usa a rede do Hub).
+"""
+
 from __future__ import annotations
+
+import os
+
+# Antes de importar qualquer coisa que traga huggingface_hub/transformers. setdefault: quem exporta
+# HF_HUB_OFFLINE=0 de proposito (o instalador do modelo faz isso) continua podendo.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
@@ -16,6 +31,13 @@ from .gemini_detector import (
 from .ner_cache import cache_key, load_spans, save_spans
 
 GLINER_MODEL = "urchade/gliner_multi-v2.1"
+# Revisao (commit do repositorio do modelo no Hub) que esta no cache local; sem ela, uma revisao nova
+# publicada no Hub trocaria o modelo em silencio e a deteccao mudaria sem DETECTION_VERSION mudar.
+# Trocar de revisao e decisao: mude tambem o id usado na chave do cache de NER (``ner_cache``).
+GLINER_REVISION = "443d26d654e0324125a96bebd8e796c14ff2efe6"
+# O tokenizador do GLiNER (mdeberta) vem de outro repositorio do Hub; offline, le o que esta no cache.
+GLINER_TOKENIZER_MODEL = "microsoft/mdeberta-v3-base"
+GLINER_TOKENIZER_REVISION = "a0484667b22365f84929a935b5e50a51f71f159d"
 GLINER_LABELS = ("pessoa", "empresa privada", "logradouro")
 SPACY_MODELS = ("pt_core_news_md", "pt_core_news_lg", "pt_core_news_sm")
 DEFAULT_THRESHOLD = 0.75
@@ -167,6 +189,25 @@ class LocalNerEngine:
         return self._pipeline
 
 
+def hub_offline() -> bool:
+    """O Hub esta desligado nesta execucao (padrao). So ``HF_HUB_OFFLINE=0`` explicito o liga."""
+
+    return os.environ.get("HF_HUB_OFFLINE", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _force_hub_offline(offline: bool) -> None:
+    """Se o huggingface_hub ja foi importado antes deste modulo (a variavel so e lida no import), ajusta a
+    constante dele: o padrao offline vale mesmo nesse caso."""
+
+    if not offline:
+        return
+    import sys
+
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None and hasattr(constants, "HF_HUB_OFFLINE"):
+        constants.HF_HUB_OFFLINE = True
+
+
 def load_local_predict() -> PredictFn:
     global _ACTIVE_BACKEND
     try:
@@ -174,7 +215,11 @@ def load_local_predict() -> PredictFn:
         _ACTIVE_BACKEND = "gliner"
         return predict
     except Exception as exc:
-        _LOG.warning("GLiNER indisponivel (%s); usando spaCy PT.", exc)
+        _LOG.warning(
+            "GLiNER indisponivel (%s); usando spaCy PT. Se o modelo ainda nao foi baixado, rode "
+            "`python tools/instalar_modelo_ner.py` (passo explicito, o unico que usa a rede).",
+            exc,
+        )
         predict = _load_spacy_pt()
         _ACTIVE_BACKEND = "spacy_pt"
         return predict
@@ -184,9 +229,11 @@ def _load_gliner() -> PredictFn:
     from .torch_guard import apply_torch_windows_workaround
 
     apply_torch_windows_workaround()
+    offline = hub_offline()
+    _force_hub_offline(offline)
     from gliner import GLiNER
 
-    model = GLiNER.from_pretrained(GLINER_MODEL)
+    model = GLiNER.from_pretrained(GLINER_MODEL, revision=GLINER_REVISION, local_files_only=offline)
     _LOG.info("Motor local: GLiNER (%s)", GLINER_MODEL)
 
     def predict(text: str) -> Sequence[dict]:

@@ -157,6 +157,12 @@ X", "X/SC", linha de endereco, cabecalho em CAIXA ALTA) fica como estava. Cada l
 `AUDITORIA_PRIVADA.txt` na pasta privada, com as palavras-marca aprovadas e as recusadas
 para voce conferir; a `AUDITORIA.txt` dos textos so tem tokens e contagens.
 
+O modelo de reconhecimento de nomes (GLiNER) nunca vai a rede sozinho: o app roda
+com `HF_HUB_OFFLINE=1` por padrao e usa a revisao do modelo fixada no codigo. Em uma
+maquina nova o modelo ainda nao esta no cache local; baixe-o uma vez, de proposito,
+com `python tools\instalar_modelo_ner.py --baixar` (sem a opcao, so mostra o que
+baixaria). Sem o modelo o app cai no spaCy PT, como antes, e avisa no log.
+
 A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia
