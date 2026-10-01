@@ -237,13 +237,18 @@ def audit_map_records(records: Sequence[object]) -> list[str]:
     return notes
 
 
-def write_audit_report(export_dir: Path, notes_by_file: Sequence[tuple[str, list[str]]]) -> Path:
+def write_audit_report(
+    export_dir: Path,
+    notes_by_file: Sequence[tuple[str, list[str]]],
+    *,
+    engine: str = "local",
+) -> Path:
     from .version import version_info
 
     lines = [
         "AUDITORIA AUTOMATICA DESTE LOTE",
         "Conferencia dos criterios de fidelidade. Nao substitui a revisao humana.",
-        f"Versao do app que gerou este lote: {version_info().line()}",
+        f"Versao do app que gerou este lote: {version_info().line(engine)}",
         "",
     ]
     for name, notes in notes_by_file:

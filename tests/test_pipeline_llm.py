@@ -12,7 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from anonimizador_app.llm_discovery import Discovery, DiscoveryReport
+from anonimizador_app.credentials import ApiKey
+from anonimizador_app.llm_discovery import Discovery, DiscoveryReport, LlmConfig
 from anonimizador_app.pipeline_llm import LEGEND_FILENAME, ROSTER_FILENAME, run_llm_job
 from anonimizador_app.roster import KEEP, Mention
 
@@ -39,6 +40,8 @@ Pedido de SISBAJUD e RENAJUD. Conforme o evento 12, Paulo Roberto Souza foi cita
 
 Documento eletrônico assinado por LUCIANA MARCHETTI DE ALMEIDA, Juíza Federal.
 """
+
+FAKE_KEY = "chave-ficticia-9999-zzzz"
 
 ENTITIES = [
     ("empresa", "FAZENDA SANTA RITA AGROPECUARIA LTDA", "parte"),
@@ -97,6 +100,14 @@ class FakeDiscoverer:
                         start=index, end=index + len(value), source_text=surface)
             )
         return Discovery(mentions=mentions, report=report)
+
+
+class FakeChannelDiscoverer(FakeDiscoverer):
+    """Como o descobridor real: leva o canal na configuracao (so o id, nunca a chave)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.config = LlmConfig(channel="gemini-pago", api_key=ApiKey(FAKE_KEY, "teste"))
 
 
 class PipelineLlmTests(unittest.TestCase):
@@ -182,12 +193,72 @@ class PipelineLlmTests(unittest.TestCase):
         self.assertEqual(result.roster_path.parent, result.job.map_path.parent)
         self.assertFalse((result.job.export_dir / ROSTER_FILENAME).exists())
         legend = (result.job.export_dir / LEGEND_FILENAME).read_text(encoding="utf-8")
-        self.assertIn("| [PESSOA_1] | pessoa | socio |", legend)
+        self.assertRegex(legend, r"\| \[PESSOA_1\] \| pessoa \| socio \| 2 \|")
         for _kind, value, _role in ENTITIES:
             self.assertNotIn(value.casefold(), legend.casefold())
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
         for _kind, value, _role in ENTITIES:
             self.assertNotIn(value.casefold(), audit.casefold())
+
+    def test_same_structure_as_the_local_engine(self) -> None:
+        result, text = self._run(FakeDiscoverer())
+        folder = result.job.export_dir
+
+        # Ancora visivel por folha, depois do comentario de pagina.
+        self.assertIn("<!-- pagina-origem: 1 -->\n[fl. 1]\n", text)
+        self.assertIn("<!-- pagina-origem: 2 -->\n[fl. 2]\n", text)
+        self.assertTrue((folder / "INDICE.md").is_file())
+        index = (folder / "INDICE.md").read_text(encoding="utf-8")
+        self.assertIn("## autos.md", index)
+        cast = (folder / "ELENCO.md").read_text(encoding="utf-8")
+        self.assertIn("# Elenco do lote (sem nomes)", cast)
+        self.assertIn("## Papéis atribuídos pelo LLM", cast)
+        self.assertLess(cast.index("# Elenco do lote"), cast.index("## Papéis atribuídos pelo LLM"))
+        self.assertEqual(result.legend_path, folder / "ELENCO.md")
+        for _kind, value, _role in ENTITIES:
+            self.assertNotIn(value.casefold(), (index + cast).casefold())
+
+    def test_roles_section_counts_mentions_per_token(self) -> None:
+        result, _text = self._run(FakeDiscoverer())
+        cast = (result.job.export_dir / "ELENCO.md").read_text(encoding="utf-8")
+        section = cast.split("## Papéis atribuídos pelo LLM", 1)[1]
+
+        self.assertIn("| Token | Tipo | Papel | Menções |", section)
+        self.assertRegex(section, r"\| \[EMPRESA_1\] \| empresa \| parte \| 2 \|")
+        self.assertRegex(section, r"\| \[PESSOA_2\] \| pessoa \| socio \| 1 \|")
+        self.assertEqual(result.occurrences["pessoa:paulo roberto souza"], 2)
+        # Entrada mantida (juiza): nao tem token, mas a contagem existe para a tela de revisao.
+        self.assertEqual(result.occurrences["pessoa:luciana marchetti de almeida"], 1)
+        self.assertNotIn("LUCIANA", section)
+
+    def test_without_legend_the_cast_is_still_written(self) -> None:
+        result, _text = self._run(FakeDiscoverer(), write_legend=False)
+        cast = (result.job.export_dir / "ELENCO.md").read_text(encoding="utf-8")
+        self.assertNotIn("Papéis atribuídos pelo LLM", cast)
+        self.assertIsNone(result.legend_path)
+
+    def test_engine_is_in_audit_and_guides_and_the_key_is_nowhere(self) -> None:
+        result, _text = self._run(
+            FakeChannelDiscoverer(), engine_notes=["Canal: gemini-pago", "Chave lida de: teste"]
+        )
+        self.assertEqual(result.engine, "gemini-pago")
+        folder = result.job.export_dir
+        audit = (folder / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("motor LLM: gemini-pago", audit)
+        self.assertIn("## motor", audit)
+        self.assertIn("Chave lida de: teste", audit)
+        self.assertIn("motor LLM: gemini-pago", (folder / "LEIA-ME.txt").read_text(encoding="utf-8"))
+        private_guide = (result.job.map_path.parent / "LEIA-ME.txt").read_text(encoding="utf-8")
+        self.assertIn("motor LLM: gemini-pago", private_guide)
+        for root in (folder, result.job.map_path.parent, result.job.map_path.parent.parent):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(FAKE_KEY, path.read_text(encoding="utf-8", errors="ignore"), path.name)
+
+    def test_unlabeled_discoverer_is_reported_as_generic_llm(self) -> None:
+        result, _text = self._run(FakeDiscoverer())
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("motor LLM: llm", audit)
 
     def test_reviewed_roster_is_respected(self) -> None:
         first, _text = self._run(FakeDiscoverer())

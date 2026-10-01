@@ -128,13 +128,14 @@ def write_lote_guides(
     export_dir: Path,
     map_path: Path,
     markdown_names: Sequence[str],
+    engine: str = "local",
 ) -> None:
     """Grava um LEIA-ME em cada pasta do lote: textos anonimizados vs mapa."""
 
     from .version import version_info
 
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
-    generated_by = f"Gerado por: {version_info().line()}\n"
+    generated_by = f"Gerado por: {version_info().line(engine)}\n"
     export_dir.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
     (export_dir / "LEIA-ME.txt").write_text(

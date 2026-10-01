@@ -68,22 +68,48 @@ class SplitChunksTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
-    def test_gemini_without_key_is_refused(self) -> None:
-        clean = {key: value for key, value in os.environ.items() if "API_KEY" not in key}
-        with patch.dict(os.environ, clean, clear=True):
-            discoverer = LangExtractDiscoverer(LlmConfig(provider="gemini"))
-            with self.assertRaises(LlmConfigError):
+    def test_gemini_without_key_is_refused_even_with_google_variables(self) -> None:
+        env = {"GEMINI_API_KEY": "chave-ficticia", "GOOGLE_API_KEY": "chave-ficticia"}
+        with patch.dict(os.environ, env):
+            discoverer = LangExtractDiscoverer(LlmConfig(provider="gemini", channel="gemini-pago"))
+            with self.assertRaises(LlmConfigError) as caught:
                 discoverer._build_model()
+        self.assertIn("Sem chave", str(caught.exception))
 
     @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
     def test_vertex_requires_project(self) -> None:
-        discoverer = LangExtractDiscoverer(LlmConfig(provider="vertex"))
+        discoverer = LangExtractDiscoverer(LlmConfig(provider="vertex", channel="vertex-sp"))
         with self.assertRaises(LlmConfigError):
             discoverer._build_model()
+
+    @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
+    def test_ollama_outside_this_computer_is_refused(self) -> None:
+        discoverer = LangExtractDiscoverer(
+            LlmConfig(provider="ollama", channel="ollama-local", model_url="http://192.0.2.10:11434")
+        )
+        with self.assertRaises(LlmConfigError):
+            discoverer._build_model()
+
+    def test_the_key_is_passed_explicitly_and_the_module_reads_no_environment(self) -> None:
+        import inspect
+
+        from anonimizador_app import llm_discovery
+
+        source = inspect.getsource(llm_discovery)
+        self.assertNotIn("os.environ", source)
+        self.assertNotIn("getenv", source)
+        self.assertNotIn("API_KEY", source.replace("api_key", ""))
 
     def test_describe_names_the_region(self) -> None:
         text = LlmConfig(provider="vertex", project="p").describe()
         self.assertIn("southamerica-east1", text)
+
+    def test_describe_with_channel_and_no_key_in_repr(self) -> None:
+        from anonimizador_app.credentials import ApiKey
+
+        config = LlmConfig(channel="gemini-pago", api_key=ApiKey("chave-ficticia-1234", "teste"))
+        self.assertEqual(config.describe(), f"{config.model_id} via gemini-pago")
+        self.assertNotIn("chave-ficticia-1234", repr(config))
 
 
 @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")

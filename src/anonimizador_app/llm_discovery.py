@@ -1,4 +1,4 @@
-"""Descoberta de entidades por LLM com LangExtract (Gemini, Vertex AI ou Ollama).
+"""Descoberta de entidades por LLM com LangExtract (Gemini pago, Vertex AI ou Ollama local).
 
 O LLM le trechos do texto — ja com CPF, CNPJ e afins trocados por token nesta
 maquina — e devolve quem aparece e com que papel. Nao reescreve nada: a troca
@@ -10,6 +10,11 @@ ficam aqui, e nao no provedor: no LangExtract, um trecho com erro (bloqueio
 de seguranca, JSON truncado) derruba o lote inteiro ou e descartado em
 silencio. Aqui o trecho que falhar e registrado (fail-closed) e a auditoria
 diz quais paginas nao foram lidas.
+
+Este modulo nao le variavel de ambiente nem cofre: a chave chega pronta em
+``LlmConfig.api_key`` (``credentials.ApiKey``) e so depois de o portao do
+motor (``llm_engine.check_engine``) liberar. ``offline=True`` usa so o cache
+(reaplica um elenco revisado sem rede).
 """
 
 from __future__ import annotations
@@ -17,7 +22,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 from collections.abc import Callable, Sequence
@@ -26,12 +30,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .credentials import ApiKey
 from .roster import Mention
 
 PROMPT_VERSION = "2026-09-25.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_LOCATION = "southamerica-east1"
-API_KEY_ENVS = ("GEMINI_API_KEY", "LANGEXTRACT_API_KEY")
 _EMPTY_OUTPUT = '{"extractions": []}'
 _PAGE_ANCHOR = re.compile(r"<!--\s*pagina-origem:\s*(\d+)\s*-->")
 _LETTER = re.compile(r"[^\W\d_]")
@@ -171,9 +175,15 @@ class LlmConfigError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class LlmConfig:
-    """Provedor do LLM. Conta gratuita do Gemini e vedada: o conteudo treina o modelo."""
+    """Provedor do LLM. Conta gratuita do Gemini e vedada: o conteudo treina o modelo.
+
+    ``channel`` e o canal liberado pelo portao (``gemini-pago``, ``vertex-sp``,
+    ``ollama-local``). ``api_key`` nao aparece no ``repr``.
+    """
 
     provider: str = "gemini"  # gemini (API paga) | vertex | ollama
+    channel: str = ""
+    api_key: ApiKey | None = field(default=None, repr=False, compare=False)
     model_id: str = DEFAULT_MODEL
     project: str = ""
     location: str = DEFAULT_LOCATION
@@ -185,6 +195,8 @@ class LlmConfig:
     timeout: int = 180
 
     def describe(self) -> str:
+        if self.channel:
+            return f"{self.model_id} via {self.channel}"
         where = {
             "gemini": "Gemini API",
             "vertex": f"Vertex AI ({self.location})",
@@ -363,14 +375,18 @@ class LangExtractDiscoverer:
         *,
         cache_dir: Path | None = None,
         model_factory: Callable[[], Any] | None = None,
+        offline: bool = False,
     ) -> None:
         self.config = config or LlmConfig()
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self._model_factory = model_factory
+        self.offline = offline
 
     def describe(self) -> str:
         if self._model_factory is not None:
             return f"{self.config.model_id} (modelo injetado)"
+        if self.offline:
+            return f"{self.config.describe()} (sem rede: so o cache)"
         return self.config.describe()
 
     def discover(self, text: str) -> Discovery:
@@ -385,7 +401,11 @@ class LangExtractDiscoverer:
             else:
                 found[index] = cached
                 report.cached += 1
-        if pending:
+        if pending and self.offline:
+            # Sem rede: trecho fora do cache nao e lido (fail-closed, como falha de API).
+            report.failed = [(chunks[index].start, chunks[index].end) for index in pending]
+            report.failure_reasons = ["sem rede: trecho fora do cache"]
+        elif pending:
             report.sent = len(pending)
             failed = self._run(chunks, pending, found, report)
             report.failed = [(chunks[index].start, chunks[index].end) for index in sorted(failed)]
@@ -436,6 +456,7 @@ class LangExtractDiscoverer:
             max_workers=self.config.max_workers,
             use_schema_constraints=False,
             show_progress=False,
+            fetch_urls=False,
             prompt_validation_level=prompt_validation.PromptValidationLevel.OFF,
             resolver_params={"suppress_parse_errors": True},
         )
@@ -468,6 +489,13 @@ class LangExtractDiscoverer:
     def _build_model(self) -> Any:
         lx = import_langextract()
         cfg = self.config
+        if self.offline:
+            raise LlmConfigError("Modo sem rede: o modelo nao pode ser criado.")
+        if not cfg.channel:
+            raise LlmConfigError(
+                "Canal nao liberado: o provedor so e chamado depois do portao do motor "
+                "(llm_engine.check_engine)."
+            )
         kwargs: dict[str, Any] = {"temperature": 0.0}
         if cfg.provider in {"gemini", "vertex"}:
             kwargs.update(
@@ -480,15 +508,19 @@ class LangExtractDiscoverer:
                     raise LlmConfigError("Vertex AI exige o projeto do Google Cloud (--projeto).")
                 kwargs.update(vertexai=True, project=cfg.project, location=cfg.location)
             else:
-                key = next((os.environ[name] for name in API_KEY_ENVS if os.environ.get(name)), "")
-                if not key:
+                if cfg.api_key is None:
                     raise LlmConfigError(
-                        "Defina GEMINI_API_KEY com a chave de um projeto com faturamento "
-                        "ativo. Chave gratuita nao: o conteudo pode treinar o modelo."
+                        "Sem chave do Gemini pago. Guarde-a no Gerenciador de Credenciais "
+                        "(tools/anonimizar_llm.py --guardar-chave). Chave gratuita nao: "
+                        "o conteudo pode treinar o modelo."
                     )
-                kwargs["api_key"] = key
+                kwargs["api_key"] = cfg.api_key.reveal()
             provider = "gemini"
         elif cfg.provider == "ollama":
+            if not _is_loopback(cfg.model_url):
+                raise LlmConfigError(
+                    "Ollama so e aceito neste computador (localhost): o texto nao pode sair."
+                )
             kwargs.update(model_url=cfg.model_url, timeout=cfg.timeout)
             provider = "ollama"
         else:
@@ -542,6 +574,12 @@ class LangExtractDiscoverer:
             "extracoes": items,
         }
         path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _is_loopback(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    return (urlparse(url).hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _to_item(extraction: Any, chunk_text: str) -> dict:

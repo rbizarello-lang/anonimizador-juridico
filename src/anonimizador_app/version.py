@@ -11,6 +11,8 @@
   2.5 = + identidade do lote, E13: hifen de quebra de linha ("ME-TAIS"), pontuacao de OCR, forma curta
   do nome com varias capturas, prenome e ramo de atividade sem juntar por uma letra, "Filho"/"Junior"
   separados, marca de empresa usada sozinha com token proprio).
+- motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
+  no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
 - commit: o commit do git em que a pasta esta, lido direto de ``.git`` (sem chamar programa externo).
 """
@@ -24,6 +26,7 @@ from pathlib import Path
 
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
+ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
 DETECTION_VERSION = "2.5"
 
@@ -43,16 +46,26 @@ class VersionInfo:
     def short(self) -> str:
         return f"v{self.app} · código {self.code}"
 
-    def line(self) -> str:
+    def line(self, engine: str = ENGINE_LOCAL) -> str:
+        """``engine``: ``local`` (ou vazio) ou o id do canal do LLM ("gemini-pago")."""
+
         parts = [
             f"v{self.app}",
             f"extração {self.extractor}",
             f"detecção {self.detection}",
+            engine_label(engine),
             f"código {self.code}",
         ]
         if self.commit:
             parts.append(f"commit {self.commit}" + (f" ({self.branch})" if self.branch else ""))
         return " · ".join(parts)
+
+
+def engine_label(engine: str = ENGINE_LOCAL) -> str:
+    """"motor local" ou "motor LLM: gemini-pago"."""
+
+    channel = (engine or "").strip()
+    return "motor local" if channel in ("", ENGINE_LOCAL) else f"motor LLM: {channel}"
 
 
 @lru_cache(maxsize=1)

@@ -16,6 +16,12 @@ Tres fases por lote: (1) descoberta em todos os arquivos, (2) verificacao,
 Fail-closed: pagina que nenhuma passada conseguiu ler bloqueia a exportacao
 e aparece na AUDITORIA. O elenco com originais fica em ``privados``; a
 legenda exportavel (token -> tipo -> papel) nao leva nome.
+
+A saida tem a mesma estrutura do motor local: ancora visivel por folha,
+``INDICE.md`` e ``ELENCO.md`` (capas, vinculos, socios dos contratos). O
+``ELENCO.md`` ganha, no fim, a secao dos papeis atribuidos pelo LLM, com a
+contagem de mencoes de cada token. A linha de versao (AUDITORIA, LEIA-ME)
+diz o motor: ``motor LLM: <canal>``.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from .extractors import ExtractedDocument, UnsupportedDocumentError
 from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of
+from .lote_index import add_sheet_anchors
 from .pipeline import (
     FileOutcome,
     JobResult,
@@ -54,7 +61,9 @@ from .pipeline import (
     new_job_id,
     resolve_lote_dirs,
     write_lote_guides,
+    write_outcomes_index,
 )
+from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
 from .roster import KEEP, TOKENIZE, Mention, Roster
 from .rules import build_recognizers
@@ -107,6 +116,10 @@ class LlmJobResult:
     roster_path: Path
     legend_path: Path | None
     roster: Roster
+    # Por chave do elenco: mencoes trocadas (ou, nas entradas mantidas, achadas), e token.
+    occurrences: dict[str, int] = field(default_factory=dict)
+    tokens: dict[str, str] = field(default_factory=dict)
+    engine: str = ""
 
 
 def run_llm_job(
@@ -122,6 +135,9 @@ def run_llm_job(
     extract_fn: Callable[[Path], ExtractedDocument] = extract_fast,
     extractor_version: str = FAST_EXTRACTOR_VERSION,
     write_legend: bool = True,
+    engine: str | None = None,
+    engine_notes: Sequence[str] = (),
+    job_id: str | None = None,
     on_progress: ProgressFn | None = None,
 ) -> LlmJobResult:
     """Tres fases: descobre em todos os arquivos, confere, e so entao troca.
@@ -134,7 +150,8 @@ def run_llm_job(
     if not sources:
         raise ValueError("Nenhum arquivo foi informado.")
 
-    identifier = new_job_id()
+    engine_id = engine or getattr(getattr(discoverer, "config", None), "channel", "") or "llm"
+    identifier = job_id or _unique_job_id(Path(export_root), Path(private_root))
     export_dir, map_path, split_warning = resolve_lote_dirs(
         Path(export_root), Path(private_root), identifier
     )
@@ -199,6 +216,7 @@ def run_llm_job(
     outcomes: list[FileOutcome] = []
     reports: dict[str, LlmFileReport] = {}
     notes: list[tuple[str, list[str]]] = []
+    occurrences: Counter[str] = Counter()
     for source in sources:
         if source in errors:
             outcomes.append(errors[source])
@@ -210,7 +228,15 @@ def run_llm_job(
         )
         state.report.unread_pages = sorted(set.intersection(*state.failed_pages))
         markdown_path = _unique_path(export_dir, source.stem, ".md")
-        markdown_path.write_text(result.text, encoding="utf-8")
+        # Ancora visivel por folha, depois da troca (igual ao motor local).
+        final_text = add_sheet_anchors(result.text, markdown_path.name)
+        markdown_path.write_text(final_text, encoding="utf-8")
+        occurrences.update(
+            entity.canonical_key
+            for entity in entities
+            if entity.recognizer == ROSTER_RECOGNIZER and entity.canonical_key in roster
+        )
+        occurrences.update(_kept_occurrences(state, roster, exclusions))
         outcome = FileOutcome(
             source=source,
             ok=True,
@@ -227,14 +253,28 @@ def run_llm_job(
         )
         outcomes.append(outcome)
         reports[source.name] = state.report
-        notes.append((markdown_path.name, _file_notes(outcome, state.report, discoverer, result.text)))
+        notes.append((markdown_path.name, _file_notes(outcome, state.report, discoverer, final_text)))
 
     mapping.dump(map_path)
-    roster_file = roster.dump(map_path.parent / ROSTER_FILENAME)
-    legend_path = _write_legend(export_dir, roster, mapping) if write_legend else None
+    tokens = {record.canonical: record.token for record in mapping.records}
+    roster_file = roster.dump(
+        map_path.parent / ROSTER_FILENAME,
+        annotations={
+            entry.key: {
+                "token": tokens.get(entry.key, ""),
+                "ocorrencias": occurrences.get(entry.key, 0),
+            }
+            for entry in roster.entries
+        },
+    )
+    write_outcomes_index(export_dir, outcomes)
+    legend_path = (
+        _append_llm_roles(export_dir, roster, tokens, occurrences) if write_legend else None
+    )
     notes.insert(0, ("elenco (sem nomes)", roster_summary(roster)))
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
-    write_audit_report(export_dir, notes)
+    notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes]))
+    write_audit_report(export_dir, notes, engine=engine_id)
     write_lote_guides(
         job_id=identifier,
         export_dir=export_dir,
@@ -244,6 +284,7 @@ def run_llm_job(
             for outcome in outcomes
             if outcome.ok and outcome.markdown_path is not None
         ],
+        engine=engine_id,
     )
     _append_roster_guide(map_path.parent / "LEIA-ME.txt")
     job = build_job_result(
@@ -274,6 +315,9 @@ def run_llm_job(
         roster_path=roster_file,
         legend_path=legend_path,
         roster=roster,
+        occurrences=dict(occurrences),
+        tokens=tokens,
+        engine=engine_id,
     )
 
 
@@ -365,6 +409,17 @@ def _verify_file(
         )
 
 
+def _unique_job_id(export_root: Path, private_root: Path) -> str:
+    """``lote_AAAAMMDD_HHMMSS``; nova rodada no mesmo segundo nao sobrescreve a anterior."""
+
+    base = new_job_id()
+    candidate, index = base, 2
+    while (export_root / candidate).exists() or (private_root / candidate).exists():
+        candidate = f"{base}_{index}"
+        index += 1
+    return candidate
+
+
 def _guard(source: Path, errors: dict[Path, FileOutcome], step: Callable):
     """Erro de arquivo vira FileOutcome; erro de configuracao do LLM para o lote."""
 
@@ -392,7 +447,8 @@ def _append_roster_guide(path: Path) -> None:
             "\n"
             "elenco.json: quem e quem neste lote (com os originais), o papel que o\n"
             "LLM atribuiu e a acao (tokenizar/manter). Para corrigir, troque 'acao'\n"
-            "e rode de novo com --elenco apontando para este arquivo.\n"
+            "e rode de novo com --elenco apontando para este arquivo (com --sem-rede,\n"
+            "so o cache e usado: nada e enviado ao provedor).\n"
         )
 
 
@@ -535,8 +591,25 @@ def _file_notes(
             "ALERTA: " + _pages_label(report.unread_pages) + " sem leitura do LLM em "
             "nenhuma passada. Exportacao bloqueada."
         )
+    if getattr(discoverer, "offline", False):
+        notes.append(
+            "Modo sem rede: nenhuma chamada ao provedor; trecho fora do cache ficou sem leitura "
+            "nesta rodada."
+        )
     notes.extend(audit_markdown(text))
     return notes
+
+
+def _kept_occurrences(
+    state: _FileState, roster: Roster, exclusions: Sequence[str]
+) -> Counter[str]:
+    """Mencoes das entradas MANTIDAS (a tela de revisao mostra quanto a troca atingiria)."""
+
+    kept = [replace(entry, action=TOKENIZE) for entry in roster.entries if entry.action == KEEP]
+    if not kept:
+        return Counter()
+    spans = spans_for_roster(state.text, kept, extra_keep=exclusions, folded=state.folded)
+    return Counter(span.canonical_key for span in spans)
 
 
 def _token_order(token: str) -> tuple[str, int]:
@@ -544,29 +617,40 @@ def _token_order(token: str) -> tuple[str, int]:
     return label, int(number) if number.isdigit() else 0
 
 
-def _write_legend(export_dir: Path, roster: Roster, mapping: PseudonymMap) -> Path | None:
-    """Legenda exportavel: token, tipo e papel. Sem nome, sem variante."""
+def _append_llm_roles(
+    export_dir: Path,
+    roster: Roster,
+    tokens: dict[str, str],
+    occurrences: Counter[str],
+) -> Path | None:
+    """Secao "Papeis atribuidos pelo LLM" no fim do ``ELENCO.md``: token, tipo, papel, mencoes.
 
-    tokens = {record.canonical: record.token for record in mapping.records}
+    Sem nome, sem variante. O ``ELENCO.md`` (capas e vinculos) ja foi gravado pelo mesmo
+    gerador do motor local; aqui so se acrescenta o que o LLM classificou.
+    """
+
     rows = []
     for entry in roster.to_tokenize():
         token = tokens.get(entry.key)
         if token is None:
             continue
         roles = ", ".join(role for role in entry.roles if role != "desconhecido") or "-"
-        rows.append((token, entry.kind, roles))
+        rows.append((token, entry.kind, roles, occurrences.get(entry.key, 0)))
     if not rows:
         return None
     rows.sort(key=lambda row: _token_order(row[0]))
     lines = [
-        "# Legenda dos tokens",
+        "## Papéis atribuídos pelo LLM",
         "",
-        "Papel processual de cada token deste lote. Nao ha nome nem documento aqui.",
+        "Papel processual de cada token deste lote, como o LLM o classificou; menções = quantas "
+        "vezes o token aparece nos textos. Não há nome nem documento aqui.",
         "",
-        "| Token | Tipo | Papel |",
-        "|---|---|---|",
-        *(f"| {token} | {kind} | {roles} |" for token, kind, roles in rows),
+        "| Token | Tipo | Papel | Menções |",
+        "|---|---|---|---|",
+        *(f"| {token} | {kind} | {roles} | {count} |" for token, kind, roles, count in rows),
     ]
     path = export_dir / LEGEND_FILENAME
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    existing = path.read_text(encoding="utf-8").rstrip("\n") if path.is_file() else ""
+    body = "\n".join(lines) + "\n"
+    path.write_text((existing + "\n\n" if existing else "") + body, encoding="utf-8")
     return path
