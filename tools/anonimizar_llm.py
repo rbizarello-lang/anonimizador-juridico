@@ -1,23 +1,37 @@
-"""Anonimiza com o pipeline LLM (LangExtract + Gemini/Vertex/Ollama) e grava um lote.
+"""Anonimiza com o motor LLM (LangExtract) e grava um lote. O padrao do app segue sendo o motor local.
+
+O texto das pecas, com os IDs ja mascarados, vai ao provedor: so com o canal
+escolhido, a chave guardada, o aviso confirmado, o faturamento confirmado, os
+pacotes instalados e o config.json sem chave. ``--verificar`` mostra o que
+falta, sem enviar nada.
 
 Exemplos:
 
-  # Gemini API paga (chave em GEMINI_API_KEY; conta gratuita treina o modelo):
-  python tools/anonimizar_llm.py autos.pdf
+  # 1. Guardar a chave no Gerenciador de Credenciais do Windows (pede sem mostrar na tela):
+  python tools/anonimizar_llm.py --guardar-chave
+
+  # 2. Conferir o portao (nao envia nada):
+  python tools/anonimizar_llm.py --verificar --canal gemini-pago --ciente --faturamento-confirmado
+
+  # 3. Rodar (Gemini API paga; chave de projeto COM faturamento):
+  python tools/anonimizar_llm.py autos.pdf --canal gemini-pago --ciente --faturamento-confirmado
 
   # Vertex AI em Sao Paulo (credencial do gcloud; contrato do Google Cloud):
-  python tools/anonimizar_llm.py autos.pdf --provedor vertex --projeto meu-projeto
+  python tools/anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO --ciente --faturamento-confirmado
 
-  # 100% local (lento em CPU; bom para peca curta):
-  python tools/anonimizar_llm.py peca.pdf --provedor ollama --modelo gemma3:12b
+  # Depois de revisar o elenco (trocar "acao" de uma entrada), SEM rede (so o cache):
+  python tools/anonimizar_llm.py autos.pdf --canal gemini-pago --sem-rede --elenco saidas/privados/lote_.../elenco.json
 
-  # Depois de revisar o elenco (trocar "acao" de uma entrada):
-  python tools/anonimizar_llm.py autos.pdf --elenco saidas/privados/lote_.../elenco.json
+  # Apagar a chave guardada:
+  python tools/anonimizar_llm.py --apagar-chave
+
+A chave nunca vai para argumento de linha de comando, arquivo do projeto, log ou AUDITORIA.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 import time
 from pathlib import Path
@@ -27,29 +41,68 @@ sys.path.insert(0, str(ROOT / "src"))
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
+from anonimizador_app.credentials import (  # noqa: E402
+    ENV_VAR,
+    VAULT_SERVICE,
+    CredentialsError,
+    delete_key,
+    store_key,
+)
 from anonimizador_app.llm_discovery import (  # noqa: E402
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
-    LangExtractDiscoverer,
-    LlmConfig,
     LlmConfigError,
 )
+from anonimizador_app.llm_engine import (  # noqa: E402
+    CHANNELS,
+    WARNING_VERSION,
+    EngineChoice,
+    audit_lines,
+    billing_statement,
+    build_discoverer,
+    build_offline_discoverer,
+    check_engine,
+    warning_text,
+)
+from anonimizador_app.netblock import block_network  # noqa: E402
 from anonimizador_app.pipeline import default_export_dir, default_private_dir  # noqa: E402
 from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, run_llm_job  # noqa: E402
 from anonimizador_app.settings import load_settings  # noqa: E402
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Anonimiza PDF/DOCX/TXT/MD: IDs locais, elenco por LLM, troca local."
     )
-    parser.add_argument("arquivos", nargs="+", help="Arquivos do mesmo lote (mesmos tokens).")
+    parser.add_argument("arquivos", nargs="*", help="Arquivos do mesmo lote (mesmos tokens).")
     parser.add_argument(
-        "--provedor",
-        choices=("gemini", "vertex", "ollama"),
-        default="gemini",
-        help="gemini = Gemini API paga; vertex = Vertex AI; ollama = modelo local.",
+        "--canal",
+        choices=tuple(CHANNELS),
+        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo; "
+        "ollama-local = modelo neste computador. Sem canal, nada roda.",
+    )
+    parser.add_argument("--ciente", action="store_true", help="Li o aviso do canal (impresso na tela).")
+    parser.add_argument(
+        "--faturamento-confirmado",
+        action="store_true",
+        help="O projeto da chave tem faturamento ativo (chave gratuita e vedada).",
+    )
+    parser.add_argument(
+        "--guardar-chave",
+        action="store_true",
+        help="Pede a chave (sem mostrar) e guarda no Gerenciador de Credenciais do Windows.",
+    )
+    parser.add_argument("--apagar-chave", action="store_true", help="Apaga a chave guardada.")
+    parser.add_argument(
+        "--verificar", action="store_true", help="Mostra o que falta para liberar o motor; nao envia nada."
+    )
+    parser.add_argument(
+        "--sem-rede",
+        action="store_true",
+        help="Reaplica o elenco usando so o cache (nenhum socket e aberto; sem chave nem aviso).",
     )
     parser.add_argument("--modelo", default=DEFAULT_MODEL, help=f"Padrao: {DEFAULT_MODEL}.")
     parser.add_argument("--projeto", default="", help="Projeto do Google Cloud (Vertex AI).")
@@ -70,34 +123,158 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exportaveis", help="Raiz dos lotes exportaveis.")
     parser.add_argument("--privados", help="Raiz dos mapas, elencos e caches.")
     parser.add_argument("--sem-cache", action="store_true", help="Relê o PDF e reenvia ao LLM.")
-    parser.add_argument("--sem-legenda", action="store_true", help="Nao grava ELENCO.md.")
-    args = parser.parse_args(argv)
+    parser.add_argument("--sem-legenda", action="store_true", help="Nao grava a secao de papeis do ELENCO.md.")
+    return parser
 
-    sources = [Path(item).expanduser() for item in args.arquivos]
-    missing = [str(item) for item in sources if not item.is_file()]
-    if missing:
-        print("Arquivo nao encontrado: " + ", ".join(missing), file=sys.stderr)
+
+def manage_key(args: argparse.Namespace) -> int | None:
+    """``--guardar-chave`` / ``--apagar-chave``. ``None`` se nenhum dos dois foi pedido."""
+
+    try:
+        if args.apagar_chave:
+            removed = delete_key()
+            print("Chave apagada do Gerenciador de Credenciais." if removed else "Nao havia chave guardada.")
+        if args.guardar_chave:
+            value = getpass.getpass(
+                "Chave da API (projeto com faturamento; nao aparece na tela): "
+            )
+            key = store_key(value)
+            print(f"Chave guardada no Gerenciador de Credenciais (servico {VAULT_SERVICE}); {key.source}.")
+    except CredentialsError as exc:
+        print(f"Credencial: {exc}", file=sys.stderr)
+        return 2
+    if args.apagar_chave or args.guardar_chave:
+        return 0 if not args.arquivos else None
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    handled = manage_key(args)
+    if handled is not None:
+        return handled
+    if not args.arquivos and not args.verificar:
+        print("Informe os arquivos (ou use --guardar-chave / --verificar).", file=sys.stderr)
         return 2
 
     private_root = Path(args.privados).expanduser() if args.privados else default_private_dir(ROOT)
     export_root = (
         Path(args.exportaveis).expanduser() if args.exportaveis else default_export_dir(ROOT)
     )
-    settings = load_settings(Path(args.config).expanduser() if args.config else private_root)
-    config = LlmConfig(
-        provider=args.provedor,
-        model_id=args.modelo,
+    config_source = Path(args.config).expanduser() if args.config else private_root
+    cache_dir = None if args.sem_cache else private_root / LLM_CACHE_SUBDIR
+    channel = args.canal or ""
+
+    if args.sem_rede:
+        return run_offline(args, channel, config_source, export_root, private_root, cache_dir)
+
+    choice = EngineChoice(
+        channel=channel,
+        acknowledged=args.ciente,
+        billing_confirmed=args.faturamento_confirmado,
         project=args.projeto,
+        model_id=args.modelo,
         location=args.regiao,
         model_url=args.ollama_url,
-        max_workers=max(1, args.paralelo),
-        chunk_chars=max(500, args.trecho),
     )
-    discoverer = LangExtractDiscoverer(
-        config,
-        cache_dir=None if args.sem_cache else private_root / LLM_CACHE_SUBDIR,
+    decision = check_engine(choice, private_root=config_source)
+    if channel in CHANNELS and CHANNELS[channel].leaves_machine:
+        print(f"AVISO (versao {WARNING_VERSION}, canal {channel}):", file=sys.stderr)
+        print(warning_text(channel), file=sys.stderr)
+        print(f"Faturamento: {billing_statement(channel)}", file=sys.stderr)
+    if args.verificar:
+        return report_gate(decision)
+    if not decision.allowed:
+        print("Motor LLM bloqueado:", file=sys.stderr)
+        for reason in decision.reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        print("O app segue disponivel no motor local (sem LLM).", file=sys.stderr)
+        return 2
+
+    missing = missing_files(args)
+    if missing:
+        return 2
+    discoverer = build_discoverer(
+        decision, cache_dir=cache_dir, max_workers=max(1, args.paralelo), chunk_chars=args.trecho
+    )
+    return run_and_report(
+        args,
+        discoverer,
+        export_root,
+        private_root,
+        config_source,
+        engine=decision.channel,
+        engine_notes=audit_lines(decision, choice),
     )
 
+
+def report_gate(decision) -> int:
+    print(f"Canal: {decision.channel or '(nenhum)'}")
+    print(
+        f"Chave: {decision.key_source or 'nenhuma chave guardada'} "
+        f"(variavel {ENV_VAR} ou Gerenciador de Credenciais)"
+    )
+    if decision.allowed:
+        print("Motor LLM LIBERADO. Nada foi enviado.")
+        return 0
+    print("Motor LLM BLOQUEADO:")
+    for reason in decision.reasons:
+        print(f"  - {reason}")
+    return 1
+
+
+def missing_files(args: argparse.Namespace) -> list[str]:
+    missing = [item for item in args.arquivos if not Path(item).expanduser().is_file()]
+    if missing:
+        print("Arquivo nao encontrado: " + ", ".join(missing), file=sys.stderr)
+    return missing
+
+
+def run_offline(
+    args: argparse.Namespace,
+    channel: str,
+    config_source: Path,
+    export_root: Path,
+    private_root: Path,
+    cache_dir: Path | None,
+) -> int:
+    if channel not in CHANNELS:
+        print("--sem-rede precisa do --canal da rodada anterior (o cache e por canal).", file=sys.stderr)
+        return 2
+    if not args.arquivos or missing_files(args):
+        return 2
+    try:
+        discoverer = build_offline_discoverer(
+            channel, cache_dir=cache_dir, model_id=args.modelo, chunk_chars=args.trecho
+        )
+    except LlmConfigError as exc:
+        print(f"Configuracao: {exc}", file=sys.stderr)
+        return 2
+    notes = ["Canal: " + channel, "Modo sem rede: so o cache; nenhum socket foi aberto."]
+    # Defesa em profundidade: qualquer tentativa de conexao aborta a rodada.
+    with block_network() as attempts:
+        code = run_and_report(
+            args, discoverer, export_root, private_root, config_source, engine=channel, engine_notes=notes
+        )
+    if attempts:
+        print(f"ALERTA: {len(attempts)} tentativa(s) de rede bloqueada(s).", file=sys.stderr)
+        return 1
+    return code
+
+
+def run_and_report(
+    args: argparse.Namespace,
+    discoverer,
+    export_root: Path,
+    private_root: Path,
+    config_source: Path,
+    *,
+    engine: str,
+    engine_notes: list[str],
+) -> int:
+    sources = [Path(item).expanduser() for item in args.arquivos]
+    settings = load_settings(config_source)
     started = time.perf_counter()
     try:
         result = run_llm_job(
@@ -110,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
             verification_rounds=max(0, args.verificacao),
             use_cache=not args.sem_cache,
             write_legend=not args.sem_legenda,
+            engine=engine,
+            engine_notes=engine_notes,
             on_progress=lambda message, _fraction: print(message, flush=True),
         )
     except LlmConfigError as exc:
@@ -118,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     elapsed = time.perf_counter() - started
 
     job = result.job
+    print(f"Motor: LLM {engine}")
     print(f"Textos: {job.export_dir}")
     print(f"Mapa e elenco (privados): {job.map_path.parent}")
     print(f"Tempo: {elapsed:.1f}s")
