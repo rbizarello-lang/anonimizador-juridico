@@ -28,25 +28,25 @@ DOC = """\
 A UNIÃO (FAZENDA NACIONAL), por intermédio da PGFN, ajuíza execução fiscal
 contra Fazenda Santa Rita Agropecuária Ltda, conforme CDA anexa.
 
-A PGFN requer a citação do sócio PAULO ROBERTO SOUZA, CPF 529.982.247-25.
+A PGFN requer a citação do sócio OLAVO RICARDO TEIXEIRA, CPF 529.982.247-25.
 
 <!-- pagina-origem: 2 -->
 
-Consta que MARIA OLIVEIRA SANTOS, sócia, reside na Rua das Acácias, 120.
+Consta que MARLENE OLIVEIRA SAMPAIO, sócia, reside na Rua das Acácias, 120.
 No Tema 1.209/STJ discute-se a responsabilidade; a UNIÃO COMERCIAL DE GRÃOS LTDA
 recebeu os bens (art. 133 do CTN). Valor: R$ 1.234.567,89 em 12/03/2024.
-Pedido de SISBAJUD e RENAJUD. Conforme o evento 12, Paulo Roberto Souza foi citado.
+Pedido de SISBAJUD e RENAJUD. Conforme o evento 12, Olavo Ricardo Teixeira foi citado.
 
-Documento eletrônico assinado por LUCIANA MARCHETTI DE ALMEIDA, Juíza Federal.
+Documento eletrônico assinado por LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal.
 """
 
 ENTITIES = [
     ("empresa", "FAZENDA SANTA RITA AGROPECUARIA LTDA", "parte"),
-    ("pessoa", "PAULO ROBERTO SOUZA", "socio"),
-    ("pessoa", "MARIA OLIVEIRA SANTOS", "socio"),
+    ("pessoa", "OLAVO RICARDO TEIXEIRA", "socio"),
+    ("pessoa", "MARLENE OLIVEIRA SAMPAIO", "socio"),
     ("endereco", "Rua das Acácias, 120", "socio"),
     ("empresa", "UNIÃO COMERCIAL DE GRÃOS LTDA", "terceiro"),
-    ("pessoa", "LUCIANA MARCHETTI DE ALMEIDA", "magistrado"),
+    ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "magistrado"),
 ]
 MUST_STAY = [
     "UNIÃO - FAZENDA NACIONAL",
@@ -57,7 +57,7 @@ MUST_STAY = [
     "12/03/2024",
     "SISBAJUD",
     "Conforme o evento 12,",
-    "LUCIANA MARCHETTI DE ALMEIDA, Juíza Federal",
+    "LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal",
     "<!-- pagina-origem: 2 -->",
 ]
 
@@ -144,19 +144,19 @@ class PipelineLlmTests(unittest.TestCase):
 
     def test_verification_catches_what_discovery_missed(self) -> None:
         result, text = self._run(
-            FakeDiscoverer(miss_first={"MARIA OLIVEIRA SANTOS"}), verification_rounds=1
+            FakeDiscoverer(miss_first={"MARLENE OLIVEIRA SAMPAIO"}), verification_rounds=1
         )
 
-        self.assertNotIn("MARIA OLIVEIRA SANTOS", text)
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text)
         report = result.reports["autos.md"]
         self.assertGreaterEqual(report.new_in_verification, 1)
         self.assertEqual(len(report.verification), 1)
 
     def test_without_verification_the_miss_stays(self) -> None:
         _result, text = self._run(
-            FakeDiscoverer(miss_first={"MARIA OLIVEIRA SANTOS"}), verification_rounds=0
+            FakeDiscoverer(miss_first={"MARLENE OLIVEIRA SAMPAIO"}), verification_rounds=0
         )
-        self.assertIn("MARIA OLIVEIRA SANTOS", text)
+        self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
 
     def test_page_unread_in_every_pass_blocks_export(self) -> None:
         result, _text = self._run(FakeDiscoverer(fail_pass={1, 2}), verification_rounds=1)
@@ -173,7 +173,7 @@ class PipelineLlmTests(unittest.TestCase):
 
         self.assertEqual(result.reports["autos.md"].unread_pages, [])
         self.assertTrue(result.job.export_allowed)
-        self.assertNotIn("MARIA OLIVEIRA SANTOS", text)
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text)
 
     def test_roster_is_private_and_legend_has_no_names(self) -> None:
         result, _text = self._run(FakeDiscoverer())
@@ -193,15 +193,15 @@ class PipelineLlmTests(unittest.TestCase):
         first, _text = self._run(FakeDiscoverer())
         payload = json.loads(first.roster_path.read_text(encoding="utf-8"))
         for item in payload["entradas"]:
-            if item["nome"] == "MARIA OLIVEIRA SANTOS":
+            if item["nome"] == "MARLENE OLIVEIRA SAMPAIO":
                 item["acao"] = KEEP
         with tempfile.TemporaryDirectory() as tmp:
             reviewed = Path(tmp) / "elenco.json"
             reviewed.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             _second, text = self._run(FakeDiscoverer(), roster_path=reviewed)
 
-        self.assertIn("MARIA OLIVEIRA SANTOS", text)
-        self.assertNotIn("PAULO ROBERTO SOUZA", text)
+        self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
+        self.assertNotIn("OLAVO RICARDO TEIXEIRA", text)
 
     def test_roster_spans_the_whole_lote(self) -> None:
         """Nome so descoberto na PARTE_2 tambem sai da PARTE_1."""
@@ -210,7 +210,7 @@ class PipelineLlmTests(unittest.TestCase):
             def discover(self, text: str) -> Discovery:
                 found = super().discover(text)
                 if "PARTE_1" in text:
-                    found.mentions = [m for m in found.mentions if m.text != "PAULO ROBERTO SOUZA"]
+                    found.mentions = [m for m in found.mentions if m.text != "OLAVO RICARDO TEIXEIRA"]
                 return found
 
         tmp = tempfile.TemporaryDirectory()
@@ -218,8 +218,8 @@ class PipelineLlmTests(unittest.TestCase):
         base = Path(tmp.name)
         part_1 = base / "PARTE_1.md"
         part_2 = base / "PARTE_2.md"
-        part_1.write_text("PARTE_1\nO sócio Paulo Roberto Souza foi citado.\n", encoding="utf-8")
-        part_2.write_text("PARTE_2\nA PGFN requer a citação do sócio PAULO ROBERTO SOUZA.\n", encoding="utf-8")
+        part_1.write_text("PARTE_1\nO sócio Olavo Ricardo Teixeira foi citado.\n", encoding="utf-8")
+        part_2.write_text("PARTE_2\nA PGFN requer a citação do sócio OLAVO RICARDO TEIXEIRA.\n", encoding="utf-8")
         result = run_llm_job(
             [part_1, part_2],
             export_root=base / "exportaveis",
@@ -238,10 +238,10 @@ class PipelineLlmTests(unittest.TestCase):
 
         silent = FakeDiscoverer(entities=[])
         _result, text = self._run(
-            silent, settings=AppSettings(target_people=["Maria Oliveira Santos"])
+            silent, settings=AppSettings(target_people=["Marlene Oliveira Sampaio"])
         )
-        self.assertNotIn("MARIA OLIVEIRA SANTOS", text)
-        self.assertIn("PAULO ROBERTO SOUZA", text)
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text)
+        self.assertIn("OLAVO RICARDO TEIXEIRA", text)
 
 
 if __name__ == "__main__":

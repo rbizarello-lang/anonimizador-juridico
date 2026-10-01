@@ -43,7 +43,7 @@ NAME_A = "5005_1_CONTRSOCIAL13.md"
 
 class DocumentCodeTests(unittest.TestCase):
     def test_code_comes_from_the_file_name(self) -> None:
-        self.assertEqual(document_code("50059368620264047104_1_CONTRSOCIAL13.md"), "CONTRSOCIAL13")
+        self.assertEqual(document_code("50044445920264047104_1_CONTRSOCIAL13.md"), "CONTRSOCIAL13")
         self.assertEqual(document_code("11_RENAJUD1.md"), "RENAJUD1")
         self.assertEqual(document_code("50059_1_CONTRSOCIAL13_2.md"), "CONTRSOCIAL13")
 

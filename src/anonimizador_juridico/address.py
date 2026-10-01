@@ -28,10 +28,10 @@ _VIA_PREFIXES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 # (trecho que deve existir na via, forma_origem, forma_destino).
-# nei=ney so quando a via contem jose de oliveira machado.
+# ari=ary so quando a via contem jose de oliveira meireles (rua ficticia).
 _SPELLING_PAIRS: tuple[tuple[str, str, str], ...] = (
-    ("jose de oliveira machado", "ney", "nei"),
-    ("machado", "oivira", "oliveira"),
+    ("jose de oliveira meireles", "ary", "ari"),
+    ("meireles", "oivira", "oliveira"),
     ("raposo", "tavates", "tavares"),
     ("vaz de caminh", "caminht", "caminha"),
     ("vaz de caminha", "pedro", "pero"),

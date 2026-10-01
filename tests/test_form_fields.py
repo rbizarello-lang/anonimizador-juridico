@@ -14,7 +14,7 @@ from anonimizador_juridico.pseudonymizer import canonicalize
 RECEITA = """\
 Nome
 
-CAROLINE ALTMANN TENORIO BROGGI
+CAROLINA TRAMONTANA QUARESMA BERNARDELLI
 
 Data de Nascimento
 
@@ -24,7 +24,7 @@ Data de Inscrição 12/03/1998 Naturalidade ARAPONGAS Título de Eleitor 7375011
 
 Nome da Mãe
 
-HILDA ALTMANN TENORIO
+HILDA TRAMONTANA QUARESMA
 
 Sexo
 
@@ -36,9 +36,9 @@ Título de Eleitor 114864520671
 """
 
 NASCIDO = """\
-MARCELO OBDULO BROGGI, brasileiro, nascido em dde
+MARCELO ODORCO BERNARDELLI, brasileiro, nascido em dde
 31/03/1978, do comércio.
-REINALDO LUIZ BROGGI, solteiro. nascido em data de 25/12/1779, do comércio.
+REINALDO LUIZ BERNARDELLI, solteiro. nascido em data de 25/12/1779, do comércio.
 """
 
 NEGATIVES = """\
@@ -97,8 +97,8 @@ class FormFieldsTests(unittest.TestCase):
         self.assertFalse(any(span.entity_type == "PERSON" for span in spans))
 
     def test_list_beats_form_fields_on_mae(self) -> None:
-        text = "Nome da Mãe\n\nHILDA ALTMANN TENORIO\n"
-        listed = TargetListEngine(people=["HILDA ALTMANN TENORIO"]).detect(text)
+        text = "Nome da Mãe\n\nHILDA TRAMONTANA QUARESMA\n"
+        listed = TargetListEngine(people=["HILDA TRAMONTANA QUARESMA"]).detect(text)
         form = FormFieldsEngine().detect(text)
         merged = resolve_overlaps([*listed, *form])
         self.assertEqual(len(merged), 1)

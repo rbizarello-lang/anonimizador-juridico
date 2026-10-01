@@ -12,12 +12,12 @@ from anonimizador_juridico.types import EntitySpan
 SYNTHETIC = """\
 ## Capa
 
-A sede fica na Rua Nei José de Oliveira Machado nº 563, Vila Yara.
-Filial em Rua Nei José de Oliveira Machado, nº 579, Parque Industrial.
+A sede fica na Rua Ari Jose de Oliveira Meireles nº 563, Vila Aurora.
+Filial em Rua Ari Jose de Oliveira Meireles, nº 579, Parque Industrial.
 
 Logradouro
 
-RUA LUIZ NATAL BONIN
+RUA ANSELMO ROCHA PENTEADO
 
 Número
 
@@ -27,18 +27,17 @@ Complemento
 
 CASA 17
 
-Residente à Rua Milton Gavetti, 54, Jardim Universitário.
+Residente à Rua Ernesto Garbelotto, 54, Jardim Universitário.
 AV. Juscelino Kubitschek, 3631 – APTO.03, Vila Ipiranga.
 domiciliado à Rua Raposo Tavares n°
 281, Apto 202, Centro.
 à Rua Santos, 1159 .
 estabelecida à Rua Brasil, 1331 – 1º Andar – Centro.
-alterado para Av. Jules Verne, 674 – CJ.
+alterado para Av. Santos Dumont, 674 – CJ.
 domiciliada em Londrina-PR., a Rua
 Raposo Tavares n° 281, Centro.
-na Avn. Jules Verne. nº674. Id. Santa Rita.
-à Rua Senador
-Souza Naves, 182 - sala 106.
+na Avn. Santos Dumont. nº674. Id. Santa Rita.
+à Rua Senador Pinheiro Lobo, 182 - sala 106.
 
 ## Negativos
 
@@ -60,9 +59,9 @@ class AddressHeuristicTests(unittest.TestCase):
         self.assertTrue(all(span.score == 0.90 for span in spans))
         self.assertIn("563", blob)
         self.assertIn("579", blob)
-        self.assertIn("LUIZ NATAL BONIN", blob)
+        self.assertIn("ANSELMO ROCHA PENTEADO", blob)
         self.assertIn("150", blob)
-        self.assertIn("Milton Gavetti", blob)
+        self.assertIn("Ernesto Garbelotto", blob)
         self.assertIn("Juscelino Kubitschek", blob)
         self.assertIn("Raposo Tavares", blob)
         self.assertIn("281", blob)
@@ -70,11 +69,11 @@ class AddressHeuristicTests(unittest.TestCase):
         self.assertIn("1159", blob)
         self.assertIn("Brasil", blob)
         self.assertIn("1331", blob)
-        self.assertIn("Jules Verne", blob)
+        self.assertIn("Santos Dumont", blob)
         self.assertIn("674", blob)
-        self.assertIn("Souza Naves", blob)
+        self.assertIn("Pinheiro Lobo", blob)
         self.assertIn("182", blob)
-        glued = "na Avn. Jules Verne. nº674. Id. Santa Rita."
+        glued = "na Avn. Santos Dumont. nº674. Id. Santa Rita."
         glued_spans = AddressHeuristicEngine().detect(glued)
         self.assertTrue(any("674" in glued[span.start : span.end] for span in glued_spans))
         wrapped = "domiciliada em Londrina-PR., a Rua\nRaposo Tavares n° 281, Centro."

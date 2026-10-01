@@ -14,5 +14,5 @@ Fonte: `GOVERNANCA.md` §10 (lote real) e §5.2 (P5). Corpus sintético **já pa
 
 ```text
 # ❌ BAD — “157 testes passaram, a capa está fechada”
-# ✅ GOOD — reprocessar o lote Cacau/Potinga; Paraná/Campo = 0 no mapa; União/`R$`/SISBAJUD intactos
+# ✅ GOOD — reprocessar o lote do caso antigo (C0); Paraná/Campo = 0 no mapa; União/`R$`/SISBAJUD intactos
 ```

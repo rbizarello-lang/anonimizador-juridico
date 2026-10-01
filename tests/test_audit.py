@@ -91,7 +91,7 @@ class AuditMapTests(unittest.TestCase):
         self.assertIn("ancora HTML", joined)
 
     def test_leftover_formatted_cnpj_is_counted(self) -> None:
-        notes = " ".join(audit_markdown("Orgao 04.252.011/0001-10. Uniao."))
+        notes = " ".join(audit_markdown("Orgao 61.738.402/0001-82. Uniao."))
         self.assertIn("CNPJ formatado em claro: 1", notes)
 
     def test_leftover_formatted_cpf_alerts(self) -> None:

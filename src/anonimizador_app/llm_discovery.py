@@ -28,7 +28,7 @@ from typing import Any, Protocol
 
 from .roster import Mention
 
-PROMPT_VERSION = "2026-09-25.1"
+PROMPT_VERSION = "2026-10-01.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_LOCATION = "southamerica-east1"
 API_KEY_ENVS = ("GEMINI_API_KEY", "LANGEXTRACT_API_KEY")
@@ -100,11 +100,11 @@ def _example_specs() -> list[tuple[str, list[tuple[str, str, str, str]]]]:
             "EXECUÇÃO FISCAL Nº 5009999-11.2025.4.04.7001/PR\n"
             "EXEQUENTE: UNIÃO - FAZENDA NACIONAL\n"
             "EXECUTADO: MADEIREIRA PINHAL VERDE LTDA ([CNPJ_1])\n"
-            "ADVOGADO: RAFAEL KOWALSKI BERTOLDI ([OAB_1])\n"
+            "ADVOGADO: RAFAEL TEIXEIRA ALBUQUERQUE ([OAB_1])\n"
             "Endereço: RODOVIA PR-445, KM 12, LOTE 7, ZONA RURAL",
             [
                 ("empresa", "MADEIREIRA PINHAL VERDE LTDA", "parte", "Madeireira Pinhal Verde Ltda"),
-                ("pessoa", "RAFAEL KOWALSKI BERTOLDI", "advogado", "Rafael Kowalski Bertoldi"),
+                ("pessoa", "RAFAEL TEIXEIRA ALBUQUERQUE", "advogado", "Rafael Teixeira Albuquerque"),
                 ("endereco", "RODOVIA PR-445, KM 12, LOTE 7", "parte", "Rodovia PR-445, Km 12, Lote 7"),
             ],
         ),
@@ -122,26 +122,26 @@ def _example_specs() -> list[tuple[str, list[tuple[str, str, str, str]]]]:
         ),
         (
             "Defiro a penhora via SISBAJUD. Intime-se o executado JOSÉ CARLOS NUNES na "
-            "pessoa de seu advogado, Dr. Tiago Brandalise. Aplica-se o REsp 1.999.001/RS "
-            "(Rel. Min. Heitor Vasconcellos Prado). Documento eletrônico assinado por "
-            "LUCIANA MARCHETTI DE ALMEIDA, Juíza Federal.",
+            "pessoa de seu advogado, Dr. Tiago Bortolotto. Aplica-se o REsp 1.999.001/RS "
+            "(Rel. Min. Heitor Vilela Prado). Documento eletrônico assinado por "
+            "LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal.",
             [
                 ("pessoa", "JOSÉ CARLOS NUNES", "parte", "José Carlos Nunes"),
-                ("pessoa", "Tiago Brandalise", "advogado", "Tiago Brandalise"),
-                ("pessoa", "Heitor Vasconcellos Prado", "magistrado", "Heitor Vasconcellos Prado"),
-                ("pessoa", "LUCIANA MARCHETTI DE ALMEIDA", "magistrado", "Luciana Marchetti de Almeida"),
+                ("pessoa", "Tiago Bortolotto", "advogado", "Tiago Bortolotto"),
+                ("pessoa", "Heitor Vilela Prado", "magistrado", "Heitor Vilela Prado"),
+                ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "magistrado", "Luciana Montefusco de Almeida"),
             ],
         ),
         (
-            "CONTRATO SOCIAL - VIDRAÇARIA SOL NASCENTE LTDA - ME\n"
-            "Sócios: ANTONIO CARLOS PEDROSO, residente na Rua Tupinambás, 1.520, apto 302, "
-            "e CLAUDETE SCHNElDER PEDROSO. Site: www.vidracariasolnascente.com.br",
+            "CONTRATO SOCIAL - VIDRAÇARIA ALVORADA LTDA - ME\n"
+            "Sócios: ANTONIO CARLOS BARRETO, residente na Rua Tupinambás, 1.520, apto 302, "
+            "e CLAUDETE HOFFMElSTER BARRETO. Site: www.vidracariaalvorada.com.br",
             [
-                ("empresa", "VIDRAÇARIA SOL NASCENTE LTDA - ME", "parte", "Vidraçaria Sol Nascente Ltda"),
-                ("pessoa", "ANTONIO CARLOS PEDROSO", "socio", "Antonio Carlos Pedroso"),
+                ("empresa", "VIDRAÇARIA ALVORADA LTDA - ME", "parte", "Vidraçaria Alvorada Ltda"),
+                ("pessoa", "ANTONIO CARLOS BARRETO", "socio", "Antonio Carlos Barreto"),
                 ("endereco", "Rua Tupinambás, 1.520, apto 302", "socio", "Rua Tupinambás, 1.520, apto 302"),
-                ("pessoa", "CLAUDETE SCHNElDER PEDROSO", "socio", "Claudete Schneider Pedroso"),
-                ("empresa", "www.vidracariasolnascente.com.br", "parte", "Vidraçaria Sol Nascente Ltda"),
+                ("pessoa", "CLAUDETE HOFFMElSTER BARRETO", "socio", "Claudete Hoffmeister Barreto"),
+                ("empresa", "www.vidracariaalvorada.com.br", "parte", "Vidraçaria Alvorada Ltda"),
             ],
         ),
     ]
