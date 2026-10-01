@@ -79,6 +79,7 @@ ENTITIES = [
     ("endereco", "Rua Tupinambás, 1.520", "parte"),
     ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "magistrado"),
 ]
+# Numeros de teste de gerador publico (DV valido): nao pertencem a ninguem de caso nenhum.
 CPF = "529.982.247-25"
 CNPJ = "11.222.333/0001-81"
 

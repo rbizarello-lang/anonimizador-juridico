@@ -269,9 +269,9 @@ class ConfirmationTests(unittest.TestCase):
     def test_confirmation_shows_channel_files_and_total(self) -> None:
         text = "\n".join(confirmation_lines(_ready(), PLAN))
         self.assertIn("Canal: gemini-pago", text)
-        self.assertIn("PARTE_1.pdf: 3.000 caracteres", text)
+        self.assertIn("PARTE_1.pdf: 3.000 caracteres, 2 trecho(s) (0 já no cache local)", text)
         self.assertIn("PARTE_2.pdf: 2.000 caracteres", text)
-        self.assertIn("Total: 5.000 caracteres", text)
+        self.assertIn("Total: 5.000 caracteres na descoberta, dos quais 3.000 ainda não estão no cache local", text)
         self.assertIn("3.000 ainda não estão no cache", text)
         self.assertIn("nomes, fatos e valores vão em claro", text)
         self.assertNotIn(FAKE, text)

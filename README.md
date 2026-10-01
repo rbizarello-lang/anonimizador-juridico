@@ -189,42 +189,101 @@ gemini-pago"). O mapa reversivel permanece so nesta maquina.
 
 **Como escolher o motor.** O app abre **sempre no motor local**; a escolha nao
 e gravada. Na aba **Lote**, em "Motor de descoberta", marque **LLM**: abre o
-dialogo do canal, com o aviso, a chave e duas confirmacoes. O botao "Usar este
-motor" so se habilita com tudo em ordem; qualquer falta aparece na tela com o
-motivo. A escolha vale ate fechar o app. Pela linha de comando, o motor LLM so
-roda com `--canal`.
+dialogo do canal (chave ou projeto, regiao, avisos). O botao "Usar este motor" so
+se habilita com a configuracao em ordem; qualquer falta aparece com o motivo.
+**Escolher o motor nao autoriza envio nenhum**: a escolha vale ate fechar o app e a
+cada rodada o app pede a sua confirmacao (abaixo). O botao de executar diz o
+motor: "Anonimizar lote · motor local" ou "Anonimizar lote com LLM · canal…".
 
 Proposta 3.0, avaliada em `AVALIACAO-2026-09.md`. O LLM (Gemini via
 LangExtract) so aponta quem aparece e com que papel; a troca continua
 local e deterministica. CPF, CNPJ e afins sao mascarados **antes** de o
 texto sair da maquina, mas **nomes, enderecos, fatos e valores seguem em
 claro** para o provedor: por isso o canal importa. Um segundo passe do LLM
-le o texto ja tokenizado e acusa o que sobrou. Pagina que o LLM nao
-conseguiu ler bloqueia a exportacao. A saida tem a mesma estrutura do motor
-local (ancora por folha, `INDICE.md`, `ELENCO.md`), mais uma secao "Papeis
-atribuidos pelo LLM" no `ELENCO.md`.
+le o texto ja tokenizado e acusa o que sobrou. A saida tem a mesma estrutura do
+motor local (ancora por folha, `INDICE.md`, `ELENCO.md`, sufixo de grupo
+`[EMPRESA_n·Gk]`, trava de municipio/estado para empresa de uma palavra, matricula
+por cartorio), mais uma secao "Papeis atribuidos pelo LLM" no `ELENCO.md`.
 
-**Canais.** `gemini-pago` (Gemini API, chave de projeto do Google Cloud **com
-faturamento**; sem garantia de residencia de dados) e `vertex-sp` (Vertex AI em
-Sao Paulo, projeto institucional). O canal gratuito, canal vazio e canal
-desconhecido sao bloqueados. O app so cadastra esses dois canais (o antigo `ollama-local` foi retirado). Uma chave de projeto sem faturamento cai nos termos do nivel
-gratuito: confirme o faturamento antes.
+**Quem decide enviar e o Operador, e a cada rodada.** O app **avisa e nao
+bloqueia por politica**. Antes de qualquer envio mostra: o **canal** (e a
+**regiao**, no Vertex AI), a **lista de arquivos** que seguem para o provedor e o
+**total de caracteres** (o texto ja com os IDs mascarados; quanto disso ja esta no
+cache local e nao sera reenviado), com os avisos como informacao: sigilo fiscal
+(CTN, art. 198: nomes e fatos vao em claro), residencia dos dados (a Gemini API
+nao garante residencia no Brasil; no Vertex a regiao aparece) e faturamento (chave
+de projeto sem faturamento cai nos termos do nivel gratuito). Na tela e um dialogo
+com **Enviar** e **Cancelar (nada e enviado)**; na linha de comando a lista sai e
+**so envia a rodada que trouxer `--confirmo-envio`**. A confirmacao vale para essa
+rodada e expira no fim dela; a proxima pede de novo. A AUDITORIA registra a
+confirmacao (so contagens), o canal, a regiao e o endpoint conferido.
 
-**Chave.** Nunca em arquivo do projeto, `config.json`, log ou AUDITORIA. Fica
-no Gerenciador de Credenciais do Windows (servico
+**Canais.** Os dois sao cadastraveis (tela e linha de comando): `gemini-pago`
+(Gemini API, chave de projeto do Google Cloud **com faturamento**; sem garantia de
+residencia de dados) e `vertex-sp` (Vertex AI, projeto institucional). O canal
+gratuito, o canal vazio e qualquer outro sao recusados; o antigo `ollama-local` foi
+retirado. A rota de teste e de producao e a mesma: o Operador escolhe os arquivos,
+testa com a API paga e troca para a institucional quando ela estiver disponivel.
+
+**Chave (gemini-pago).** Nunca em arquivo do projeto, `config.json`, log ou
+AUDITORIA. Fica no Gerenciador de Credenciais do Windows (servico
 `AnonimizadorJuridico/gemini-pago`) ou na variavel
 `ANONIMIZADOR_GEMINI_PAGO_CHAVE`. `GEMINI_API_KEY` e `GOOGLE_API_KEY` **nao
 sao lidas** de proposito. O app mostra so a fonte ("variavel de ambiente" ou
 "Gerenciador de Credenciais"). Guardar e apagar: pela tela (campo de senha) ou
 por `tools\anonimizar_llm.py --guardar-chave` / `--apagar-chave`.
 
+**Projeto e credencial (vertex-sp).** Projeto do Google Cloud e credencial: o
+**arquivo de conta de servico** do projeto institucional (o app guarda so o
+caminho, nunca o conteudo) ou, sem arquivo, a credencial do `gcloud auth
+application-default login`. Cadastro: pela tela (projeto, arquivo, regiao) ou por
+`tools\anonimizar_llm.py --guardar-vertex` / `--apagar-vertex`; ou pelas variaveis
+`ANONIMIZADOR_VERTEX_PROJETO` e `ANONIMIZADOR_VERTEX_CREDENCIAL`. A regiao
+(`southamerica-east1` por padrao) aparece na confirmacao e na AUDITORIA; o app nao
+a forca.
+
+**Folha que o LLM nao leu.** Falha, bloqueio, limite de taxa, trecho fora do cache
+sem rede e resposta **vazia** do LLM nunca deixam nome em claro: a folha passa pelo
+motor local (NER mais reconhecedores). O resultado, a AUDITORIA e o LEIA-ME dizem
+"folhas tratadas pelo motor local por falha do LLM: arquivo: folhas". Resposta
+vazia ou falha **nao vai para o cache**. Se nem o motor local puder tratar, o arquivo
+fica em `quarentena\` na pasta privada e **nao** vai para a exportavel. A linha de
+comando sai com **codigo 3** quando houve folha tratada pelo motor local (o texto e
+gravado); `--aceitar-fallback` aceita o resultado (codigo 0). Outros codigos: 1 =
+lote nao liberado, 2 = configuracao, portao ou rodada sem `--confirmo-envio`.
+
+**O que o portao confere onde o texto sai.** O canal e um dos dois cadastrados; o
+host e o oficial da Google para o canal e a regiao
+(`generativelanguage.googleapis.com`, `<regiao>-aiplatform.googleapis.com`); as
+variaveis `GOOGLE_GEMINI_BASE_URL` e `GOOGLE_VERTEX_BASE_URL` (desvio de endereco) e
+`GOOGLE_GENAI_CLIENT_MODE`, `GOOGLE_GENAI_REPLAYS_DIRECTORY` e
+`GOOGLE_GENAI_REPLAY_ID` (gravacao das chamadas em disco) **recusam** o envio, dizendo
+so o nome da variavel; proxy e certificado proprio no ambiente so avisam. A chave nao
+aparece em `repr` do modelo do LangExtract, e a excecao crua do provedor nunca vai
+para a AUDITORIA (so tipo, codigo HTTP e status).
+
 ```
 pip install -e .[llm]
 python tools\anonimizar_llm.py --guardar-chave
-python tools\anonimizar_llm.py --verificar --canal gemini-pago --ciente --faturamento-confirmado
-python tools\anonimizar_llm.py autos.pdf --canal gemini-pago --ciente --faturamento-confirmado
-python tools\anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO --ciente --faturamento-confirmado
+python tools\anonimizar_llm.py --verificar --canal gemini-pago
+python tools\anonimizar_llm.py autos.pdf --canal gemini-pago
+python tools\anonimizar_llm.py autos.pdf --canal gemini-pago --confirmo-envio
+python tools\anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO --confirmo-envio
 ```
+
+O segundo `autos.pdf` mostra o que seria enviado e **nao envia nada**; o terceiro
+envia. Antes de qualquer envio real, passe o ensaio sem rede (abaixo).
+
+**Roteiro do L4 (primeiro uso real).** 1. Guardar a chave (ou cadastrar o Vertex) e
+conferir com `--verificar`. 2. Rodar `python tools\ensaio_llm.py` (todas as
+conferencias passam). 3. Um documento sintetico minusculo com `--paralelo 2` e
+`--confirmo-envio`: o modelo existe e responde, o JSON volta no formato, 0 falhas por
+trecho na AUDITORIA, `cache_llm` gravado; repetir com `--sem-rede`. 4. Um documento
+real curto, que o Operador escolhe, lendo a lista de arquivos e caracteres antes de
+confirmar; conferir o elenco na tela e regravar sem rede. 5. O lote do caso de
+referencia (C3) pelo mesmo caminho, com as duas reguas
+(`tools\medir_estrutura.py` e `tools\medir_vazamento.py`). Cada passo so depois do
+anterior; cada rodada pede a sua confirmacao.
 
 **Revisao do elenco.** Depois da rodada, "Revisar elenco" mostra uma linha por
 entidade (tipo, nome, papel, mencoes, token) com **Tokenizar / Manter**. A
@@ -235,10 +294,14 @@ python tools\anonimizar_llm.py autos.pdf --canal gemini-pago --sem-rede --elenco
 ```
 
 Privados: `saidas\privados\lote_...\elenco.json` (quem e quem, com originais,
-token e numero de mencoes; edite `acao`) e `elenco_revisado.json`. Exportavel:
-`saidas\exportaveis\lote_...\ELENCO.md` (token, tipo, papel e mencoes, sem nome).
+token e numero de mencoes; edite `acao`), `elenco_revisado.json`,
+`AUDITORIA_PRIVADA.txt` (palavras de marca recusadas) e `quarentena\` (arquivo retido).
+Exportavel: `saidas\exportaveis\lote_...\ELENCO.md` (token, tipo, papel e mencoes,
+sem nome).
 
 **Ensaio sem rede.** `python tools\ensaio_llm.py` roda o caminho inteiro (portao,
-rodada, revisao, regravacao, as duas reguas) com um PDF sintetico, um LLM falso,
-chave e cofre falsos e os sockets bloqueados, e confere que a chave falsa nao
-aparece em nenhum arquivo. Passa-se esse ensaio antes de qualquer chamada real.
+confirmacao por rodada, rodada, revisao, regravacao, as duas reguas, **falha forcada
+do LLM com o motor local e quarentena**, recusa de variaveis de desvio e de gravacao
+do SDK) com um PDF sintetico, um LLM falso, chave e cofre falsos e os sockets
+bloqueados, e confere que a chave falsa nao aparece em nenhum arquivo. Passa-se esse
+ensaio antes de qualquer chamada real.

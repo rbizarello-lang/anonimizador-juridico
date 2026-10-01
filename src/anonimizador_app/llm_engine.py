@@ -363,6 +363,12 @@ def build_offline_discoverer(
 
 
 
+def _thousands(number: int) -> str:
+    """250000 -> "250.000" (separador de milhar brasileiro)."""
+
+    return f"{number:,}".replace(",", ".")
+
+
 def confirmation_lines(
     decision: EngineDecision, plan: SendPlan, *, files_in_full: bool = True
 ) -> list[str]:
@@ -381,14 +387,14 @@ def confirmation_lines(
     lines.append(f"Arquivos que serão enviados ({len(plan.files)}):")
     for item in plan.files:
         lines.append(
-            f"  - {item.name}: {item.chars:,} caracteres, {item.chunks} trecho(s)"
-            f" ({item.cached_chunks} já no cache local)".replace(",", ".")
+            f"  - {item.name}: {_thousands(item.chars)} caracteres, {item.chunks} trecho(s)"
+            f" ({item.cached_chunks} já no cache local)"
         )
     for name, message in plan.errors:
         lines.append(f"  - {name}: NÃO será enviado ({message})")
     lines.append(
-        f"Total: {plan.total_chars:,} caracteres na descoberta, dos quais {plan.pending_chars:,} "
-        "ainda não estão no cache local (os do cache não são reenviados).".replace(",", ".")
+        f"Total: {_thousands(plan.total_chars)} caracteres na descoberta, dos quais "
+        f"{_thousands(plan.pending_chars)} ainda não estão no cache local (os do cache não são reenviados)."
     )
     if plan.verification_rounds:
         lines.append(
