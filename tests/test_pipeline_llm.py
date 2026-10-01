@@ -8,6 +8,7 @@ propagacao. Nomes, numeros e enderecos sao ficticios.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -313,6 +314,128 @@ class PipelineLlmTests(unittest.TestCase):
         )
         self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text)
         self.assertIn("OLAVO RICARDO TEIXEIRA", text)
+
+
+
+COVER_ALFA = (
+    "N.º do processo: 5001111-54.2025.4.04.7001\nClasse da ação: Execução Fiscal\n\n"
+    "Partes e Representantes\n\n| EXECUTADO |\n|---|\n"
+    "| ALFA TRANSPORTES FICTICIOS LTDA (11.222.333/0001-81) - Pessoa Jurídica |\n\n"
+    "<!-- pagina-origem: 1 -->\n\nA executada ALFA TRANSPORTES FICTICIOS LTDA deve.\n"
+)
+COVER_BETA = (
+    "N.º do processo: 5002222-33.2025.4.04.7001\nClasse da ação: Agravo de Instrumento\n\n"
+    "Partes e Representantes\n\n| AGRAVADO |\n|---|\n"
+    "| BETA LOGISTICA FICTICIA LTDA (11.222.333/0001-81) - Pessoa Jurídica |\n\n"
+    "<!-- pagina-origem: 1 -->\n\nA agravada BETA LOGISTICA FICTICIA LTDA contesta.\n"
+)
+
+
+class StructureParityTests(unittest.TestCase):
+    """O motor LLM entrega o que a estrutura entregou: sufixo de grupo, trava do IBGE, matricula por cartorio."""
+
+    def _lote(self, documents: dict[str, str], entities, **kwargs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        sources = []
+        for name, text in documents.items():
+            path = base / name
+            path.write_text(text, encoding="utf-8")
+            sources.append(path)
+        result = run_llm_job(
+            sources,
+            export_root=base / "exportaveis",
+            private_root=base / "privados",
+            discoverer=FakeDiscoverer(entities),
+            use_cache=False,
+            verification_rounds=0,
+            **kwargs,
+        )
+        for outcome in result.job.outcomes:
+            self.assertTrue(outcome.ok, outcome.error)
+        texts = {o.source.name: o.markdown_path.read_text(encoding="utf-8") for o in result.job.outcomes}
+        return result, texts
+
+    def test_companies_with_the_same_cnpj_get_the_group_suffix(self) -> None:
+        entities = [
+            ("empresa", "ALFA TRANSPORTES FICTICIOS LTDA", "parte"),
+            ("empresa", "BETA LOGISTICA FICTICIA LTDA", "parte"),
+        ]
+        result, texts = self._lote({"a.md": COVER_ALFA, "b.md": COVER_BETA}, entities)
+
+        self.assertIn("[EMPRESA_1·G1]", texts["a.md"])
+        self.assertIn("[EMPRESA_2·G1]", texts["b.md"])
+        self.assertNotIn("ALFA TRANSPORTES", texts["a.md"])
+        cast = (result.job.export_dir / "ELENCO.md").read_text(encoding="utf-8")
+        self.assertIn("G1", cast)
+        # A tabela de papeis do LLM (no fim do ELENCO) tambem leva o sufixo; o mapa privado, nao.
+        section = cast.split("## Papéis atribuídos pelo LLM", 1)[1]
+        self.assertIn("| [EMPRESA_1·G1] |", section)
+        self.assertIn("| [EMPRESA_2·G1] |", section)
+        mapa = result.job.map_path.read_text(encoding="utf-8")
+        self.assertNotIn("·G", mapa)
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        self.assertIn("Sufixo de grupo", guide)
+
+    def test_one_word_company_that_is_a_city_does_not_eat_the_court_or_the_address(self) -> None:
+        text = (
+            "<!-- pagina-origem: 1 -->\n\n"
+            "Vara Federal de Joinville, Subseção Judiciária de Joinville/SC.\n"
+            "A executada JOINVILLE METAIS LTDA tem sede na Rua das Acácias, 120, Joinville - SC.\n"
+            "A empresa Joinville, segundo o contrato, vendeu os bens.\n"
+        )
+
+        class OneWordDiscoverer(FakeDiscoverer):
+            def discover(self, body: str) -> Discovery:
+                found = super().discover(body)
+                for needle in ("Joinville,", "Joinville/SC", "Joinville - SC"):
+                    index = body.find(needle)
+                    found.mentions.append(
+                        Mention(kind="empresa", text="Joinville", role="parte", canonical="Joinville Metais Ltda",
+                                start=index, end=index + len("Joinville"), source_text="Joinville")
+                    )
+                return found
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        source = base / "autos.md"
+        source.write_text(text, encoding="utf-8")
+        result = run_llm_job(
+            [source],
+            export_root=base / "exportaveis",
+            private_root=base / "privados",
+            discoverer=OneWordDiscoverer([("empresa", "JOINVILLE METAIS LTDA", "parte")]),
+            use_cache=False,
+            verification_rounds=0,
+        )
+        body = result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
+
+        self.assertIn("Vara Federal de Joinville,", body)
+        self.assertIn("Subseção Judiciária de Joinville/SC", body)
+        self.assertIn("Joinville - SC", body)
+        self.assertNotIn("JOINVILLE METAIS", body)
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("recusada", audit)
+        self.assertNotIn("Joinville", audit)
+        private = (result.job.map_path.parent / "AUDITORIA_PRIVADA.txt").read_text(encoding="utf-8")
+        self.assertIn("Joinville", private)
+        self.assertFalse((result.job.export_dir / "AUDITORIA_PRIVADA.txt").exists())
+
+    def test_registry_number_is_keyed_by_the_office_and_the_office_stays(self) -> None:
+        text = (
+            "<!-- pagina-origem: 1 -->\n\n"
+            "Imóvel da matrícula nº 12345 do 1º Registro de Imóveis de Joinville.\n"
+            "Imóvel da matrícula nº 12345 do 2º Registro de Imóveis de Joinville.\n"
+        )
+        _result, texts = self._lote({"autos.md": text}, [])
+        body = texts["autos.md"]
+
+        self.assertIn("1º Registro de Imóveis de Joinville", body)
+        self.assertIn("2º Registro de Imóveis de Joinville", body)
+        self.assertNotIn("12345", body)
+        self.assertEqual(len(set(re.findall(r"\[MATRICULA_IMOVEL_\d+\]", body))), 2)
 
 
 if __name__ == "__main__":

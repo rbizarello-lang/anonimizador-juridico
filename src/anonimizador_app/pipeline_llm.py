@@ -18,7 +18,10 @@ e aparece na AUDITORIA. O elenco com originais fica em ``privados``; a
 legenda exportavel (token -> tipo -> papel) nao leva nome.
 
 A saida tem a mesma estrutura do motor local: ancora visivel por folha,
-``INDICE.md`` e ``ELENCO.md`` (capas, vinculos, socios dos contratos). O
+``INDICE.md`` e ``ELENCO.md`` (capas, vinculos, socios dos contratos), o sufixo de grupo
+das empresas ligadas (``[EMPRESA_3·G1]``, ``lote_elenco.apply_company_groups``), a trava do
+IBGE para empresa de uma palavra (``geo_names``) e a matricula por cartorio (que vem do
+``StructuredDetector``, o mesmo do motor local). O
 ``ELENCO.md`` ganha, no fim, a secao dos papeis atribuidos pelo LLM, com a
 contagem de mencoes de cada token. A linha de versao (AUDITORIA, LEIA-ME)
 diz o motor: ``motor LLM: <canal>``.
@@ -27,6 +30,7 @@ diz o motor: ``motor LLM: <canal>``.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
@@ -48,9 +52,12 @@ from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extra
 from .extractors import ExtractedDocument, UnsupportedDocumentError
 from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
 from .fidelity import FidelityDropStats, drop_protected_spans
+from .geo_names import geo_context, is_geo_word
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of
+from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
 from .pipeline import (
+    PRIVATE_AUDIT_NAME,
     FileOutcome,
     JobResult,
     ProgressFn,
@@ -215,17 +222,19 @@ def run_llm_job(
     _report(on_progress, "Gravando textos, mapa e elenco", 0.95)
     outcomes: list[FileOutcome] = []
     reports: dict[str, LlmFileReport] = {}
-    notes: list[tuple[str, list[str]]] = []
+    written: list[tuple[FileOutcome, _FileState]] = []
     occurrences: Counter[str] = Counter()
+    refused_brands: Counter[tuple[str, str]] = Counter()
     for source in sources:
         if source in errors:
             outcomes.append(errors[source])
             continue
         state = next(item for item in states if item.source == source)
         # Troca final com o elenco completo do lote (so acrescenta tokens).
-        entities, result, _offsets = _tokenize(
+        entities, result, _offsets, refused = _tokenize(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
         )
+        refused_brands.update(refused)
         state.report.unread_pages = sorted(set.intersection(*state.failed_pages))
         markdown_path = _unique_path(export_dir, source.stem, ".md")
         # Ancora visivel por folha, depois da troca (igual ao motor local).
@@ -253,7 +262,17 @@ def run_llm_job(
         )
         outcomes.append(outcome)
         reports[source.name] = state.report
-        notes.append((markdown_path.name, _file_notes(outcome, state.report, discoverer, final_text)))
+        written.append((outcome, state))
+
+    # Empresas ligadas por vinculo declarado levam o sufixo de grupo ([EMPRESA_3·G1]), como no motor local:
+    # depois da troca de todos os arquivos e antes da AUDITORIA, do INDICE e do ELENCO (que leem o sufixo).
+    groups = apply_company_groups([outcome.markdown_path for outcome, _state in written])
+    notes: list[tuple[str, list[str]]] = []
+    for outcome, state in written:
+        final_text = outcome.markdown_path.read_text(encoding="utf-8")
+        notes.append(
+            (outcome.markdown_path.name, _file_notes(outcome, state.report, discoverer, final_text))
+        )
 
     mapping.dump(map_path)
     tokens = {record.canonical: record.token for record in mapping.records}
@@ -269,9 +288,11 @@ def run_llm_job(
     )
     write_outcomes_index(export_dir, outcomes)
     legend_path = (
-        _append_llm_roles(export_dir, roster, tokens, occurrences) if write_legend else None
+        _append_llm_roles(export_dir, roster, tokens, occurrences, groups) if write_legend else None
     )
+    write_llm_private_audit(map_path.parent, refused_brands)
     notes.insert(0, ("elenco (sem nomes)", roster_summary(roster)))
+    notes.insert(1, ("marca de uma palavra (so contagens)", brand_guard_lines(refused_brands)))
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
     notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes]))
     write_audit_report(export_dir, notes, engine=engine_id)
@@ -389,7 +410,7 @@ def _verify_file(
 ) -> None:
     """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco."""
 
-    _entities, result, offsets = _tokenize(
+    _entities, result, offsets, _refused = _tokenize(
         state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
     )
     for _round in range(max(0, rounds)):
@@ -404,7 +425,7 @@ def _verify_file(
             return
         state.report.new_in_verification += changed + len(extra)
         state.anchored.extend(extra)
-        _entities, result, offsets = _tokenize(
+        _entities, result, offsets, _refused = _tokenize(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
         )
 
@@ -460,7 +481,7 @@ def _tokenize(
     exclusions: Sequence[str],
     folded: FoldedText,
     mapping: PseudonymMap,
-) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap]:
+) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap, list[tuple[str, str]]]:
     spans = spans_for_roster(
         text,
         roster.entries,
@@ -468,9 +489,87 @@ def _tokenize(
         extra_keep=exclusions,
         folded=folded,
     )
+    spans, refused = drop_geo_brand_spans(text, spans)
     entities = resolve_overlaps([*ids, *spans])
     result, offsets = pseudonymize_with_offsets(text, entities, mapping)
-    return entities, result, offsets
+    return entities, result, offsets, refused
+
+
+_SINGLE_WORD = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
+_COMPANY_TAIL_WORDS = frozenset({"ltda", "me", "epp", "eireli", "sa", "s", "a"})
+
+
+def _brand_word(value: str) -> str:
+    """A unica palavra de conteudo do trecho (sem sufixo societario), ou "" se ha mais de uma."""
+
+    words = [
+        word for word in _SINGLE_WORD.findall(value) if word.casefold() not in _COMPANY_TAIL_WORDS
+    ]
+    return words[0] if len(words) == 1 else ""
+
+
+def drop_geo_brand_spans(
+    text: str, spans: Sequence[EntitySpan]
+) -> tuple[list[EntitySpan], list[tuple[str, str]]]:
+    """Mesma trava do motor local (B3, ``geo_names``): empresa de UMA palavra que e nome de municipio ou
+    de estado (IBGE), ou que aparece em contexto de foro ou de endereco, nao vira token. Vale para a
+    mencao de uma palavra que o LLM apontou ("Joinville" num "Vara Federal de Joinville"); nome de
+    2+ palavras nao passa por aqui. Devolve os spans mantidos e, dos recusados, (palavra, motivo)."""
+
+    kept: list[EntitySpan] = []
+    refused: list[tuple[str, str]] = []
+    for span in spans:
+        if span.recognizer == ROSTER_RECOGNIZER and span.entity_type == "ORGANIZATION":
+            word = _brand_word(text[span.start : span.end])
+            if word:
+                if is_geo_word(word):
+                    refused.append((word, "municipio ou estado"))
+                    continue
+                if geo_context(text, span.start, span.end):
+                    refused.append((word, "contexto de foro ou endereco"))
+                    continue
+        kept.append(span)
+    return kept, refused
+
+
+def brand_guard_lines(refused: Counter[tuple[str, str]]) -> list[str]:
+    """Contagens, sem a palavra (a AUDITORIA exportavel nao leva nome)."""
+
+    if not refused:
+        return [
+            "Nenhuma mencao de uma palavra recusada por municipio, estado ou contexto de foro/endereco."
+        ]
+    by_reason: Counter[str] = Counter()
+    for (_word, reason), count in refused.items():
+        by_reason[reason] += count
+    return [
+        f"Mencao de uma palavra de empresa recusada ({reason}): {count} ocorrencia(s)"
+        for reason, count in sorted(by_reason.items())
+    ]
+
+
+def write_llm_private_audit(private_dir: Path, refused: Counter[tuple[str, str]]) -> Path:
+    """``AUDITORIA_PRIVADA.txt`` do lote LLM: as palavras recusadas, para o Operador conferir.
+    Fica ao lado do ``mapa.json``, nunca na pasta dos textos."""
+
+    lines = [
+        "AUDITORIA PRIVADA DESTE LOTE (motor LLM)",
+        "Contem palavras reais do caso. NAO ENVIAR: fica com o mapa, fora da pasta dos textos.",
+        "",
+        "## Mencao de uma palavra de empresa recusada (municipio, estado ou contexto de foro/endereco)",
+    ]
+    if refused:
+        lines.extend(
+            f"- {word}: {count} ocorrencia(s), motivo: {reason}"
+            for (word, reason), count in sorted(refused.items(), key=lambda item: (-item[1], item[0]))
+        )
+    else:
+        lines.append("- nenhuma")
+    lines.append("")
+    path = Path(private_dir) / PRIVATE_AUDIT_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def pseudonymize_with_offsets(
@@ -622,6 +721,7 @@ def _append_llm_roles(
     roster: Roster,
     tokens: dict[str, str],
     occurrences: Counter[str],
+    groups: Sequence[CompanyGroup] = (),
 ) -> Path | None:
     """Secao "Papeis atribuidos pelo LLM" no fim do ``ELENCO.md``: token, tipo, papel, mencoes.
 
@@ -651,6 +751,7 @@ def _append_llm_roles(
     ]
     path = export_dir / LEGEND_FILENAME
     existing = path.read_text(encoding="utf-8").rstrip("\n") if path.is_file() else ""
-    body = "\n".join(lines) + "\n"
+    # O token de empresa de um grupo leva o sufixo tambem aqui, como no resto do ELENCO.md.
+    body = apply_groups("\n".join(lines) + "\n", groups)
     path.write_text((existing + "\n\n" if existing else "") + body, encoding="utf-8")
     return path
