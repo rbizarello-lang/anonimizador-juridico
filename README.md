@@ -154,27 +154,66 @@ A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia
 anterior tiver travado ao fechar (viva, sem janela), o proximo clique a
-encerra e abre outra; nao e preciso o Gerenciador de Tarefas. O Gemini nao
-roda no app: a leitura de original e Markdown tokenizado, se houver,
-fica fora. O mapa reversivel permanece so nesta maquina.
+encerra e abre outra; nao e preciso o Gerenciador de Tarefas. O padrao e o
+motor local: nada sai deste computador. O motor LLM e opcional (secao abaixo) e
+a linha de versao diz qual motor gerou cada lote ("motor local" ou "motor LLM:
+gemini-pago"). O mapa reversivel permanece so nesta maquina.
 
-## Pipeline com LLM (experimental, por linha de comando)
+## Motor LLM (opcional)
+
+**Como escolher o motor.** O app abre **sempre no motor local**; a escolha nao
+e gravada. Na aba **Lote**, em "Motor de descoberta", marque **LLM**: abre o
+dialogo do canal, com o aviso, a chave e duas confirmacoes. O botao "Usar este
+motor" so se habilita com tudo em ordem; qualquer falta aparece na tela com o
+motivo. A escolha vale ate fechar o app. Pela linha de comando, o motor LLM so
+roda com `--canal`.
 
 Proposta 3.0, avaliada em `AVALIACAO-2026-09.md`. O LLM (Gemini via
 LangExtract) so aponta quem aparece e com que papel; a troca continua
 local e deterministica. CPF, CNPJ e afins sao mascarados **antes** de o
-texto sair da maquina. Um segundo passe do LLM le o texto ja tokenizado e
-acusa o que sobrou. Pagina que o LLM nao conseguiu ler bloqueia a
-exportacao.
+texto sair da maquina, mas **nomes, enderecos, fatos e valores seguem em
+claro** para o provedor: por isso o canal importa. Um segundo passe do LLM
+le o texto ja tokenizado e acusa o que sobrou. Pagina que o LLM nao
+conseguiu ler bloqueia a exportacao. A saida tem a mesma estrutura do motor
+local (ancora por folha, `INDICE.md`, `ELENCO.md`), mais uma secao "Papeis
+atribuidos pelo LLM" no `ELENCO.md`.
+
+**Canais.** `gemini-pago` (Gemini API, chave de projeto do Google Cloud **com
+faturamento**; sem garantia de residencia de dados) e `vertex-sp` (Vertex AI em
+Sao Paulo, projeto institucional). O canal gratuito, canal vazio e canal
+desconhecido sao bloqueados. `ollama-local` roda no proprio computador
+(so `localhost`). Uma chave de projeto sem faturamento cai nos termos do nivel
+gratuito: confirme o faturamento antes.
+
+**Chave.** Nunca em arquivo do projeto, `config.json`, log ou AUDITORIA. Fica
+no Gerenciador de Credenciais do Windows (servico
+`AnonimizadorJuridico/gemini-pago`) ou na variavel
+`ANONIMIZADOR_GEMINI_PAGO_CHAVE`. `GEMINI_API_KEY` e `GOOGLE_API_KEY` **nao
+sao lidas** de proposito. O app mostra so a fonte ("variavel de ambiente" ou
+"Gerenciador de Credenciais"). Guardar e apagar: pela tela (campo de senha) ou
+por `tools\anonimizar_llm.py --guardar-chave` / `--apagar-chave`.
 
 ```
 pip install -e .[llm]
-set GEMINI_API_KEY=...        (projeto com faturamento; chave gratuita NAO)
-python tools\anonimizar_llm.py autos.pdf
-python tools\anonimizar_llm.py autos.pdf --provedor vertex --projeto MEU-PROJETO
-python tools\anonimizar_llm.py autos.pdf --elenco saidas\privados\lote_...\elenco.json
+python tools\anonimizar_llm.py --guardar-chave
+python tools\anonimizar_llm.py --verificar --canal gemini-pago --ciente --faturamento-confirmado
+python tools\anonimizar_llm.py autos.pdf --canal gemini-pago --ciente --faturamento-confirmado
+python tools\anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO --ciente --faturamento-confirmado
 ```
 
-Saidas extras: `saidas\privados\lote_...\elenco.json` (quem e quem, com
-originais — privado; edite `acao` para `manter`/`tokenizar` e rode de novo)
-e `saidas\exportaveis\lote_...\ELENCO.md` (token, tipo e papel, sem nome).
+**Revisao do elenco.** Depois da rodada, "Revisar elenco" mostra uma linha por
+entidade (tipo, nome, papel, mencoes, token) com **Tokenizar / Manter**. A
+decisao fica fixa (`fixo: true`) e **regrava sem rede**, so com o cache:
+
+```
+python tools\anonimizar_llm.py autos.pdf --canal gemini-pago --sem-rede --elenco saidas\privados\lote_...\elenco.json
+```
+
+Privados: `saidas\privados\lote_...\elenco.json` (quem e quem, com originais,
+token e numero de mencoes; edite `acao`) e `elenco_revisado.json`. Exportavel:
+`saidas\exportaveis\lote_...\ELENCO.md` (token, tipo, papel e mencoes, sem nome).
+
+**Ensaio sem rede.** `python tools\ensaio_llm.py` roda o caminho inteiro (portao,
+rodada, revisao, regravacao, as duas reguas) com um PDF sintetico, um LLM falso,
+chave e cofre falsos e os sockets bloqueados, e confere que a chave falsa nao
+aparece em nenhum arquivo. Passa-se esse ensaio antes de qualquer chamada real.
