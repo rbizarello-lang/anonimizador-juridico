@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.validators import normalize_cnpj, only_digits
 
-from .gemini_detector import is_kept_term, is_legal_nature, is_too_generic
+from .gemini_detector import is_kept_term, is_legal_nature, is_registry_office, is_too_generic
 
 _TARGET_RECOGNIZER = "ListaDeAlvos"
 # Propagacao do lote (deteccao 2.1): a entidade ja foi julgada no elenco (cargo colado
@@ -232,6 +232,12 @@ def drop_protected_spans(
         value = span.value_from(text)
         if is_kept_term(value, extra_keep):
             continue
+        if (
+            span.entity_type in {"ORGANIZATION", "LOCATION"}
+            and span.recognizer != _TARGET_RECOGNIZER
+            and is_registry_office(value)
+        ):
+            continue  # nome de cartorio/oficio/tabeliao: ente do registro publico, fica em claro
         if (
             span.entity_type == "PERSON"
             and span.recognizer not in _ENTITY_LEVEL_RECOGNIZERS

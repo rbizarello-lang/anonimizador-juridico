@@ -12,7 +12,9 @@
   do nome com varias capturas, prenome e ramo de atividade sem juntar por uma letra, "Filho"/"Junior"
   separados, marca de empresa usada sozinha com token proprio;
   2.6 = + endurecimento antes do L4, B3: a marca de uma palavra nunca e nome de municipio ou de estado
-  (lista do IBGE) nem ocorrencia em contexto de foro ou de endereco).
+  (lista do IBGE) nem ocorrencia em contexto de foro ou de endereco;
+  2.7 = + matricula por cartorio: o token distingue o cartorio de registro de imoveis mais proximo, e o
+  nome do cartorio/oficio/tabelionato fica em claro).
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
 - commit: o commit do git em que a pasta esta, lido direto de ``.git`` (sem chamar programa externo).
 """
@@ -27,7 +29,7 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.6"
+DETECTION_VERSION = "2.7"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent

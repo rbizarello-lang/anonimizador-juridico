@@ -157,6 +157,12 @@ X", "X/SC", linha de endereco, cabecalho em CAIXA ALTA) fica como estava. Cada l
 `AUDITORIA_PRIVADA.txt` na pasta privada, com as palavras-marca aprovadas e as recusadas
 para voce conferir; a `AUDITORIA.txt` dos textos so tem tokens e contagens.
 
+Deteccao 2.7: o token da matricula distingue o cartorio. A matricula 12.345 do 1o Registro
+de Imoveis e a do 2o Registro de Imoveis sao tokens diferentes; vale a mencao do cartorio
+mais proxima (numero de ordem e lugar: "2o Oficio", "da Comarca de X"). Sem cartorio por
+perto, o token continua sendo por numero. O nome do cartorio, oficio ou tabelionato fica
+em claro (nao vira [EMPRESA_n]).
+
 O modelo de reconhecimento de nomes (GLiNER) nunca vai a rede sozinho: o app roda
 com `HF_HUB_OFFLINE=1` por padrao e usa a revisao do modelo fixada no codigo. Em uma
 maquina nova o modelo ainda nao esta no cache local; baixe-o uma vez, de proposito,

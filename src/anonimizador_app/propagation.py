@@ -19,7 +19,7 @@ from functools import lru_cache
 
 from anonimizador_juridico import EntitySpan
 
-from .gemini_detector import KEEP_TERMS
+from .gemini_detector import KEEP_TERMS, is_registry_office
 from .roster import TOKENIZE, RosterEntry, entity_core, has_token
 
 RECOGNIZER = "ElencoLLM"
@@ -110,6 +110,7 @@ def is_protected(value: str, protected: frozenset[str]) -> bool:
     folded = fold_value(value)
     return (
         not folded
+        or is_registry_office(value)
         or folded in protected
         or "r$" in folded
         or bool(_DATE.search(folded))
