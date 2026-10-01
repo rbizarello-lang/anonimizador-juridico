@@ -30,6 +30,10 @@ Exemplos:
   # Apagar a chave guardada:
   python tools/anonimizar_llm.py --apagar-chave
 
+  # Cadastrar o Vertex AI (projeto + arquivo de conta de servico, ou so o projeto e o gcloud):
+  python tools/anonimizar_llm.py --guardar-vertex
+  python tools/anonimizar_llm.py --apagar-vertex
+
 Codigos de saida: 0 = ok; 1 = lote nao liberado (erro, folha retida); 2 = configuracao, portao,
 argumento ou rodada sem --confirmo-envio; 3 = alguma folha foi tratada pelo motor local por falha do LLM (use --aceitar-fallback para
 aceitar). O texto da folha que o LLM nao leu nunca sai em claro: o motor local o trata ou o arquivo fica
@@ -56,10 +60,17 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from anonimizador_app.credentials import (  # noqa: E402
     ENV_VAR,
+    ENV_VERTEX_CREDENTIAL,
+    ENV_VERTEX_PROJECT,
     VAULT_SERVICE,
+    VERTEX_VAULT_SERVICE,
     CredentialsError,
     delete_key,
+    delete_vertex_setup,
+    describe_vertex,
+    load_vertex_setup,
     store_key,
+    store_vertex_setup,
 )
 from anonimizador_app.llm_discovery import (  # noqa: E402
     DEFAULT_LOCATION,
@@ -107,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pede a chave (sem mostrar) e guarda no Gerenciador de Credenciais do Windows.",
     )
     parser.add_argument("--apagar-chave", action="store_true", help="Apaga a chave guardada.")
+    parser.add_argument(
+        "--guardar-vertex",
+        action="store_true",
+        help="Pede o projeto do Google Cloud e o caminho do arquivo de conta de servico (vazio = gcloud) e "
+        "guarda no Gerenciador de Credenciais do Windows (so o caminho, nunca o conteudo do arquivo).",
+    )
+    parser.add_argument("--apagar-vertex", action="store_true", help="Apaga o cadastro do Vertex AI.")
+    parser.add_argument(
+        "--credencial",
+        default="",
+        help="Arquivo de conta de servico do Vertex AI so para esta rodada (senao: o cadastrado, ou o gcloud).",
+    )
     parser.add_argument(
         "--verificar", action="store_true", help="Mostra o que falta para liberar o motor; nao envia nada."
     )
@@ -157,10 +180,18 @@ def manage_key(args: argparse.Namespace) -> int | None:
             )
             key = store_key(value)
             print(f"Chave guardada no Gerenciador de Credenciais (servico {VAULT_SERVICE}); {key.source}.")
+        if args.apagar_vertex:
+            removed = delete_vertex_setup()
+            print("Cadastro do Vertex AI apagado." if removed else "Nao havia cadastro do Vertex AI.")
+        if args.guardar_vertex:
+            project = input("Projeto do Google Cloud (Vertex AI): ")
+            credential = input("Arquivo de conta de servico .json (vazio = credencial do gcloud): ")
+            setup = store_vertex_setup(project, credential)
+            print(f"Guardado no Gerenciador de Credenciais (servico {VERTEX_VAULT_SERVICE}): {describe_vertex(setup)}.")
     except CredentialsError as exc:
         print(f"Credencial: {exc}", file=sys.stderr)
         return 2
-    if args.apagar_chave or args.guardar_chave:
+    if args.apagar_chave or args.guardar_chave or args.apagar_vertex or args.guardar_vertex:
         return 0 if not args.arquivos else None
     return None
 
@@ -191,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         project=args.projeto,
         model_id=args.modelo,
         location=args.regiao,
+        credential_path=args.credencial,
     )
     decision = check_engine(choice, private_root=config_source)
     if channel in CHANNELS:
@@ -260,10 +292,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def report_gate(decision) -> int:
     print(f"Canal: {decision.channel or '(nenhum)'}")
-    print(
-        f"Chave: {decision.key_source or 'nenhuma chave guardada'} "
-        f"(variavel {ENV_VAR} ou Gerenciador de Credenciais)"
-    )
+    if decision.channel == "vertex-sp":
+        setup = load_vertex_setup()
+        print(
+            f"Vertex AI: {describe_vertex(setup)} "
+            f"(variaveis {ENV_VERTEX_PROJECT} e {ENV_VERTEX_CREDENTIAL}, ou Gerenciador de Credenciais)"
+        )
+    else:
+        print(
+            f"Chave: {decision.key_source or 'nenhuma chave guardada'} "
+            f"(variavel {ENV_VAR} ou Gerenciador de Credenciais)"
+        )
     if decision.allowed:
         print("Motor LLM LIBERADO. Nada foi enviado.")
         return 0

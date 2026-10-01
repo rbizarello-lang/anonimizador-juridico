@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .credentials import ApiKey, Vault, load_key
+from .credentials import ApiKey, Vault, VertexSetup, load_key, load_vertex_setup, validate_service_account_file
 from .llm_discovery import (
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
@@ -140,6 +140,8 @@ class EngineChoice:
     project: str = ""
     model_id: str = DEFAULT_MODEL
     location: str = DEFAULT_LOCATION
+    # Vertex AI: arquivo de conta de servico desta rodada (vazio = o cadastrado, ou o gcloud).
+    credential_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,12 +269,26 @@ def check_engine(
                 "(ou na variável ANONIMIZADOR_GEMINI_PAGO_CHAVE); GEMINI_API_KEY e "
                 "GOOGLE_API_KEY não são lidas de propósito."
             )
+    vertex: VertexSetup | None = None
     if spec.needs_project:
-        if not choice.project.strip():
-            reasons.append("Vertex AI exige o projeto do Google Cloud.")
-        if not (adc_fn or (lambda: adc_available(env)))():
+        # Projeto e credencial: o que a tela/CLI informou nesta sessao, senao o cadastrado
+        # (variavel de ambiente ou Gerenciador de Credenciais).
+        vertex = load_vertex_setup(env=env, vault=vault)
+        project = choice.project.strip() or vertex.project
+        credential_path = choice.credential_path.strip() or vertex.credential_path
+        if not project:
             reasons.append(
-                "Sem credencial local do Google Cloud (gcloud auth application-default login)."
+                "Vertex AI exige o projeto do Google Cloud (informe-o ou cadastre-o: Gerenciador de "
+                "Credenciais, ou a variavel ANONIMIZADOR_VERTEX_PROJETO)."
+            )
+        if credential_path:
+            problem = validate_service_account_file(credential_path)
+            if problem:
+                reasons.append(problem)
+        elif not (adc_fn or (lambda: adc_available(env)))():
+            reasons.append(
+                "Sem credencial do Google Cloud: aponte o arquivo de conta de servico do projeto "
+                "institucional ou rode gcloud auth application-default login."
             )
     # I4: variavel do SDK que desvia o trafego para outro endereco recusa ja na configuracao (e de novo no
     # ponto da rede, em ``llm_gate.check_network_point``).
@@ -292,8 +308,9 @@ def check_engine(
         channel=channel,
         api_key=key,
         model_id=choice.model_id or DEFAULT_MODEL,
-        project=choice.project.strip(),
+        project=(choice.project.strip() or (vertex.project if vertex else "")),
         location=choice.location or DEFAULT_LOCATION,
+        credentials_path=(choice.credential_path.strip() or (vertex.credential_path if vertex else "")),
     )
     return EngineDecision(
         True, channel, (), key=key, config=config, key_source=key.source if key else ""
@@ -397,6 +414,14 @@ def audit_lines(
         lines.append(f"Modelo: {decision.config.model_id}")
         if decision.config.provider == "vertex":
             lines.append(f"Projeto Vertex AI e regiao: {decision.config.location}")
+            lines.append(
+                "Credencial do Vertex AI: "
+                + (
+                    "arquivo de conta de servico (o caminho nao e gravado)"
+                    if decision.config.credentials_path
+                    else "credencial padrao do gcloud"
+                )
+            )
     if spec is not None:
         lines.append(
             "O texto das pecas, com os IDs mascarados, foi enviado ao provedor; "

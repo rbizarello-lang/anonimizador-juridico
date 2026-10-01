@@ -158,6 +158,40 @@ class KeyCliTests(unittest.TestCase):
         self.assertNotIn(FAKE, err.replace(f"--chave", ""))  # o argumento nao e ecoado como valor valido
 
 
+class VertexCliTests(unittest.TestCase):
+    def test_register_the_vertex_setup_with_a_service_account_file_and_delete_it(self) -> None:
+        from anonimizador_app.credentials import VERTEX_CREDENTIAL_USER, VERTEX_PROJECT_USER, VERTEX_VAULT_SERVICE
+
+        with tempfile.TemporaryDirectory() as tmp:
+            account = Path(tmp) / "conta.json"
+            account.write_text('{"type": "service_account", "client_email": "c@x.example", "private_key": "NAO-LER"}', encoding="utf-8")
+            vault = FakeVault()
+            answers = iter(["projeto-ficticio", str(account)])
+            with patch("builtins.input", lambda _prompt="": next(answers)):
+                code, out, err = _run(["--guardar-vertex"], vault=vault)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(vault.stored[(VERTEX_VAULT_SERVICE, VERTEX_PROJECT_USER)], "projeto-ficticio")
+            self.assertEqual(vault.stored[(VERTEX_VAULT_SERVICE, VERTEX_CREDENTIAL_USER)], str(account))
+            self.assertIn("Guardado no Gerenciador de Credenciais", out)
+            self.assertNotIn("NAO-LER", out + err)
+            code, out, _err = _run(["--verificar", "--canal", "vertex-sp"], vault=vault)
+            self.assertEqual(code, 0, out)
+            self.assertIn("arquivo de conta de servico", out)
+            code, out, _err = _run(["--apagar-vertex"], vault=vault)
+            self.assertEqual(code, 0)
+            self.assertIn("apagado", out)
+            self.assertEqual(vault.stored, {})
+
+    def test_an_invalid_credential_file_stores_nothing(self) -> None:
+        vault = FakeVault()
+        answers = iter(["projeto-ficticio", "C:/nao/existe.json"])
+        with patch("builtins.input", lambda _prompt="": next(answers)):
+            code, _out, err = _run(["--guardar-vertex"], vault=vault)
+        self.assertEqual(code, 2)
+        self.assertIn("nao existe", err)
+        self.assertEqual(vault.stored, {})
+
+
 class OfflineCliTests(_Workspace):
     def test_offline_needs_the_channel(self) -> None:
         code, _out, err = _run([str(self.source), "--sem-rede", *self.roots])

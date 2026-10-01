@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import copy
+import json
 import pickle
+import tempfile
 import unittest
+from pathlib import Path
 
 from anonimizador_app.credentials import (
     ENV_VAR,
+    ENV_VERTEX_CREDENTIAL,
+    ENV_VERTEX_PROJECT,
+    SOURCE_GCLOUD,
+    SOURCE_SERVICE_ACCOUNT,
+    VERTEX_CREDENTIAL_USER,
+    VERTEX_PROJECT_USER,
+    VERTEX_VAULT_SERVICE,
     SOURCE_ENV,
     SOURCE_VAULT,
     VAULT_SERVICE,
@@ -15,9 +25,13 @@ from anonimizador_app.credentials import (
     ApiKey,
     CredentialsError,
     delete_key,
+    delete_vertex_setup,
     describe_source,
+    describe_vertex,
     load_key,
+    load_vertex_setup,
     store_key,
+    store_vertex_setup,
 )
 from anonimizador_app.llm_discovery import LlmConfig
 
@@ -142,6 +156,85 @@ class HiddenValueTests(unittest.TestCase):
             raise RuntimeError(f"falha com {self.key}")
         except RuntimeError:
             self.assertNotIn(FAKE, traceback.format_exc())
+
+
+
+class VertexSetupTests(unittest.TestCase):
+    """Cadastro do Vertex AI (canal vertex-sp): projeto e arquivo de conta de servico; so o CAMINHO."""
+
+    def _service_account(self, folder: Path, **overrides) -> Path:
+        payload = {"type": "service_account", "client_email": "conta@projeto-ficticio.iam.example", "private_key": "NAO-LER"}
+        payload.update(overrides)
+        path = folder / "conta.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_nothing_registered_means_the_gcloud_credential(self) -> None:
+        setup = load_vertex_setup(env={}, vault=FakeVault())
+        self.assertEqual((setup.project, setup.credential_path), ("", ""))
+        self.assertEqual(setup.credential_label, SOURCE_GCLOUD)
+        self.assertEqual(describe_vertex(setup), "nenhum projeto cadastrado")
+
+    def test_store_and_load_the_project_and_the_path_never_the_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            account = self._service_account(Path(tmp))
+            vault = FakeVault()
+            saved = store_vertex_setup(" projeto-ficticio ", f'"{account}"', vault=vault)
+            self.assertEqual(saved.project, "projeto-ficticio")
+            self.assertEqual(saved.credential_path, str(account))
+            self.assertEqual(vault.stored[(VERTEX_VAULT_SERVICE, VERTEX_PROJECT_USER)], "projeto-ficticio")
+            self.assertEqual(vault.stored[(VERTEX_VAULT_SERVICE, VERTEX_CREDENTIAL_USER)], str(account))
+            # O conteudo do arquivo (a chave privada) nunca passa pelo cofre nem pela descricao.
+            self.assertNotIn("NAO-LER", " ".join(vault.stored.values()))
+            loaded = load_vertex_setup(env={}, vault=vault)
+            self.assertEqual((loaded.project, loaded.credential_path), (saved.project, saved.credential_path))
+            self.assertEqual(loaded.credential_label, SOURCE_SERVICE_ACCOUNT)
+            self.assertNotIn(str(account), describe_vertex(loaded))
+            self.assertNotIn("NAO-LER", describe_vertex(loaded))
+
+    def test_environment_comes_first_like_the_api_key(self) -> None:
+        vault = FakeVault({(VERTEX_VAULT_SERVICE, VERTEX_PROJECT_USER): "do-cofre"})
+        env = {ENV_VERTEX_PROJECT: "da-variavel", ENV_VERTEX_CREDENTIAL: "caminho.json"}
+        setup = load_vertex_setup(env=env, vault=vault)
+        self.assertEqual((setup.project, setup.project_source), ("da-variavel", SOURCE_ENV))
+        self.assertEqual((setup.credential_path, setup.credential_source), ("caminho.json", SOURCE_ENV))
+        self.assertEqual(vault.calls, [])
+
+    def test_invalid_files_and_empty_project_store_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = FakeVault()
+            with self.assertRaises(CredentialsError):
+                store_vertex_setup("", vault=vault)
+            with self.assertRaises(CredentialsError):
+                store_vertex_setup("projeto-ficticio", str(Path(tmp) / "nao-existe.json"), vault=vault)
+            bad = Path(tmp) / "ruim.json"
+            bad.write_text("{nao e json", encoding="utf-8")
+            with self.assertRaises(CredentialsError):
+                store_vertex_setup("projeto-ficticio", str(bad), vault=vault)
+            not_service = self._service_account(Path(tmp), type="authorized_user")
+            with self.assertRaises(CredentialsError) as caught:
+                store_vertex_setup("projeto-ficticio", str(not_service), vault=vault)
+            self.assertNotIn("NAO-LER", str(caught.exception))
+            self.assertEqual(vault.stored, {})
+
+    def test_empty_credential_means_gcloud_and_forgets_the_old_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            account = self._service_account(Path(tmp))
+            vault = FakeVault()
+            store_vertex_setup("projeto-ficticio", str(account), vault=vault)
+            store_vertex_setup("projeto-ficticio", "", vault=vault)
+        self.assertNotIn((VERTEX_VAULT_SERVICE, VERTEX_CREDENTIAL_USER), vault.stored)
+        self.assertEqual(load_vertex_setup(env={}, vault=vault).credential_label, SOURCE_GCLOUD)
+
+    def test_delete_and_broken_vault(self) -> None:
+        vault = FakeVault({(VERTEX_VAULT_SERVICE, VERTEX_PROJECT_USER): "p-ficticio"})
+        self.assertTrue(delete_vertex_setup(vault=vault))
+        self.assertFalse(delete_vertex_setup(vault=vault))
+        broken = FakeVault(broken=True)
+        self.assertEqual(load_vertex_setup(env={}, vault=broken).project, "")  # cofre com defeito = ausente
+        with self.assertRaises(CredentialsError) as caught:
+            store_vertex_setup("projeto-ficticio", vault=broken)
+        self.assertNotIn("projeto-ficticio", str(caught.exception))
 
 
 if __name__ == "__main__":

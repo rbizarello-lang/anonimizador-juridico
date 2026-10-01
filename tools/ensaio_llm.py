@@ -293,8 +293,10 @@ def step_real_model_is_built_with_the_explicit_key(decision, cache_dir: Path) ->
             os.environ["GEMINI_API_KEY"] = previous
     check("construir o modelo nao abre socket", not attempts, f"{len(attempts)} tentativa(s) {error}")
     if model is not None:
-        used = getattr(model, "api_key", None)
+        used = model._client._api_client.api_key  # o cliente do SDK e quem tem a chave
         check("o modelo usa a chave do cofre, nao a GEMINI_API_KEY do ambiente", used == FAKE_KEY)
+        shown = repr(model) + str(model) + f"{model!r}" + repr(vars(model))
+        check("L2: a chave nao aparece em repr, str nem nos campos do modelo do LangExtract", FAKE_KEY not in shown and OTHER_FAKE_KEY not in shown)
         base = model._client._api_client._http_options.base_url
         check("I4: o cliente do SDK aponta para o host oficial do canal", base == "https://generativelanguage.googleapis.com/", base)
         check("I4: o portao registrou o endpoint conferido", getattr(discoverer.network_check, "host", "") == "generativelanguage.googleapis.com")
@@ -331,6 +333,9 @@ def broken_model(mode: str):
     class BrokenModel(base_model.BaseLanguageModel):
         def infer(self, batch_prompts, **kwargs):
             for _prompt in batch_prompts:
+                if mode == "excecao":
+                    # Excecao do provedor com a chave e texto da peca na mensagem (como um 4xx que ecoa a chamada).
+                    raise RuntimeError(f"HTTP 401 chave={FAKE_KEY} trecho: MADEIREIRA PINHAL VERDE LTDA")
                 output = "{truncado" if mode == "quebrado" else json.dumps({"extractions": []})
                 yield [lx_types.ScoredOutput(score=1.0, output=output)]
 
@@ -358,7 +363,7 @@ class ExplodingEngine:
 def step_forced_failure(pdf: Path, export_root: Path, private_root: Path, decision, choice) -> None:
     print("\n== 6. Falha forcada do LLM: motor local, nada em claro, nada no cache ==")
     private_names = [value for _kind, value, role in ENTITIES if role != "magistrado"]
-    for mode in ("quebrado", "vazio"):
+    for mode in ("quebrado", "vazio", "excecao"):
         cache = private_root / f"cache_llm_falha_{mode}"
         permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
         broken = LangExtractDiscoverer(
@@ -389,6 +394,15 @@ def step_forced_failure(pdf: Path, export_root: Path, private_root: Path, decisi
               "olhas tratadas pelo motor local por falha do LLM" in audit and "olhas tratadas pelo motor local por falha do LLM" in guide)
         cached = list(cache.glob("*.json")) if cache.exists() else []
         check(f"LLM {mode}: resposta {mode} nao foi guardada no cache", not cached, f"{len(cached)} arquivo(s)")
+        if mode == "excecao":
+            everything = " ".join(
+                path.read_text(encoding="utf-8", errors="ignore")
+                for root in (result.job.export_dir, result.job.map_path.parent)
+                for path in root.rglob("*") if path.is_file()
+            )
+            check("L2: a excecao crua (chave e texto da peca) nao vai para a AUDITORIA nem para nenhum arquivo do lote",
+                  FAKE_KEY not in everything and "chave=" not in everything and "trecho: MADEIREIRA" not in everything)
+            check("L2: o motivo da falha na AUDITORIA e so o tipo da excecao", "RuntimeError" in audit and "HTTP 401" not in audit)
     # O motor local tambem cai: o arquivo nao vai para a pasta exportavel.
     permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
     broken = LangExtractDiscoverer(

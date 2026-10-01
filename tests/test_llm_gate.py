@@ -292,5 +292,47 @@ class DiskReplayTests(unittest.TestCase):
         self.assertFalse(model._client._debug_config.client_mode)
 
 
+
+class ScrubTests(unittest.TestCase):
+    """L2: o que vai para a AUDITORIA e para o log nao leva a chave nem texto de peca."""
+
+    def test_scrub_removes_the_known_key_and_anything_shaped_like_a_google_token(self) -> None:
+        from anonimizador_app.llm_gate import HIDDEN, scrub_secrets
+
+        line = f"falha com {FAKE} e AIza{'B' * 30} e Bearer {'x' * 24} e ya29.{'c' * 30}"
+        cleaned = scrub_secrets(line, FAKE)
+        self.assertNotIn(FAKE, cleaned)
+        self.assertNotIn("AIza", cleaned)
+        self.assertNotIn("Bearer x", cleaned)
+        self.assertNotIn("ya29.", cleaned)
+        self.assertIn(HIDDEN, cleaned)
+        self.assertEqual(scrub_secrets("nada a esconder"), "nada a esconder")
+
+    def test_safe_error_keeps_the_type_the_http_code_and_the_status_only(self) -> None:
+        from anonimizador_app.llm_gate import safe_error
+
+        class ApiError(Exception):
+            def __init__(self, message: str, code: int, status: str) -> None:
+                super().__init__(message)
+                self.code, self.status = code, status
+
+        exc = ApiError(f"429 chave={FAKE} trecho: JOAO FICTICIO DE TAL", 429, "RESOURCE_EXHAUSTED")
+        text = safe_error(exc, FAKE)
+        self.assertEqual(text, "ApiError HTTP 429 RESOURCE_EXHAUSTED")
+        self.assertNotIn(FAKE, text)
+        self.assertNotIn("FICTICIO", text)
+        self.assertEqual(safe_error(RuntimeError("segredo FAKE")), "RuntimeError")
+        # Status fora do vocabulario da API nao entra (podia trazer texto).
+        weird = ApiError("x", 500, "texto da peca aqui")
+        self.assertEqual(safe_error(weird), "ApiError HTTP 500")
+
+    def test_safe_error_keeps_the_apps_own_message_but_without_the_key(self) -> None:
+        from anonimizador_app.llm_gate import safe_error
+
+        text = safe_error(ValueError(f"Arquivo ruim, chave {FAKE}"), FAKE, keep_message=True)
+        self.assertIn("Arquivo ruim", text)
+        self.assertNotIn(FAKE, text)
+
+
 if __name__ == "__main__":
     unittest.main()

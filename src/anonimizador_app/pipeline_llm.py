@@ -63,7 +63,7 @@ from .fidelity import FidelityDropStats, drop_protected_spans
 from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges, split_chunks
-from .llm_gate import FilePlan, GateError, SendPlan
+from .llm_gate import FilePlan, GateError, SendPlan, safe_error, scrub_secrets
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
 from .pipeline import (
@@ -393,6 +393,7 @@ def _run_llm_job(
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
     }
     guide_notes = _fallback_lines(fallback_by_file, held)
+    secrets = _secrets_of(discoverer)
     network = getattr(discoverer, "network_check", None)
     network_notes = (
         network.audit_lines()
@@ -400,6 +401,8 @@ def _run_llm_job(
         else ["Nenhuma chamada ao provedor nesta rodada (tudo veio do cache local ou nada foi enviado)."]
     )
     notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes, *network_notes, *guide_notes]))
+    # Defesa em profundidade: nem a chave nem nada com cara de chave entra na AUDITORIA.
+    notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]
     write_audit_report(export_dir, notes, engine=engine_id)
     write_lote_guides(
         job_id=identifier,
@@ -775,11 +778,19 @@ def _guard(source: Path, errors: dict[Path, FileOutcome], step: Callable):
         raise
     except UnsupportedDocumentError as exc:
         errors[source] = FileOutcome(source=source, ok=False, error=str(exc))
-    except Exception as exc:  # noqa: BLE001 - a UI precisa da mensagem por arquivo
-        errors[source] = FileOutcome(
-            source=source, ok=False, error=f"{type(exc).__name__}: {exc}"
-        )
+    except Exception as exc:  # noqa: BLE001 - a UI precisa de um motivo por arquivo
+        # Tipo, codigo HTTP e status: a mensagem crua de uma excecao do provedor pode trazer a chave ou
+        # trechos da peca, e este motivo chega a tela, a CLI e ao log.
+        errors[source] = FileOutcome(source=source, ok=False, error=safe_error(exc))
     return None
+
+
+def _secrets_of(discoverer: Discoverer) -> tuple[str, ...]:
+    """O valor da chave do descobridor, so para limpar o que vai para a AUDITORIA."""
+
+    key = getattr(getattr(discoverer, "config", None), "api_key", None)
+    reveal = getattr(key, "reveal", None)
+    return (reveal(),) if callable(reveal) else ()
 
 
 def _is_remote(discoverer: Discoverer) -> bool:

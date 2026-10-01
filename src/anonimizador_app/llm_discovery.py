@@ -32,11 +32,14 @@ from typing import Any, Protocol
 
 from .credentials import ApiKey
 from .llm_gate import (
+    HIDDEN,
     GateError,
     NetworkCheck,
     RunPermit,
     check_network_point,
     quiet_sdk_logging,
+    safe_error,
+    scrub_secrets,
     verify_client_endpoint,
     verify_no_disk_replay,
 )
@@ -196,6 +199,9 @@ class LlmConfig:
     model_id: str = DEFAULT_MODEL
     project: str = ""
     location: str = DEFAULT_LOCATION
+    # Vertex AI: caminho do arquivo de conta de servico (vazio = credencial padrao do gcloud). So o
+    # caminho; o conteudo e lido no momento de criar o cliente e nao e guardado.
+    credentials_path: str = ""
     max_workers: int = 16
     chunk_chars: int = 4000
     max_output_tokens: int = 8192
@@ -377,7 +383,9 @@ def wrap_model(
                     scored = next(iter(inner.infer([prompt], **kwargs)))
                     output = scored[0].output or ""
                 except Exception as exc:  # noqa: BLE001 - trecho isolado
-                    reason = f"{type(exc).__name__}: {exc}"[:300]
+                    # So o tipo, o codigo HTTP e o status: a mensagem crua pode ter a chave e texto da peca,
+                    # e esta frase vai para a AUDITORIA (pasta exportavel) e para o log.
+                    reason = safe_error(exc)
                     continue
                 if _parses(output):
                     return output
@@ -528,7 +536,7 @@ class LangExtractDiscoverer:
             _LOG.warning(
                 "LLM: %d trecho(s) sem leitura (%s)",
                 len(failed),
-                " | ".join(report.failure_reasons[:3]),
+                " | ".join(scrub_secrets(reason) for reason in report.failure_reasons[:3]),
             )
         for document in annotated:
             index = int(str(document.document_id).rsplit("_", 1)[1])
@@ -578,6 +586,8 @@ class LangExtractDiscoverer:
                 if not cfg.project:
                     raise LlmConfigError("Vertex AI exige o projeto do Google Cloud (--projeto).")
                 kwargs.update(vertexai=True, project=cfg.project, location=cfg.location)
+                if cfg.credentials_path:
+                    kwargs["credentials"] = _service_account_credentials(cfg.credentials_path)
             else:
                 if cfg.api_key is None:
                     raise LlmConfigError(
@@ -592,12 +602,19 @@ class LangExtractDiscoverer:
         config = lx.factory.ModelConfig(
             model_id=cfg.model_id, provider=provider, provider_kwargs=kwargs
         )
-        model = lx.factory.create_model(
-            config=config,
-            examples=build_examples(),
-            use_schema_constraints=True,
-            fence_output=False,
-        )
+        try:
+            model = lx.factory.create_model(
+                config=config,
+                examples=build_examples(),
+                use_schema_constraints=True,
+                fence_output=False,
+            )
+        finally:
+            # A chave nao fica em dicionario de configuracao (traceback, log %r) depois de o cliente a ter.
+            kwargs.pop("api_key", None)
+            if isinstance(getattr(config, "provider_kwargs", None), dict):
+                config.provider_kwargs.pop("api_key", None)
+        hide_credentials(model)
         try:
             verify_client_endpoint(model, check)
             verify_no_disk_replay(model)
@@ -647,6 +664,39 @@ class LangExtractDiscoverer:
             "extracoes": items,
         }
         path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _service_account_credentials(path: str) -> Any:
+    """Credencial do arquivo de conta de servico (Vertex AI), criada so na hora de montar o cliente."""
+
+    try:
+        from google.oauth2 import service_account
+
+        return service_account.Credentials.from_service_account_file(
+            str(Path(path).expanduser()), scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    except Exception as exc:  # noqa: BLE001 - a mensagem crua pode trazer pedacos do arquivo
+        raise LlmConfigError(
+            f"Nao foi possivel usar o arquivo de credencial do Vertex AI ({safe_error(exc)})."
+        ) from None
+
+
+def _hidden_repr(self: Any) -> str:
+    return f"{type(self).__mro__[1].__name__}(model_id={getattr(self, 'model_id', '?')!r}, <credenciais ocultas>)"
+
+
+def hide_credentials(model: Any) -> None:
+    """O modelo do LangExtract (``GeminiLanguageModel``) e um dataclass que guarda ``api_key`` e a mostra no
+    ``repr``: um traceback com variaveis, um log ``%r`` ou um ``print(model)`` vazaria a chave. O cliente do SDK
+    ja a tem; aqui o campo vira um marcador e o repr/str deixam de listar campos."""
+
+    if getattr(model, "api_key", None):
+        model.api_key = HIDDEN
+    cls = type(model)
+    try:
+        model.__class__ = type(cls.__name__, (cls,), {"__repr__": _hidden_repr, "__str__": _hidden_repr})
+    except TypeError:  # classe com __slots__ ou imutavel: o campo ja foi ocultado acima
+        pass
 
 
 def _to_item(extraction: Any, chunk_text: str) -> dict:

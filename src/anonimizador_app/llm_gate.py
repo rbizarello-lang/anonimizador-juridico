@@ -345,3 +345,50 @@ def verify_client_endpoint(model: object, check: NetworkCheck) -> None:
             f"O cliente do SDK apontava para {parsed.hostname or '?'} e nao para {check.host}: "
             "o envio foi recusado."
         )
+
+
+# ---------------------------------------------------------------------------------------------------
+# L2: o que vai para a AUDITORIA e para o log nunca leva a chave nem texto de peca
+# ---------------------------------------------------------------------------------------------------
+
+_SECRET_PATTERNS = (
+    re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),
+    re.compile(r"ya29\.[0-9A-Za-z._\-]{20,}"),
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{16,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
+HIDDEN = "<oculta>"
+
+
+def scrub_secrets(text: str, *secrets: str) -> str:
+    """Tira da linha a chave (valor conhecido) e tudo que tem cara de chave/token do Google."""
+
+    cleaned = text
+    for secret in secrets:
+        if secret and len(secret) >= 6:
+            cleaned = cleaned.replace(secret, HIDDEN)
+    for pattern in _SECRET_PATTERNS:
+        cleaned = pattern.sub(HIDDEN, cleaned)
+    return cleaned
+
+
+def safe_error(exc: BaseException, *secrets: str, keep_message: bool = False) -> str:
+    """Resumo de uma excecao para AUDITORIA, log e tela: o TIPO, o codigo HTTP e o status da API. A
+    mensagem crua de uma excecao do provedor pode trazer o texto da peca (e a chave, em URL ou cabecalho);
+    so se mantem a mensagem de erro que o proprio app escreveu (``keep_message``), ja sem a chave."""
+
+    parts = [type(exc).__name__]
+    code = getattr(exc, "code", None)
+    if code is None:
+        code = getattr(exc, "status_code", None)
+    if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+        parts.append(f"HTTP {code}")
+    status = getattr(exc, "status", None)
+    if isinstance(status, str) and re.fullmatch(r"[A-Z_]{3,40}", status):
+        parts.append(status)
+    summary = " ".join(parts)
+    if keep_message:
+        message = scrub_secrets(" ".join(str(exc).split()), *secrets)[:240]
+        if message:
+            summary += f": {message}"
+    return summary

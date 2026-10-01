@@ -300,5 +300,170 @@ class LangExtractAdapterTests(unittest.TestCase):
                 self.assertIsNone(banned.search(value), value)
 
 
+
+@unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
+class SecretsTests(unittest.TestCase):
+    """L2: a chave nunca em repr do modelo do LangExtract; excecao crua nunca na AUDITORIA."""
+
+    @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
+    def test_the_real_model_hides_the_key_in_repr_str_and_fields(self) -> None:
+        from anonimizador_app.credentials import ApiKey
+        from anonimizador_app.netblock import block_network
+
+        key = "chave-ficticia-repr-8c1d77aa"
+        with block_network() as attempts:
+            discoverer = LangExtractDiscoverer(
+                LlmConfig(provider="gemini", channel="gemini-pago", api_key=ApiKey(key, "teste"))
+            )
+            model = discoverer._build_model()
+        self.assertEqual(attempts, [])
+        shown = " ".join((repr(model), str(model), f"{model!r}", f"{model}", repr(vars(model)), repr(discoverer), repr(discoverer.config)))
+        self.assertNotIn(key, shown)
+        self.assertIn("credenciais ocultas", repr(model))
+        self.assertEqual(model.api_key, "<oculta>")
+        # O cliente do SDK ainda tem a chave: o modelo continua funcional.
+        self.assertEqual(model._client._api_client.api_key, key)
+
+    @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
+    def test_the_key_does_not_stay_in_the_provider_kwargs_after_the_model_exists(self) -> None:
+        from unittest.mock import patch as mock_patch
+
+        from anonimizador_app.credentials import ApiKey
+        from anonimizador_app.netblock import block_network
+
+        key = "chave-ficticia-kwargs-55ab"
+        seen = {}
+        import langextract as lx
+
+        original = lx.factory.ModelConfig
+
+        def spy(*args, **kwargs):
+            config = original(*args, **kwargs)
+            seen["config"] = config
+            return config
+
+        with mock_patch.object(lx.factory, "ModelConfig", spy), block_network():
+            LangExtractDiscoverer(
+                LlmConfig(provider="gemini", channel="gemini-pago", api_key=ApiKey(key, "teste"))
+            )._build_model()
+        self.assertNotIn("api_key", seen["config"].provider_kwargs)
+
+    def test_a_provider_exception_reaches_the_report_as_type_and_code_only(self) -> None:
+        class ApiError(Exception):
+            def __init__(self) -> None:
+                super().__init__("401 chave=chave-ficticia-xyz trecho: MARIA FICTICIA DA SILVA")
+                self.code, self.status = 401, "UNAUTHENTICATED"
+
+        from langextract.core import base_model
+
+        class Exploding(base_model.BaseLanguageModel):
+            def infer(self, batch_prompts, **kwargs):
+                raise ApiError()
+                yield  # pragma: no cover
+
+        with tempfile.TemporaryDirectory() as tmp:
+            discoverer = LangExtractDiscoverer(
+                LlmConfig(chunk_chars=200, max_workers=1, retries=0),
+                cache_dir=Path(tmp),
+                model_factory=lambda: Exploding(),
+            )
+            found = discoverer.discover(_paged("O sócio MARIA FICTICIA DA SILVA reside na Rua das Palmeiras, 45."))
+            cached = list(Path(tmp).glob("*.json"))
+        self.assertEqual(found.report.failure_reasons, ["ApiError HTTP 401 UNAUTHENTICATED"])
+        self.assertNotIn("chave-ficticia-xyz", " ".join(found.report.failure_reasons))
+        self.assertNotIn("FICTICIA", " ".join(found.report.failure_reasons))
+        self.assertEqual(cached, [])
+        self.assertEqual(len(found.report.failed), 1)
+
+    def test_the_warning_log_has_no_secret(self) -> None:
+        import logging
+
+        class ApiError(Exception):
+            pass
+
+        from langextract.core import base_model
+
+        class Exploding(base_model.BaseLanguageModel):
+            def infer(self, batch_prompts, **kwargs):
+                raise ApiError("chave AIza" + "Q" * 30 + " texto JOAO DE TAL")
+                yield  # pragma: no cover
+
+        discoverer = LangExtractDiscoverer(
+            LlmConfig(chunk_chars=200, max_workers=1, retries=0), model_factory=lambda: Exploding()
+        )
+        with self.assertLogs("anonimizador_app.llm_discovery", level="WARNING") as captured:
+            discoverer.discover(_paged("O sócio JOAO DE TAL consta no processo e foi citado."))
+        log = "\n".join(captured.output)
+        self.assertNotIn("AIza", log)
+        self.assertNotIn("JOAO", log)
+        self.assertIn("ApiError", log)
+        del logging
+
+
+
+@unittest.skipUnless(
+    HAS_LANGEXTRACT and importlib.util.find_spec("cryptography") is not None,
+    "langextract/cryptography nao instalados",
+)
+class VertexServiceAccountTests(unittest.TestCase):
+    """O Vertex AI com arquivo de conta de servico: a credencial e criada na hora de montar o cliente."""
+
+    def _account_file(self, folder: Path) -> Path:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+        ).decode()
+        path = folder / "conta.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "service_account",
+                    "client_email": "conta@projeto-ficticio.iam.example",
+                    "private_key": pem,
+                    "private_key_id": "1",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "project_id": "projeto-ficticio",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_the_client_uses_the_service_account_and_the_private_key_never_shows(self) -> None:
+        from anonimizador_app.netblock import block_network
+
+        with tempfile.TemporaryDirectory() as tmp:
+            account = self._account_file(Path(tmp))
+            with block_network() as attempts:
+                discoverer = LangExtractDiscoverer(
+                    LlmConfig(
+                        provider="vertex", channel="vertex-sp", project="projeto-ficticio",
+                        location="southamerica-east1", credentials_path=str(account),
+                    )
+                )
+                model = discoverer._build_model()
+            shown = repr(model) + repr(vars(model)) + repr(discoverer.config)
+        self.assertEqual(attempts, [])
+        self.assertEqual(type(model._client._api_client._credentials).__name__, "Credentials")
+        self.assertNotIn("PRIVATE KEY", shown)
+        self.assertEqual(discoverer.network_check.host, "southamerica-east1-aiplatform.googleapis.com")
+
+    def test_an_unreadable_credential_file_is_refused_without_quoting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "ruim.json"
+            broken.write_text('{"type": "service_account", "private_key": "SEGREDO-NO-ARQUIVO"}', encoding="utf-8")
+            discoverer = LangExtractDiscoverer(
+                LlmConfig(
+                    provider="vertex", channel="vertex-sp", project="projeto-ficticio",
+                    location="southamerica-east1", credentials_path=str(broken),
+                )
+            )
+            with self.assertRaises(LlmConfigError) as caught:
+                discoverer._build_model()
+        self.assertNotIn("SEGREDO-NO-ARQUIVO", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

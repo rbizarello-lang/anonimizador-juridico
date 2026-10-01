@@ -158,6 +158,47 @@ class VertexTests(unittest.TestCase):
         no_adc = check_engine(choice, missing_fn=lambda _c: [], adc_fn=lambda: False)
         self.assertFalse(no_adc.allowed)
 
+    def test_a_service_account_file_replaces_the_gcloud_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            account = Path(tmp) / "conta.json"
+            account.write_text(
+                json.dumps({"type": "service_account", "client_email": "c@x.example", "private_key": "NAO-LER"}),
+                encoding="utf-8",
+            )
+            choice = EngineChoice(channel="vertex-sp", project="projeto-ficticio", credential_path=str(account))
+            # Sem gcloud, mas com o arquivo: libera, e o caminho vai na configuracao (so o caminho).
+            decision = check_engine(choice, env={}, vault=FakeVault(), missing_fn=lambda _c: [], adc_fn=lambda: False)
+            self.assertTrue(decision.allowed, decision.reasons)
+            self.assertEqual(decision.config.credentials_path, str(account))
+            self.assertNotIn("NAO-LER", repr(decision.config))
+            lines = "\n".join(audit_lines(decision, choice))
+            self.assertIn("arquivo de conta de servico (o caminho nao e gravado)", lines)
+            self.assertNotIn(str(account), lines)
+            bad = check_engine(
+                dataclasses.replace(choice, credential_path=str(Path(tmp) / "nao-existe.json")),
+                env={}, vault=FakeVault(), missing_fn=lambda _c: [], adc_fn=lambda: True,
+            )
+            self.assertFalse(bad.allowed)
+            self.assertIn("nao existe", bad.blocked_message())
+
+    def test_the_registered_project_and_credential_are_used_when_the_screen_gives_none(self) -> None:
+        from anonimizador_app.credentials import VERTEX_PROJECT_USER, VERTEX_VAULT_SERVICE
+
+        vault = FakeVault({(VERTEX_VAULT_SERVICE, VERTEX_PROJECT_USER): "projeto-cadastrado"})
+        decision = check_engine(
+            EngineChoice(channel="vertex-sp"), env={}, vault=vault, missing_fn=lambda _c: [], adc_fn=lambda: True
+        )
+        self.assertTrue(decision.allowed, decision.reasons)
+        self.assertEqual(decision.config.project, "projeto-cadastrado")
+        self.assertEqual(decision.config.credentials_path, "")
+        audit = "\n".join(audit_lines(decision))
+        self.assertIn("credencial padrao do gcloud", audit)
+        nothing = check_engine(
+            EngineChoice(channel="vertex-sp"), env={}, vault=FakeVault(), missing_fn=lambda _c: [], adc_fn=lambda: False
+        )
+        self.assertFalse(nothing.allowed)
+        self.assertEqual(len(nothing.reasons), 2)  # projeto e credencial
+
     def test_adc_check_only_looks_at_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             credential = Path(tmp) / "adc.json"

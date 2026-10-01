@@ -34,7 +34,8 @@ from .llm_engine import (
     confirmation_lines,
     warning_paragraphs,
 )
-from .llm_gate import RunPermit, SendPlan
+from .llm_gate import RunPermit, SendPlan, safe_error
+from .llm_discovery import LlmConfigError
 from .pipeline import JobResult
 from .pipeline_llm import LLM_CACHE_SUBDIR, LlmJobResult, plan_send, run_llm_job
 from .roster import KEEP, TOKENIZE
@@ -188,12 +189,28 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
 
         project_box.clear()
         if spec is not None and spec.needs_project:
+            setup = credentials.load_vertex_setup()
             with project_box:
+                ui.label("Projeto e credencial do Vertex AI").classes("aj-label")
+                ui.label(credentials.describe_vertex(setup)).classes("aj-card-note")
                 ui.input(
                     "Projeto do Google Cloud",
-                    value=choice.project,
+                    value=choice.project or setup.project,
                     on_change=lambda event: on_field(project=event.value or ""),
                 ).classes("w-full")
+                credential_input = ui.input(
+                    "Arquivo de conta de serviço (.json); vazio = credencial do gcloud",
+                    value=choice.credential_path or setup.credential_path,
+                    on_change=lambda event: on_field(credential_path=(event.value or "").strip().strip('"')),
+                ).classes("w-full")
+                with ui.row().classes("items-center gap-2"):
+                    ui.button(
+                        "Guardar projeto e credencial", icon="lock",
+                        on_click=lambda: store_vertex(choice, credential_input),
+                    ).props("outline no-caps dense")
+                    ui.button("Apagar", icon="delete", on_click=lambda: erase_vertex()).props(
+                        "flat no-caps dense"
+                    )
                 ui.input(
                     "Região do Vertex AI",
                     value=choice.location,
@@ -243,6 +260,24 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
             return
         key_input.value = ""
         ui.notify("Chave guardada no Gerenciador de Credenciais.", type="positive")
+        redraw()
+
+    def store_vertex(choice_now, credential_input) -> None:
+        try:
+            credentials.store_vertex_setup(current().project, str(credential_input.value or ""))
+        except credentials.CredentialsError as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        ui.notify("Projeto e credencial do Vertex AI guardados (só o caminho do arquivo).", type="positive")
+        redraw()
+
+    def erase_vertex() -> None:
+        try:
+            removed = credentials.delete_vertex_setup()
+        except credentials.CredentialsError as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        ui.notify("Cadastro do Vertex AI apagado." if removed else "Não havia cadastro do Vertex AI.", type="info")
         redraw()
 
     def erase() -> None:
@@ -328,7 +363,8 @@ async def run_llm_flow(
         )
     except Exception as exc:  # noqa: BLE001
         ticker.cancel()
-        _fail(session, status, progress, result_area, run_kicker, run_button, f"A preparação falhou: {exc}")
+        _fail(session, status, progress, result_area, run_kicker, run_button,
+              f"A preparação falhou: {safe_error(exc, keep_message=isinstance(exc, (ValueError, LlmConfigError)))}")
         return
     ticker.cancel()
 
@@ -378,7 +414,8 @@ async def run_llm_flow(
         )
     except Exception as exc:  # noqa: BLE001
         ticker.cancel()
-        _fail(session, status, progress, result_area, run_kicker, run_button, f"A execução falhou: {exc}")
+        _fail(session, status, progress, result_area, run_kicker, run_button,
+              f"A execução falhou: {safe_error(exc, keep_message=isinstance(exc, LlmConfigError))}")
         return
     finally:
         permit.finish()  # a confirmacao expira com a rodada, haja o que houver
