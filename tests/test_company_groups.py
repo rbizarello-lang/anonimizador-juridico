@@ -71,6 +71,21 @@ class GroupDetectionTests(unittest.TestCase):
         person_b = COVER_B.replace("[EMPRESA_21] ([CNPJ_2])", "[PESSOA_6] ([CPF_2])")
         self.assertEqual(company_groups([("a.md", person_a), ("b.md", person_b)]), [])  # so empresa
 
+    def test_covers_written_with_crlf_still_link_by_cnpj(self) -> None:
+        """No Windows o .md sai com CRLF: o grupo por mesmo CNPJ nas capas tem de aparecer igual."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, text in (("a.md", COVER_A), ("b.md", COVER_B)):
+                path = Path(tmp) / name
+                path.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+                paths.append(path)
+            groups = apply_company_groups(paths)
+            self.assertEqual([group.members for group in groups], [("[EMPRESA_20]", "[EMPRESA_21]")])
+            written = paths[0].read_bytes().decode("utf-8")
+            self.assertIn("[EMPRESA_20·G1]", written)
+            self.assertIn("\r\n", written)  # os bytes fora do token ficam como estavam
+
     def test_result_does_not_depend_on_the_suffix_already_being_in_the_text(self) -> None:
         plain = company_groups([("autos.md", RENAME)])
         suffixed = company_groups([("autos.md", apply_groups(RENAME, plain))])
