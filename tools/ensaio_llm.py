@@ -298,23 +298,28 @@ def step_real_model_is_built_with_the_explicit_key(decision, cache_dir: Path) ->
         base = model._client._api_client._http_options.base_url
         check("I4: o cliente do SDK aponta para o host oficial do canal", base == "https://generativelanguage.googleapis.com/", base)
         check("I4: o portao registrou o endpoint conferido", getattr(discoverer.network_check, "host", "") == "generativelanguage.googleapis.com")
+        check("I5: o cliente do SDK nao esta em modo de gravar/reproduzir chamadas em disco", not model._client._debug_config.client_mode)
     # I4: variavel do SDK que desvia o trafego derruba a criacao do modelo, sem rede.
-    for variable in ("GOOGLE_GEMINI_BASE_URL",):
+    for variable, value in (
+        ("GOOGLE_GEMINI_BASE_URL", "https://desvio.example.invalid/x"),
+        ("GOOGLE_GENAI_CLIENT_MODE", "record"),
+        ("GOOGLE_GENAI_REPLAYS_DIRECTORY", "replays_do_sdk"),
+    ):
         previous = os.environ.get(variable)
-        os.environ[variable] = "https://desvio.example.invalid/x"
+        os.environ[variable] = value
         try:
             with block_network() as attempts_redirect:
                 try:
                     build_discoverer(decision, cache_dir=cache_dir)._build_model()
                     refused = False
                 except LlmConfigError as exc:
-                    refused = variable in str(exc) and "desvio" not in str(exc)
+                    refused = variable in str(exc) and "desvio" not in str(exc) and "replays_do_sdk" not in str(exc)
         finally:
             if previous is None:
                 os.environ.pop(variable, None)
             else:
                 os.environ[variable] = previous
-        check(f"I4: {variable} definida recusa o envio (sem mostrar o valor, sem rede)", refused and not attempts_redirect)
+        check(f"I4/I5: {variable} definida recusa o envio (sem mostrar o valor, sem rede)", refused and not attempts_redirect)
 
 
 def broken_model(mode: str):

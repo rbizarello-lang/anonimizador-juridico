@@ -6,6 +6,9 @@ decide antes, na tela e na CLI; aqui se confere de novo, onde o texto sai da maq
 - ``RunPermit``: a confirmacao de UMA rodada. A escolha do motor LLM nao fica armada: cada rodada precisa
   de uma confirmacao (canal, regiao, arquivos, total de caracteres), que vale so enquanto a rodada
   roda e expira quando ela termina. Sem permissao ativa o modelo nem e criado.
+- (I5) nenhum recurso de reproducao/depuracao do SDK ou do LangExtract grava o texto enviado em disco:
+  as variaveis do SDK que ligam isso sao recusadas, o cliente criado e conferido, e o log das bibliotecas
+  fica em aviso;
 - ``check_network_point`` (I4): o canal e um dos cadastrados, o host do endpoint e o oficial da Google
   para ele, e nenhuma variavel do SDK redireciona o trafego; ``verify_client_endpoint`` confere o
   endereco do cliente ja criado.
@@ -15,6 +18,7 @@ Nada aqui abre rede.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -165,6 +169,9 @@ _ALLOWED_HOST = {
 
 # Variaveis que o SDK do Google le sozinho e que redirecionam o trafego para outro host: recusadas.
 REDIRECT_ENV = ("GOOGLE_GEMINI_BASE_URL", "GOOGLE_VERTEX_BASE_URL")
+# I5: o SDK tem um modo de gravar (record) e reproduzir (replay) as chamadas em disco para teste dele:
+# as requisicoes, com o TEXTO DA PECA, iriam para uma pasta qualquer, fora da raiz privada. Recusadas.
+REPLAY_ENV = ("GOOGLE_GENAI_CLIENT_MODE", "GOOGLE_GENAI_REPLAYS_DIRECTORY", "GOOGLE_GENAI_REPLAY_ID")
 # Proxy e certificado proprio: legitimos em rede institucional, mas o trafego passa por quem os controla;
 # o app avisa (confirmacao e AUDITORIA) e nao recusa.
 PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
@@ -187,12 +194,18 @@ def _defined(env: Mapping[str, str], names: tuple[str, ...]) -> list[str]:
 def env_refusals(env: Mapping[str, str] | None = None) -> list[str]:
     """Variaveis de ambiente que desviam o trafego do LLM. Diz so o NOME (o valor pode ter URL com segredo)."""
 
-    defined = _defined(_environment(env), REDIRECT_ENV)
-    return [
+    environment = _environment(env)
+    refusals = [
         f"A variavel {name} redireciona o trafego do SDK do Google para outro endereco: remova-a "
         "antes de enviar texto de peca (o app so fala com o host oficial do canal)."
-        for name in defined
+        for name in _defined(environment, REDIRECT_ENV)
     ]
+    refusals.extend(
+        f"A variavel {name} liga a gravacao/reproducao de chamadas do SDK do Google em disco (com o texto "
+        "da peca, fora da pasta privada): remova-a antes de enviar texto de peca."
+        for name in _defined(environment, REPLAY_ENV)
+    )
+    return refusals
 
 
 def env_warnings(env: Mapping[str, str] | None = None) -> list[str]:
@@ -285,6 +298,35 @@ def check_network_point(
         region=region,
         warnings=tuple(env_warnings(env)),
     )
+
+
+SDK_LOGGERS = ("google_genai", "google.genai", "httpx", "httpcore", "langextract", "absl")
+
+
+def quiet_sdk_logging() -> None:
+    """I5: o log das bibliotecas que falam com o provedor nao desce a DEBUG (que pode trazer corpo de
+    requisicao) por causa de uma configuracao de log do processo."""
+
+    for name in SDK_LOGGERS:
+        logger = logging.getLogger(name)
+        if logger.level == logging.NOTSET or logger.level < logging.WARNING:
+            logger.setLevel(logging.WARNING)
+
+
+def verify_no_disk_replay(model: object) -> None:
+    """I5: o cliente criado nao esta em modo de gravar ou reproduzir chamadas em disco. Nao conseguir
+    conferir (SDK mudou) tambem recusa."""
+
+    client = getattr(model, "_client", None)
+    config = getattr(client, "_debug_config", None)
+    if client is None or config is None:
+        raise GateError("Nao foi possivel confirmar que o SDK nao grava as chamadas em disco: envio recusado.")
+    mode = getattr(config, "client_mode", None)
+    directory = getattr(config, "replays_directory", None)
+    if mode or directory:
+        raise GateError(
+            "O cliente do SDK esta em modo de gravacao/reproducao de chamadas em disco: o envio foi recusado."
+        )
 
 
 def verify_client_endpoint(model: object, check: NetworkCheck) -> None:

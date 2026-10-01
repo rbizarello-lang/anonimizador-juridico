@@ -31,7 +31,15 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .credentials import ApiKey
-from .llm_gate import GateError, NetworkCheck, RunPermit, check_network_point, verify_client_endpoint
+from .llm_gate import (
+    GateError,
+    NetworkCheck,
+    RunPermit,
+    check_network_point,
+    quiet_sdk_logging,
+    verify_client_endpoint,
+    verify_no_disk_replay,
+)
 from .roster import Mention
 
 PROMPT_VERSION = "2026-10-01.1"
@@ -503,6 +511,8 @@ class LangExtractDiscoverer:
             use_schema_constraints=False,
             show_progress=False,
             fetch_urls=False,
+            # I5: nada de log de depuracao do LangExtract (traz prompts, ou seja, texto de peca).
+            debug=False,
             prompt_validation_level=prompt_validation.PromptValidationLevel.OFF,
             resolver_params={"suppress_parse_errors": True},
         )
@@ -590,8 +600,10 @@ class LangExtractDiscoverer:
         )
         try:
             verify_client_endpoint(model, check)
+            verify_no_disk_replay(model)
         except GateError as exc:
             raise LlmConfigError(str(exc)) from None
+        quiet_sdk_logging()
         self.network_check = check
         return model
 

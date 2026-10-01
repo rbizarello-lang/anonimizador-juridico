@@ -200,5 +200,97 @@ class NetworkPointTests(unittest.TestCase):
             verify_client_endpoint(object(), check)  # nao consegue confirmar: recusa
 
 
+
+class DiskReplayTests(unittest.TestCase):
+    """I5: nada que grave o texto enviado em disco, fora da pasta privada."""
+
+    def test_replay_and_record_variables_are_refused_by_name(self) -> None:
+        for name in ("GOOGLE_GENAI_CLIENT_MODE", "GOOGLE_GENAI_REPLAYS_DIRECTORY", "GOOGLE_GENAI_REPLAY_ID"):
+            refusals = env_refusals({name: "record"})
+            self.assertEqual(len(refusals), 1, name)
+            self.assertIn(name, refusals[0])
+            self.assertIn("disco", refusals[0])
+            with self.assertRaises(GateError, msg=name):
+                check_network_point(channel="gemini-pago", provider="gemini", env={name: "C:/qualquer"})
+            decision = check_engine(
+                EngineChoice(channel="gemini-pago"),
+                env={"ANONIMIZADOR_GEMINI_PAGO_CHAVE": FAKE, name: "x"},
+                vault=FakeVault(),
+                missing_fn=lambda _c: [],
+            )
+            self.assertFalse(decision.allowed, name)
+            self.assertIn(name, decision.blocked_message())
+
+    def test_a_client_in_record_or_replay_mode_is_refused(self) -> None:
+        from anonimizador_app.llm_gate import verify_no_disk_replay
+
+        class Debug:
+            client_mode = None
+            replays_directory = None
+
+        class Client:
+            _debug_config = Debug()
+
+        class Model:
+            _client = Client()
+
+        verify_no_disk_replay(Model())  # normal: passa
+        for mode, directory in (("record", None), ("replay", None), (None, "C:/replays"), ("auto", "x")):
+            Debug.client_mode, Debug.replays_directory = mode, directory
+            with self.assertRaises(GateError, msg=str((mode, directory))):
+                verify_no_disk_replay(Model())
+        with self.assertRaises(GateError):
+            verify_no_disk_replay(object())  # nao da para conferir: recusa
+
+    def test_no_code_path_of_the_app_saves_the_sent_text_with_the_sdk_or_langextract(self) -> None:
+        import re
+        from pathlib import Path
+
+        source_root = Path(__file__).resolve().parents[1] / "src" / "anonimizador_app"
+        forbidden = re.compile(
+            r"save_annotated_documents|\.visualize\(|debug\s*=\s*True|client_mode\s*=\s*['\"](?:record|replay|auto)|"
+            r"replays_directory\s*=|configure_debug_logging|ReplayApiClient"
+        )
+        for path in source_root.glob("*.py"):
+            self.assertIsNone(forbidden.search(path.read_text(encoding="utf-8")), path.name)
+
+    def test_the_sdk_loggers_are_kept_at_warning(self) -> None:
+        import logging
+
+        from anonimizador_app.llm_gate import SDK_LOGGERS, quiet_sdk_logging
+
+        for name in SDK_LOGGERS:
+            logging.getLogger(name).setLevel(logging.DEBUG)
+        quiet_sdk_logging()
+        for name in SDK_LOGGERS:
+            self.assertGreaterEqual(logging.getLogger(name).level, logging.WARNING, name)
+
+    @unittest.skipUnless(HAS_SDK, "langextract/google-genai nao instalados")
+    def test_the_real_model_is_refused_when_the_sdk_would_record_calls(self) -> None:
+        with patch.dict(
+            "os.environ", {"GOOGLE_GENAI_CLIENT_MODE": "record", "GOOGLE_GENAI_REPLAYS_DIRECTORY": "C:/replays"}
+        ):
+            with block_network() as attempts:
+                discoverer = LangExtractDiscoverer(
+                    LlmConfig(provider="gemini", channel="gemini-pago", api_key=ApiKey(FAKE, "teste"))
+                )
+                with self.assertRaises(LlmConfigError) as caught:
+                    discoverer._build_model()
+        self.assertEqual(attempts, [])
+        self.assertIn("GOOGLE_GENAI_CLIENT_MODE", str(caught.exception))
+        self.assertNotIn("C:/replays", str(caught.exception))
+
+    @unittest.skipUnless(HAS_SDK, "langextract/google-genai nao instalados")
+    def test_a_normal_client_has_no_debug_mode(self) -> None:
+        from anonimizador_app.llm_gate import verify_no_disk_replay
+
+        with block_network():
+            model = LangExtractDiscoverer(
+                LlmConfig(provider="gemini", channel="gemini-pago", api_key=ApiKey(FAKE, "teste"))
+            )._build_model()
+        verify_no_disk_replay(model)
+        self.assertFalse(model._client._debug_config.client_mode)
+
+
 if __name__ == "__main__":
     unittest.main()
