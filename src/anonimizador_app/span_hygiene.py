@@ -1,4 +1,4 @@
-"""Corta spans que engolem ancora HTML, rotulo de campo, paragrafo alheio ou celula vizinha.
+"""Corta spans que engolem ancora HTML, rotulo, papel da parte, paragrafo alheio ou celula vizinha.
 
 Nao e NER. Razao social com UMA quebra de linha continua valida (lista de alvos).
 Duas ou mais quebras, comentario HTML, rotulo sozinho ou endereco gigante caem.
@@ -27,6 +27,22 @@ _FIELD_LABEL = re.compile(
 )
 _LABEL_ONLY = re.compile(
     r"(?i)^(CEP|Conta|Ag[eê]ncia|N[uú]mero|CNPJ|CPF)\s*:?\s*$"
+)
+# Papel da parte colado ao nome ("executada X", "requerida X", "Devedor Principal: X",
+# "AGRAVANTE: X"): o papel e do texto, nao da entidade, e a IA de analise precisa le-lo. Papel
+# de ato ("executada", "requerida"...) sai com ou sem dois-pontos; "principal"/"devedor" so
+# com dois-pontos (sem eles o nome da empresa pode comeca-lo).
+_ROLE_WORDS = (
+    r"(?:executad[oa]s?|requerid[oa]s?|requerentes?|agravantes?|agravad[oa]s?|"
+    r"embargantes?|embargad[oa]s?|exequentes?|impugnantes?)"
+)
+# Papel logo antes de um nome, so por espacos ("... da executada " + nome).
+ROLE_BEFORE_NAME = re.compile(rf"(?i)\b({_ROLE_WORDS})[^\S\n]*\n?[^\S\n]*\Z")
+_ROLE_PREFIX = re.compile(
+    r"(?i)^\s*(?:"
+    rf"{_ROLE_WORDS}(?:\s*:\s*|\s+)"
+    r"|(?:(?:co-?)?devedor[a]?(?:\s+principal)?|principal)\s*:\s*"
+    r")(?=[\w(])"
 )
 _GEO_MARKER = re.compile(
     r"(?i)^\s*(?:<!--\s*)?pagina-origem\s*:"
@@ -103,6 +119,14 @@ def _clip(
         if end <= start or _LABEL_ONLY.match(value.strip()):
             return None
 
+    if span.entity_type in ("PERSON", "ORGANIZATION"):
+        role = _ROLE_PREFIX.match(value)
+        if role is not None:
+            start += role.end()
+            value = text[start:end]
+            if stats is not None:
+                stats.higiene_rotulo += 1
+
     if span.entity_type == "LOCATION":
         date = _DATE_IN_VALUE.search(value)
         if date:
@@ -167,7 +191,7 @@ def _clip(
         return None
     if end == span.end and start == span.start:
         return span
-    return replace(span, end=end)
+    return replace(span, start=start, end=end)
 
 
 def _rstrip_separators(text: str, start: int, end: int) -> int:

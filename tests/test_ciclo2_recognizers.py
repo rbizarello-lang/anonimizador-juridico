@@ -94,7 +94,7 @@ class Ciclo2LabeledOcrTests(unittest.TestCase):
     def test_labeled_cpf_old_check_digit_notation(self) -> None:
         # DV depois da barra (notacao antiga): o token leva o DV, nao deixa "/25" colado.
         text = "MATRICULA\nC.P.F. 529982247/25\nAPARTAMENTO"
-        self.assertEqual(self._values(text, "BR_CPF"), ["C.P.F. 529982247/25"])
+        self.assertEqual(self._values(text, "BR_CPF"), ["529982247/25"])
         self.assertEqual(canonicalize("BR_CPF", "C.P.F. 529982247/25"), "52998224725")
 
     def test_rg_graphies(self) -> None:

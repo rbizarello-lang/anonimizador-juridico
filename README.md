@@ -89,6 +89,12 @@ CPF na notacao antiga (DV depois da barra) sai inteiro no token.
 Deteccao 2.3: rua com nome de pessoa vira [ENDERECO_n] (nao [PESSOA_n]), e banco
 ou instituicao de pagamento listado no SISBAJUD fica em claro em todo o lote.
 
+Deteccao 2.4: o rotulo fica no texto, fora do token, e o valor inteiro fica dentro
+("Banco/Agencia: [CONTA_n]", "Debcad: [CONTA_n]", "Matricula n [MATRICULA_IMOVEL_n]",
+"CEP: [CEP_n]"; lista de matriculas, um token por numero). O papel da parte fica
+fora do token ("executada [EMPRESA_n]"). CNPJ com a filial partida pela quebra da
+coluna e CEP de 8 digitos em tabela de enderecos passam a ser detectados.
+
 Folha de separacao e capa do eproc saem com cada rotulo junto do seu valor,
 numa linha ("Tipo documento: ... — Evento: ... — Data: ... — Usuario: ..."),
 inclusive a de evento sem documento (intimacao, prazo, ciencia). Cada lote traz

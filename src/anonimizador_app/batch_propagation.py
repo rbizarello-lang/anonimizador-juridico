@@ -36,7 +36,7 @@ from anonimizador_juridico.pseudonymizer import canonicalize, fold_lexical
 from .fidelity import PUBLIC_CNPJ_ROOTS, drop_protected_spans
 from .propagation import FoldedText, fold_with_index, is_protected, protected_forms, spans_for_roster
 from .roster import TOKENIZE, RosterEntry, entity_core, has_token
-from .span_hygiene import sanitize_spans
+from .span_hygiene import ROLE_BEFORE_NAME, sanitize_spans
 
 RECOGNIZER = "PropagacaoLote"
 _SCORE = 0.9
@@ -105,6 +105,9 @@ class _Entity:
     street_hits: int = 0
     street_label: bool = False
     financial: bool = False
+    # "executada X": papel + nome de uma palavra so (E11). A higiene deixa o papel fora do token;
+    # sem esta forma o nome curto deixaria de ser achado onde so o papel o ancora.
+    role_phrases: list[str] = field(default_factory=list)
 
     @property
     def is_street(self) -> bool:
@@ -137,6 +140,7 @@ class BatchRoster:
         self._extra_keep = tuple(str(item) for item in extra_keep)
         self._protected = protected_forms(self._extra_keep)
         self._names: dict[tuple[str, str], list[str]] = defaultdict(list)
+        self._role_phrases: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._ids: dict[tuple[str, str], str] = {}
         self._cnpjs: dict[str, str] = {}
         self._id_records: list[SimpleNamespace] = []
@@ -156,6 +160,12 @@ class BatchRoster:
                 core = entity_core(kind, value)
                 if _CONTENT.search(core):
                     self._names[(span.entity_type, core)].append(value)
+                    if len(_CONTENT.findall(core)) < 2:
+                        role = ROLE_BEFORE_NAME.search(text, max(0, span.start - 24), span.start)
+                        if role is not None:
+                            self._role_phrases[(span.entity_type, core)].append(
+                                f"{role.group(1)} {value}"
+                            )
                     if span.entity_type == "ORGANIZATION" and _financial_position(text, span.start, span.end):
                         self._financial.add(core)
                 continue
@@ -242,6 +252,7 @@ class BatchRoster:
                     groups.append(target)
                 target.cores.append(core)
                 target.names.extend(cores[core])
+                target.role_phrases.extend(self._role_phrases.get((entity_type, core), ()))
                 target.financial = target.financial or core in self._financial
             entities.extend(groups)
         return entities
@@ -258,7 +269,7 @@ class BatchRoster:
                     key=entity.key,
                     kind=entity.kind,
                     name=entity.representative,
-                    variants=sorted(set(entity.names)),
+                    variants=sorted({*entity.names, *entity.role_phrases}),
                     action=TOKENIZE,
                     source="lote",
                 )

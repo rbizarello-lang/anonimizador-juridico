@@ -80,7 +80,12 @@ def _labeled_cnpj_ok(pattern_text: str) -> bool:
 
 
 class ValueGroupPatternRecognizer(PatternRecognizer):
-    """Recorta o span ao grupo nomeado `valor` (rótulo e SSP ficam fora)."""
+    """Recorta o span ao grupo nomeado `valor`: o rótulo ("CEP:", "Agência:", "Matrícula nº")
+    fica fora do token e o valor inteiro fica dentro (fila 3.x, E11).
+
+    O padrão é reaplicado na posição do achado, no texto inteiro (não num recorte): o que ele
+    exige antes e depois do achado (``(?<!\\d)``, ``(?=...SSP)``) continua valendo.
+    """
 
     def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
         results = super().analyze(text, entities, nlp_artifacts, regex_flags)
@@ -100,14 +105,11 @@ class ValueGroupPatternRecognizer(PatternRecognizer):
             if pattern is None or "(?P<valor>" not in pattern.regex:
                 trimmed.append(result)
                 continue
-            snippet = text[result.start : result.end]
-            match = re.search(pattern.regex, snippet, flags)
+            match = re.compile(pattern.regex, flags).match(text, result.start)
             if match is None or match.group("valor") is None:
                 trimmed.append(result)
                 continue
-            start, end = match.span("valor")
-            result.start += start
-            result.end = result.start + (end - start)
+            result.start, result.end = match.span("valor")
             trimmed.append(result)
         return trimmed
 
@@ -132,8 +134,8 @@ class BrCpfRecognizer(PatternRecognizer):
         return is_valid_cpf(pattern_text)
 
 
-class LabeledCpfFallbackRecognizer(PatternRecognizer):
-    """CPF com rotulo, tolerante a OCR. Sem rotulo nao entra (P10).
+class LabeledCpfFallbackRecognizer(ValueGroupPatternRecognizer):
+    """CPF com rotulo, tolerante a OCR. Sem rotulo nao entra (P10). O rotulo fica fora do token.
 
     Aceita o DV na notacao antiga ("C.P.F. 123456789/01"): sem ele o token parava antes
     da barra e o DV sobrava colado ("[CPF_n]/01").
@@ -147,7 +149,10 @@ class LabeledCpfFallbackRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="cpf_rotulado_ocr",
-                    regex=rf"\b{_CPF_LABEL}(?:\d{_SEP}*){{8,13}}\d(?:/\d{{2}})?(?!\d)",
+                    regex=(
+                        rf"\b{_CPF_LABEL}"
+                        rf"(?P<valor>(?:\d{_SEP}*){{8,13}}\d(?:/\d{{2}})?)(?!\d)"
+                    ),
                     score=0.55,
                 )
             ],
@@ -205,7 +210,7 @@ class BrCnpjRecognizer(PatternRecognizer):
         return is_valid_cnpj(pattern_text)
 
 
-class LabeledCnpjFallbackRecognizer(PatternRecognizer):
+class LabeledCnpjFallbackRecognizer(ValueGroupPatternRecognizer):
     def __init__(self) -> None:
         super().__init__(
             supported_entity="BR_CNPJ",
@@ -215,9 +220,9 @@ class LabeledCnpjFallbackRecognizer(PatternRecognizer):
                 Pattern(
                     name="cnpj_rotulado_ocr",
                     regex=(
-                        rf"\b{_CNPJ_LABEL}"
+                        rf"\b{_CNPJ_LABEL}(?P<valor>"
                         rf"[0-9A-Z]{{2}}{_SEP}*[0-9A-Z]{{3}}{_SEP}*[0-9A-Z]{{3}}"
-                        rf"[/\s]+[0-9A-Z]{{4}}[-\s]*\d{{0,2}}(?![0-9A-Z])"
+                        rf"[/\s]+[0-9A-Z]{{4}}(?:[-\s]*\d{{1,2}})?)(?![0-9A-Z])"
                     ),
                     score=0.55,
                 )
@@ -252,7 +257,7 @@ class BrProcessNumberRecognizer(PatternRecognizer):
         return is_valid_cnj_number(pattern_text)
 
 
-class BrRgRecognizer(PatternRecognizer):
+class BrRgRecognizer(ValueGroupPatternRecognizer):
     def __init__(self) -> None:
         super().__init__(
             supported_entity="BR_RG",
@@ -261,13 +266,13 @@ class BrRgRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="rg_com_rotulo",
-                    regex=rf"\b(?:{_RG_LABEL})\s*{_ORD}\s*[:;]?\s*{_RG_NUMBER}",
+                    regex=rf"\b(?:{_RG_LABEL})\s*{_ORD}\s*[:;]?\s*(?P<valor>{_RG_NUMBER})",
                     score=0.8,
                 ),
                 Pattern(
                     name="rc_ocr_com_ssp",
                     regex=(
-                        rf"\bRC\.?\s+{_ORD}\s*{_RG_NUMBER}"
+                        rf"\bRC\.?\s+{_ORD}\s*(?P<valor>{_RG_NUMBER})"
                         rf"(?=[\s.\-–,;:]{{0,8}}.{{0,30}}(?:SSP|SESP))"
                     ),
                     score=0.75,
@@ -338,8 +343,15 @@ class LocalEmailRecognizer(PatternRecognizer):
         return results
 
 
-class BrMatriculaImovelRecognizer(PatternRecognizer):
-    """Matrícula rotulada, inclusive lista 'matrículas nº X; nº Y'."""
+_MATRICULA_NUMERO = re.compile(r"\d{1,7}(?:\.\d{1,3})?")
+
+
+class BrMatriculaImovelRecognizer(ValueGroupPatternRecognizer):
+    """Matrícula rotulada, inclusive lista 'matrículas nº X; nº Y'.
+
+    O rótulo ("Matrícula nº") fica fora do token; na lista, cada número é um token (a mesma
+    matrícula citada sozinha em outro ponto cai no mesmo token).
+    """
 
     def __init__(self) -> None:
         super().__init__(
@@ -349,23 +361,93 @@ class BrMatriculaImovelRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="matricula_imovel_com_rotulo",
-                    regex=r"\bMATR[ÍI]CULA\s*(?:N[.\s]*[Oº°]?\s*)?\d{1,7}(?:\.\d{1,3})?\b",
+                    regex=(
+                        r"\bMATR[ÍI]CULA\s*(?:N[.\s]*[Oº°]?\s*)?"
+                        r"(?P<valor>\d{1,7}(?:\.\d{1,3})?)\b"
+                    ),
                     score=0.85,
                 ),
                 Pattern(
                     name="matriculas_lista_rotulada",
                     regex=(
                         r"\bMATR[ÍI]CULAS?\s+"
-                        r"(?:N[.\s]*[Oº°]?\s*)?\d{1,7}(?:\.\d{1,3})?"
-                        r"(?:\s*[;:,]\s*(?:N[.\s]*[Oº°]?\s*)?\d{1,7}(?:\.\d{1,3})?)+"
+                        r"(?:N[.\s]*[Oº°]?\s*)?"
+                        r"(?P<valor>\d{1,7}(?:\.\d{1,3})?"
+                        r"(?:\s*[;:,]\s*(?:N[.\s]*[Oº°]?\s*)?\d{1,7}(?:\.\d{1,3})?)+)"
                     ),
                     score=0.85,
                 ),
             ],
         )
 
+    def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
+        results = super().analyze(text, entities, nlp_artifacts, regex_flags)
+        split: list[RecognizerResult] = []
+        for result in results:
+            value = text[result.start : result.end]
+            numbers = list(_MATRICULA_NUMERO.finditer(value))
+            if len(numbers) < 2 or not re.search(r"[;:,]", value):
+                split.append(result)
+                continue
+            for number in numbers:
+                split.append(
+                    RecognizerResult(
+                        entity_type=result.entity_type,
+                        start=result.start + number.start(),
+                        end=result.start + number.end(),
+                        score=result.score,
+                        analysis_explanation=result.analysis_explanation,
+                    )
+                )
+        return split
 
-class BrCepRecognizer(PatternRecognizer):
+
+class BrBankAccountRecognizer(ValueGroupPatternRecognizer):
+    """Agência, conta, Debcad/SIDA e conta SISPAR rotulados: o rótulo fica fora do token e o valor
+    inteiro fica dentro ("Banco/Agência: 237/1234-5" -> "Banco/Agência: [CONTA_n]").
+
+    "Agência 1234, Conta 56789-0" vira dois tokens (um por valor); o rótulo "Conta" entre eles
+    não entra em nenhum.
+    """
+
+    _AGENCIA_E_CONTA = "agencia_com_conta_rotulada"
+
+    def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
+        results = super().analyze(text, entities, nlp_artifacts, regex_flags)
+        pattern = next((p for p in self.patterns if p.name == self._AGENCIA_E_CONTA), None)
+        if pattern is None:
+            return results
+        flags = regex_flags
+        if flags is None:
+            flags = getattr(
+                self, "global_regex_flags", re.IGNORECASE | re.DOTALL | re.MULTILINE
+            )
+        compiled = re.compile(pattern.regex, flags)
+        out: list[RecognizerResult] = []
+        for result in results:
+            explanation = result.analysis_explanation
+            if explanation is None or explanation.pattern_name != self._AGENCIA_E_CONTA:
+                out.append(result)
+                continue
+            match = compiled.match(text, result.start)
+            if match is None:
+                out.append(result)
+                continue
+            for group in ("agencia", "conta"):
+                start, end = match.span(group)
+                out.append(
+                    RecognizerResult(
+                        entity_type=result.entity_type,
+                        start=start,
+                        end=end,
+                        score=result.score,
+                        analysis_explanation=explanation,
+                    )
+                )
+        return out
+
+
+class BrCepRecognizer(ValueGroupPatternRecognizer):
     def __init__(self) -> None:
         super().__init__(
             supported_entity="BR_CEP",
@@ -374,10 +456,39 @@ class BrCepRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="cep_com_rotulo",
-                    regex=rf"\b{_CEP_LABEL}\d{{2}}\.?\d{{3}}-?\s*\d{{3}}\d?(?!\d)",
+                    regex=rf"\b{_CEP_LABEL}(?P<valor>\d{{2}}\.?\d{{3}}-?\s*\d{{3}}\d?)(?!\d)",
                     score=0.85,
                 )
             ],
+        )
+
+
+class BrCepTabelaRecognizer(ValueGroupPatternRecognizer):
+    """CEP de 8 dígitos colado, sem rótulo e sem hífen, em tabela de endereços: "BAIRRO 88304500
+    CIDADE SC" (a coluna do CEP, a da cidade e a da UF, uma depois da outra).
+
+    Só entra com a cidade em maiúsculas e a UF no fim da linha ou da célula: o mesmo número
+    em código, protocolo ou data ("PORTARIA N 12345678 DA DF DA SJSC") não casa. Sem
+    IGNORECASE: a UF e a cidade são maiúsculas.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_CEP",
+            supported_language="pt",
+            name="BrCepTabelaRecognizer",
+            patterns=[
+                Pattern(
+                    name="cep_8_digitos_cidade_uf",
+                    regex=(
+                        r"(?<![\d.\-/,])(?P<valor>\d{8})(?![\d.\-/,])"
+                        r"[ \t]+(?:[A-ZÀ-Ý][A-ZÀ-Ý'.]*[ \t]+){1,4}?"
+                        rf"(?:{_UF_ALT})[ \t]*(?=\n|\||$)"
+                    ),
+                    score=0.8,
+                )
+            ],
+            global_regex_flags=re.MULTILINE | re.DOTALL,
         )
 
 
@@ -476,7 +587,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
         BrProcessNumberRecognizer(),
         LabeledCpfFallbackRecognizer(),
         LabeledCnpjFallbackRecognizer(),
-        PatternRecognizer(
+        ValueGroupPatternRecognizer(
             supported_entity="BR_PROCESSO",
             supported_language="pt",
             name="LabeledProcessFallbackRecognizer",
@@ -485,7 +596,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="processo_rotulado_sem_validacao",
                     regex=(
                         r"\b(?:PROCESSO|AUTOS)\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"(?:\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}|\d{20})(?!\d)"
+                        r"(?P<valor>\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}|\d{20})(?!\d)"
                     ),
                     score=0.55,
                 )
@@ -493,7 +604,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
         ),
         LocalEmailRecognizer(),
         BrPhoneRecognizer(),
-        PatternRecognizer(
+        ValueGroupPatternRecognizer(
             supported_entity="BR_OAB",
             supported_language="pt",
             name="BrOabRecognizer",
@@ -501,17 +612,17 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                 Pattern(
                     name="oab_uf_antes",
                     regex=(
-                        r"(?i)\bOAB\s*[/\-]?\s*[A-Z]{2}\s*"
+                        r"(?i)\bOAB\s*[/\-]?\s*(?P<valor>[A-Z]{2}\s*"
                         r"(?:n[.\s]*[oº°]?\s*)?:?-?\s*"
-                        r"\d{1,7}(?:\.\d{3})?(?:-[A-Z])?\b"
+                        r"\d{1,7}(?:\.\d{3})?(?:-[A-Z])?)\b"
                     ),
                     score=0.9,
                 ),
                 Pattern(
                     name="oab_uf_depois",
                     regex=(
-                        r"(?i)\bOAB\s+\d{1,7}(?:\.\d{3})?(?:-[A-Z])?"
-                        r"\s*[/\-]\s*[A-Z]{2}\b"
+                        r"(?i)\bOAB\s+(?P<valor>\d{1,7}(?:\.\d{3})?(?:-[A-Z])?"
+                        r"\s*[/\-]\s*[A-Z]{2})\b"
                     ),
                     score=0.9,
                 ),
@@ -519,7 +630,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="oab_prefixo_n",
                     regex=(
                         r"(?i)\bN\.?\s*OAB\s*[/\-]?\s*"
-                        r"\d{1,7}(?:\.\d{3})?(?:-[A-Z])?\b"
+                        r"(?P<valor>\d{1,7}(?:\.\d{3})?(?:-[A-Z])?)\b"
                     ),
                     score=0.9,
                 ),
@@ -530,7 +641,8 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
         BrMatriculaImovelRecognizer(),
         BrCepRecognizer(),
         BrCepUfRecognizer(),
-        PatternRecognizer(
+        BrCepTabelaRecognizer(),
+        ValueGroupPatternRecognizer(
             supported_entity="BR_PIX",
             supported_language="pt",
             name="BrPixRecognizer",
@@ -540,14 +652,14 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     regex=(
                         r"\b(?:CHAVE\s+(?:PIX|ALEAT[ÓO]RIA)|PIX(?:\s+CHAVE)?)"
                         r"\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"(?:[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}"
+                        r"(?P<valor>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}"
                         r"-[0-9A-F]{12}|[0-9A-F]{32})\b"
                     ),
                     score=0.85,
                 )
             ],
         ),
-        PatternRecognizer(
+        BrBankAccountRecognizer(
             supported_entity="BR_CONTA_BANCARIA",
             supported_language="pt",
             name="BrBankAccountRecognizer",
@@ -560,7 +672,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                         r"Ag[êe]ncia\s*/\s*Opera[cç][aã]o\s*/\s*Conta|"
                         r"conta\s+judicial)"
                         r"\s*(?:n[^\s\d]{0,3})?\s*:?\s*"
-                        r"\d{3,5}/\d{2,4}/\d{3,6}-?\d"
+                        r"(?P<valor>\d{3,5}/\d{2,4}/\d{3,6}-?\d)"
                     ),
                     score=0.9,
                 ),
@@ -568,7 +680,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="agencia_e_conta_rotuladas",
                     regex=(
                         r"\bAG[ÊE]NCIA\s+E\s+CONTA\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"\d{3,5}(?:-\d)?(?:\s*[/\-]\s*|\s+)\d{4,12}(?:-\d)?"
+                        r"(?P<valor>\d{3,5}(?:-\d)?(?:\s*[/\-]\s*|\s+)\d{4,12}(?:-\d)?)"
                     ),
                     score=0.9,
                 ),
@@ -576,9 +688,17 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="agencia_com_conta_rotulada",
                     regex=(
                         r"\bAG[ÊE]NCIA\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"\d{3,5}(?:-\d)?"
+                        r"(?P<agencia>\d{3,5}(?:-\d)?)"
                         r"\s*[,;]?\s*(?:E\s+)?CONTA\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"(?:\d{5,12}(?:-\d)?|\d{4}-\d)"
+                        r"(?P<conta>\d{5,12}(?:-\d)?|\d{4}-\d)"
+                    ),
+                    score=0.9,
+                ),
+                Pattern(
+                    name="banco_agencia_rotulada",
+                    regex=(
+                        r"\b(?:BANCO\s*/\s*)?AG[ÊE]NCIA\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
+                        r"(?P<valor>\d{3}\s*/\s*\d{3,5}(?:-[0-9X])?)(?![\d/])"
                     ),
                     score=0.9,
                 ),
@@ -586,7 +706,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="agencia_rotulada",
                     regex=(
                         r"\bAG[ÊE]NCIA\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"\d{3,5}(?:-\d)?(?!\d)"
+                        r"(?P<valor>\d{3,5}(?:-\d)?)(?!\d)"
                     ),
                     score=0.8,
                 ),
@@ -595,7 +715,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     regex=(
                         r"\bCONTA(?:\s+CORRENTE|\s+BANC[ÁA]RIA)?"
                         r"\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"(?:\d{5,12}(?:-\d)?|\d{4}-\d)(?!\d)"
+                        r"(?P<valor>\d{5,12}(?:-\d)?|\d{4}-\d)(?!\d)"
                     ),
                     score=0.8,
                 ),
@@ -603,7 +723,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="conta_sispar_rotulada",
                     regex=(
                         r"\b(?:CONTA\s+SISPAR|SISPAR|INSCRI[CÇ][AÃ]O\s+SISPAR)\s*:?\s*"
-                        r"[0-9*]{3,20}(?:/[0-9*]{2,8})?(?![0-9A-Za-z*])"
+                        r"(?P<valor>[0-9*]{3,20}(?:/[0-9*]{2,8})?)(?![0-9A-Za-z*])"
                     ),
                     score=0.85,
                 ),
@@ -612,13 +732,13 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     regex=(
                         r"\b(?:DEBCAD|SIDA)\s*"
                         r"(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"\d{6,14}(?!\d)"
+                        r"(?P<valor>\d{6,14})(?!\d)"
                     ),
                     score=0.8,
                 ),
             ],
         ),
-        PatternRecognizer(
+        ValueGroupPatternRecognizer(
             supported_entity="BR_RENAVAM",
             supported_language="pt",
             name="BrRenavamRecognizer",
@@ -627,13 +747,13 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="renavam_com_rotulo",
                     regex=(
                         r"\bRENAVAM\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"\d{9,11}(?!\d)"
+                        r"(?P<valor>\d{9,11})(?!\d)"
                     ),
                     score=0.85,
                 )
             ],
         ),
-        PatternRecognizer(
+        ValueGroupPatternRecognizer(
             supported_entity="BR_PLACA",
             supported_language="pt",
             name="BrVehiclePlateRecognizer",
@@ -642,7 +762,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="placa_com_rotulo",
                     regex=(
                         r"\bPLACA\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"[A-Z]{3}-?(?:\d{4}|\d[A-Z]\d{2})\b"
+                        r"(?P<valor>[A-Z]{3}-?(?:\d{4}|\d[A-Z]\d{2}))\b"
                     ),
                     score=0.85,
                 )

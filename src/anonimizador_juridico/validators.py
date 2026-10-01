@@ -29,12 +29,14 @@ _TITULO_UF_MAX = 28
 # CNPJ numerico ou alfanumerico (12 posicoes alfanumericas + 2 DV numericos). Uma fonte so
 # para o reconhecedor e para a propagacao de filial. A base tem ao menos um digito: 12 letras
 # + 2 digitos e palavra de tabela ("CONTRIBUICAO" + dia da data ao lado), nao CNPJ. No maximo
-# um espaco entre as partes: vao de coluna nao separa CNPJ.
+# um espaco entre as partes: vao de coluna nao separa CNPJ. A filial pode vir partida em duas
+# duplas de digitos por espaco ou quebra de linha de coluna estreita ("12.345.678/00 01-23"):
+# so em digitos, e o DV decide (E11).
 CNPJ_PATTERN = (
     r"(?<![0-9A-Z])"
     r"(?![A-Z]{2}[.,\s]?[A-Z]{3}[.,\s]?[A-Z]{3}[/\s]?[A-Z]{4})"
     r"[0-9A-Z]{2}[.,\s]?[0-9A-Z]{3}[.,\s]?[0-9A-Z]{3}"
-    r"[/\s]?[0-9A-Z]{4}[.\-]?\s?\d{2}"
+    r"[/\s]?(?:[0-9A-Z]{4}|\d{2}\s\d{2})[.\-]?\s?\d{2}"
     r"(?![0-9A-Z])"
 )
 

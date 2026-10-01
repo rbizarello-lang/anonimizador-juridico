@@ -108,7 +108,7 @@ class PseudonymizerTests(unittest.TestCase):
     def test_labeled_invalid_identifier_is_not_leaked(self) -> None:
         text = "CPF 123.456.789-00"
         result = pseudonymize(text, StructuredDetector().detect(text))
-        self.assertEqual(result.text, "[CPF_1]")
+        self.assertEqual(result.text, "CPF [CPF_1]")
         self.assertNotIn("123", result.text)
 
     def test_accent_fold_merges_person_org_location(self) -> None:

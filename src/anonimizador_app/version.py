@@ -5,7 +5,9 @@
 - ``DETECTION_VERSION``: cadeia de deteccao (IDs, lista de alvos, capa, GLiNER, fidelidade; 2.1 = + propagacao do lote;
   2.2 = + limites do token, fila 3.x E1: CNPJ alfanumerico com digito, telefone dentro de codigo,
   endereco que para na celula e nao corta numero; 2.3 = + tipo por entidade, E7: rua com nome
-  de pessoa vira endereco, instituicao financeira do SISBAJUD fica em claro).
+  de pessoa vira endereco, instituicao financeira do SISBAJUD fica em claro; 2.4 = + rotulo
+  fora do token, E11: "Agencia:", "Debcad:", "Matricula n", "CEP:" e o papel da parte ("executada X")
+  ficam no texto e o valor inteiro vai no token; CNPJ com a filial partida; CEP de 8 digitos em tabela).
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
 - commit: o commit do git em que a pasta esta, lido direto de ``.git`` (sem chamar programa externo).
 """
@@ -20,7 +22,7 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.3"
+DETECTION_VERSION = "2.4"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
