@@ -21,8 +21,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Pipeline com LLM (tools/anonimizar_llm.py): LangExtract + Gemini/Vertex AI/Ollama.
-llm = ["langextract>=1.7,<2"]
+# Motor LLM opcional (3.0): LangExtract + Gemini API paga / Vertex AI; a chave fica no Gerenciador
+# de Credenciais (keyring). Sem este extra o app segue so no motor local.
+llm = [
+  "langextract>=1.7,<2",
+  "google-genai>=2.25,<3",
+  "keyring>=25.7,<26",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

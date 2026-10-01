@@ -52,6 +52,7 @@ from .rules import InvalidRuleError, build_recognizers, slug_entity_type, valida
 from .settings import CustomRule, load_settings, save_settings
 from .spreadsheet_targets import merge_unique, parse_target_spreadsheet
 from .target_ids import parse_target_ids
+from .ui_llm import EngineSession, build_engine_section, run_llm_flow
 from .version import version_info
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -407,6 +408,8 @@ class Session:
         self.private_dir = default_private_dir(PROJECT_ROOT)
         self.running = False
         self.last_job: JobResult | None = None
+        # Motor LLM: so da sessao, nunca gravado; o app abre sempre no motor local.
+        self.engine = EngineSession()
         self.settings = load_settings(self.private_dir)
         self.target_companies_text = "\n".join(self.settings.target_companies)
         self.target_people_text = "\n".join(self.settings.target_people)
@@ -637,6 +640,7 @@ def _build_lote_tab(
                             ui.label(
                                 "Roda neste computador. Na dúvida, o trecho original fica."
                             ).classes("aj-card-note")
+                            build_engine_section(session)
                 with ui.row().classes("aj-principle no-wrap items-start"):
                     ui.icon("verified_user")
                     ui.label(
@@ -810,6 +814,19 @@ def _build_lote_tab(
         save_settings(session.private_dir, session.settings)
         update_case_summary()
         case_saved()
+        if session.engine.active:
+            await run_llm_flow(
+                session,
+                list(session.files),
+                status=status,
+                progress=progress,
+                result_area=result_area,
+                run_kicker=run_kicker,
+                run_button=run_button,
+                render_results=_render_results,
+                token_labels=lambda: _token_labels(session),
+            )
+            return
         try:
             contextual = build_contextual_engine(
                 session.settings,

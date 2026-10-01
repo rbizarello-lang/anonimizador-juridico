@@ -53,8 +53,10 @@ EXPORT_BLOCKED_REASON = (
 )
 
 GEMINI_POLICY = (
-    "O Gemini não roda nesta tela. Depois do lote, o operador pode abrir o PDF "
-    "original e o Markdown de saidas/exportaveis num destino externo — de "
-    "preferência por conta institucional (Vertex AI ou Workspace), nunca em conta "
-    "gratuita ou pessoal. O mapa privado não viaja."
+    "O motor local é o padrão e o app sempre abre nele: nada sai deste computador. "
+    "O motor LLM é opcional (seletor “Motor de descoberta”, na aba Lote) e vale só para "
+    "a sessão: o texto, com os IDs já trocados por token, vai ao provedor do canal "
+    "escolhido (Gemini API paga ou Vertex AI), depois do aviso, da chave e da confirmação "
+    "do faturamento. Conta gratuita ou pessoal nunca. O mapa privado e o elenco com nomes "
+    "não viajam."
 )
