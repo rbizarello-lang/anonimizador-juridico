@@ -156,6 +156,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exportaveis", help="Raiz dos lotes exportaveis.")
     parser.add_argument("--privados", help="Raiz dos mapas, elencos e caches.")
     parser.add_argument(
+        "--piso-local",
+        dest="piso_local",
+        action="store_true",
+        default=None,
+        help="Piso local (padrao: ligado, ou o que o config.json diz): o motor local roda em TODAS as folhas e o "
+        "resultado e a uniao com o LLM, que so acrescenta protecao.",
+    )
+    parser.add_argument(
+        "--sem-piso-local",
+        dest="piso_local",
+        action="store_false",
+        help="Desliga o piso local: o motor local so trata as folhas que o LLM nao leu ou respondeu vazio.",
+    )
+    parser.add_argument(
         "--aceitar-fallback",
         action="store_true",
         help="Aceita o resultado mesmo que alguma folha tenha sido tratada pelo motor local por falha "
@@ -378,6 +392,7 @@ def run_and_report(
             engine=engine,
             engine_notes=engine_notes,
             on_progress=lambda message, _fraction: print(message, flush=True),
+            local_floor=args.piso_local,
         )
     except LlmConfigError as exc:
         print(f"Configuracao: {exc}", file=sys.stderr)
@@ -386,6 +401,7 @@ def run_and_report(
 
     job = result.job
     print(f"Motor: LLM {engine}")
+    print("Piso local: " + ("LIGADO (motor local em todas as folhas; uniao com o LLM)" if result.local_floor else "DESLIGADO"))
     print(f"Textos: {job.export_dir}")
     print(f"Mapa e elenco (privados): {job.map_path.parent}")
     print(f"Tempo: {elapsed:.1f}s")

@@ -108,7 +108,7 @@ class _Base(unittest.TestCase):
 class ReapplyWithFakeDiscovererTests(_Base):
     def test_reapply_applies_pinned_decisions_in_a_new_lote(self) -> None:
         base, source = self._workspace()
-        paths = dict(export_root=base / "exp", private_root=base / "priv")
+        paths = dict(export_root=base / "exp", private_root=base / "priv", local_floor=False)
         first = run_llm_job([source], discoverer=FakeDiscoverer(), use_cache=False, **paths)
         first_text = first.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
         self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", first_text)
@@ -143,7 +143,7 @@ class ReapplyWithFakeDiscovererTests(_Base):
 
     def test_two_rounds_in_the_same_second_do_not_overwrite_each_other(self) -> None:
         base, source = self._workspace()
-        paths = dict(export_root=base / "exp", private_root=base / "priv")
+        paths = dict(export_root=base / "exp", private_root=base / "priv", local_floor=False)
         one = run_llm_job([source], discoverer=FakeDiscoverer(), use_cache=False, **paths)
         two = run_llm_job([source], discoverer=FakeDiscoverer(), use_cache=False, **paths)
         self.assertNotEqual(one.job.job_id, two.job.job_id)
@@ -188,7 +188,7 @@ class ReapplyOfflineEndToEndTests(_Base):
 
     def test_reviewed_roster_is_reapplied_from_the_cache_alone(self) -> None:
         base, source = self._workspace()
-        paths = dict(export_root=base / "exp", private_root=base / "priv")
+        paths = dict(export_root=base / "exp", private_root=base / "priv", local_floor=False)
         names = {value: (kind, role) for kind, value, role in ENTITIES}
         created: list[int] = []
 
@@ -227,7 +227,7 @@ class ReapplyOfflineEndToEndTests(_Base):
         from test_pipeline_llm import FakeLocalEngine
 
         base, source = self._workspace()
-        paths = dict(export_root=base / "exp", private_root=base / "priv")
+        paths = dict(export_root=base / "exp", private_root=base / "priv", local_floor=False)
         names = {value: (kind, role) for kind, value, role in ENTITIES}
         local = FakeLocalEngine([("PERSON", "OLAVO RICARDO TEIXEIRA"), ("PERSON", "MARLENE OLIVEIRA SAMPAIO")])
         with block_network() as attempts:
@@ -250,7 +250,7 @@ class ReapplyOfflineEndToEndTests(_Base):
 
     def test_unknown_engine_has_no_cache_to_reuse(self) -> None:
         base, source = self._workspace()
-        paths = dict(export_root=base / "exp", private_root=base / "priv")
+        paths = dict(export_root=base / "exp", private_root=base / "priv", local_floor=False)
         first = run_llm_job([source], discoverer=FakeDiscoverer(), use_cache=False, **paths)
         with self.assertRaises(LlmConfigError):
             reapply_offline(first, {}, [source], **paths)

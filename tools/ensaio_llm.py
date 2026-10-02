@@ -18,6 +18,9 @@ Passos:
   6. falha forcada do LLM (resposta quebrada, resposta vazia, motor local que tambem falha): a folha passa
      pelo motor local, nunca sai com nome em claro, resposta vazia e falha nao vao para o cache, e se o motor
      local tambem falhar o arquivo fica retido na quarentena, fora da pasta exportavel;
+  6b. piso local (I-N4): omissao parcial do LLM (esquece uma socia) e mencao sem ancora (devolve o nome
+      "normalizado"): com o piso ligado nenhum nome sai em claro; com o piso desligado a omissao aparece
+      (prova de que o cenario e real); a AUDITORIA e o LEIA-ME dizem se o piso estava ligado;
   7. varredura: a chave falsa nao aparece em nenhum arquivo gerado nem na saida do ensaio.
 
 Uso:  python tools/ensaio_llm.py [--saida PASTA] [--manter]
@@ -343,6 +346,28 @@ def broken_model(mode: str):
     return BrokenModel()
 
 
+def partial_model():
+    """Modelo falso que le tudo mas acerta so em parte: esquece a socia (omissao parcial) e devolve o nome do
+    socio "normalizado", fora do texto (mencao sem ancora)."""
+
+    from langextract.core import base_model
+    from langextract.core import types as lx_types
+
+    class PartialModel(base_model.BaseLanguageModel):
+        def infer(self, batch_prompts, **kwargs):
+            for prompt in batch_prompts:
+                chunk = prompt.rsplit("Q: ", 1)[-1]
+                items = []
+                for kind, value, role in ENTITIES:
+                    if value.startswith("CLAUDETE") or value.casefold() not in chunk.casefold():
+                        continue
+                    shown = "A. C. Barreto" if value.startswith("ANTONIO") else value
+                    items.append({kind: shown, f"{kind}_attributes": {"papel": role, "nome_canonico": shown}})
+                yield [lx_types.ScoredOutput(score=1.0, output=json.dumps({"extractions": items}))]
+
+    return PartialModel()
+
+
 def local_engine():
     """O motor local do ensaio: reconhecedores e lista de alvos (sem NER, que e opcional e pesado)."""
 
@@ -426,6 +451,53 @@ def step_forced_failure(pdf: Path, export_root: Path, private_root: Path, decisi
     check("motor local tambem falhou: a AUDITORIA e o LEIA-ME avisam", "quarentena" in (held.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8"))
 
 
+def step_local_floor(pdf: Path, export_root: Path, private_root: Path, decision, choice) -> None:
+    print("\n== 6b. Piso local: omissao parcial e mencao sem ancora, com e sem o piso ==")
+    private_names = [value for _kind, value, role in ENTITIES if role != "magistrado"]
+    texts: dict[bool, str] = {}
+    for floor in (True, False):
+        permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
+        partial = LangExtractDiscoverer(
+            decision.config, cache_dir=None, model_factory=partial_model, permit=permit
+        )
+        result = run_llm_job(
+            [pdf],
+            export_root=export_root,
+            private_root=private_root,
+            discoverer=partial,
+            verification_rounds=0,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, permit),
+            fallback_engine=local_engine(),
+            local_floor=floor,
+            job_id=f"lote_piso_{'ligado' if floor else 'desligado'}",
+        )
+        outcome = result.job.outcomes[0]
+        text = outcome.markdown_path.read_text(encoding="utf-8") if outcome.ok else ""
+        texts[floor] = text
+        label = "piso ligado" if floor else "piso desligado"
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        word = "LIGADO" if floor else "DESLIGADO"
+        check(f"{label}: AUDITORIA e LEIA-ME dizem 'Piso local: {word}'",
+              f"Piso local: {word}" in audit and f"Piso local: {word}" in guide)
+        leaked = [value for value in private_names if value.casefold() in text.casefold()]
+        if floor:
+            check("piso ligado: omissao parcial e mencao sem ancora, nenhum nome privado em claro", outcome.ok and not leaked,
+                  f"{len(leaked)} em claro")
+            check("piso ligado: CPF e CNPJ nao saem em claro", CPF not in text and CNPJ not in text)
+            check("piso ligado: nada em quarentena e nenhuma folha tratada como falha do LLM",
+                  not result.held and not result.fallback_pages)
+        else:
+            check("piso desligado: a omissao parcial deixa o nome em claro (o cenario e real)",
+                  outcome.ok and any(value.startswith(("CLAUDETE", "ANTONIO")) for value in leaked),
+                  f"{len(leaked)} em claro")
+    check("o piso so acrescenta protecao: tudo o que o LLM tokenizou segue tokenizado",
+          "MADEIREIRA PINHAL VERDE" not in texts[True] and "MADEIREIRA PINHAL VERDE" not in texts[False]
+          and texts[True].count("[PESSOA_") >= texts[False].count("[PESSOA_"))
+    check("o piso nao tirou a juiza do claro (o LLM a manteve)", "LUCIANA MONTEFUSCO DE ALMEIDA" in texts[True])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--saida", help="Pasta de trabalho (padrao: temporaria, apagada no fim).")
@@ -491,6 +563,7 @@ def main(argv: list[str] | None = None) -> int:
             verification_rounds=1,
             engine=decision.channel,
             engine_notes=audit_lines(decision, choice, permit),
+            fallback_engine=local_engine(),  # piso local ligado (padrao); o motor leve nao carrega o NER
         )
         check("a confirmacao expirou ao fim da rodada", permit.state == "expirada" and not permit.active)
         try:
@@ -511,6 +584,9 @@ def main(argv: list[str] | None = None) -> int:
         check("AUDITORIA registra a confirmacao da rodada (so contagens)", "Confirmacao desta rodada" in audit and PDF_NAME not in audit)
         check("sem falha do LLM, nenhuma folha vai ao motor local", "tratadas pelo motor local" not in audit and not first.fallback_pages)
         check("LEIA-ME registra o motor", f"motor LLM: {CHANNEL}" in (folder_a / "LEIA-ME.txt").read_text(encoding="utf-8"))
+        check("o piso local esta ligado por padrao e a AUDITORIA e o LEIA-ME dizem",
+              first.local_floor and "Piso local: LIGADO" in audit
+              and "Piso local: LIGADO" in (folder_a / "LEIA-ME.txt").read_text(encoding="utf-8"))
         for _kind, value, role in ENTITIES:
             if role != "magistrado":
                 check(f"sem '{value[:14]}...' em claro (A)", value.casefold() not in text_a.casefold())
@@ -531,7 +607,9 @@ def main(argv: list[str] | None = None) -> int:
         decisions = {claudete.key: KEEP, judge.key: TOKENIZE}
 
         print("\n== 4. Rodada B: elenco revisado, SEM rede (so cache) ==")
-        second = reapply_offline(first, decisions, [pdf], export_root=export_root, private_root=private_root)
+        second = reapply_offline(
+            first, decisions, [pdf], export_root=export_root, private_root=private_root, fallback_engine=local_engine()
+        )
         folder_b = second.result.job.export_dir
         text_b = second.result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
         check("duas decisoes aplicadas", second.changed == 2)
@@ -562,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         check("vazamento: a regua enxerga a decisao (socia B 0 -> mais; juiza mais -> 0)", counts.get("socia B", [1, 0])[1] > 0 and counts.get("juiza", [0, 1])[1] == 0)
 
         step_forced_failure(pdf, export_root, private_root, decision, choice)
+        step_local_floor(pdf, export_root, private_root, decision, choice)
 
     check("nenhuma tentativa de rede", not attempts, f"{len(attempts)} tentativa(s)")
     check("o Gerenciador de Credenciais real nao foi tocado (keyring nem importado)", KEYRING_WAS_LOADED or "keyring" not in sys.modules)

@@ -17,6 +17,7 @@ from anonimizador_app.credentials import ApiKey
 from anonimizador_app.llm_discovery import Discovery, DiscoveryReport, LlmConfig
 from anonimizador_app.pipeline_llm import LEGEND_FILENAME, ROSTER_FILENAME, run_llm_job
 from anonimizador_app.roster import KEEP, Mention
+from anonimizador_app.settings import AppSettings
 from anonimizador_juridico import EntitySpan
 
 DOC = """\
@@ -165,6 +166,7 @@ class PipelineLlmTests(unittest.TestCase):
         base = Path(tmp.name)
         source = base / "autos.md"
         source.write_text(DOC, encoding="utf-8")
+        kwargs.setdefault("local_floor", False)
         result = run_llm_job(
             [source],
             export_root=base / "exportaveis",
@@ -329,6 +331,7 @@ class PipelineLlmTests(unittest.TestCase):
             discoverer=PerFile(),
             use_cache=False,
             verification_rounds=0,
+            local_floor=False,
         )
 
         texts = [outcome.markdown_path.read_text(encoding="utf-8") for outcome in result.job.outcomes]
@@ -380,6 +383,7 @@ class StructureParityTests(unittest.TestCase):
             discoverer=FakeDiscoverer(entities),
             use_cache=False,
             verification_rounds=0,
+            local_floor=False,
             **kwargs,
         )
         for outcome in result.job.outcomes:
@@ -439,6 +443,7 @@ class StructureParityTests(unittest.TestCase):
             discoverer=OneWordDiscoverer([("empresa", "JOINVILLE METAIS LTDA", "parte")]),
             use_cache=False,
             verification_rounds=0,
+            local_floor=False,
         )
         body = result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
 
@@ -475,6 +480,7 @@ class LlmFailureFallbackTests(unittest.TestCase):
     """B1/I6: folha que o LLM nao leu, ou que ele respondeu vazia, nunca sai com nome em claro."""
 
     def _run(self, discoverer, *, engine=None, **kwargs):
+        kwargs.setdefault("local_floor", False)  # estes testes tratam so do fail-closed por folha suspeita
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
@@ -616,6 +622,135 @@ class LlmFailureFallbackTests(unittest.TestCase):
         self.assertTrue(result.job.export_allowed)
         self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", self._exported(result))
         self.assertEqual(result.fallback_pages, {"autos.md": [2]})
+
+
+
+ALL_NAMES = [
+    ("PERSON", "OLAVO RICARDO TEIXEIRA"),
+    ("PERSON", "MARLENE OLIVEIRA SAMPAIO"),
+    ("PERSON", "LUCIANA MONTEFUSCO DE ALMEIDA"),
+]
+
+
+class UnanchoredDiscoverer(FakeDiscoverer):
+    """O LLM devolve o nome "normalizado" (outra ordem), sem ancora e fora do texto: a propagacao nao o acha."""
+
+    def discover(self, text: str) -> Discovery:
+        found = super().discover(text)
+        found.mentions = [m for m in found.mentions if "MARLENE" not in m.text.upper()]
+        found.mentions.append(Mention(kind="pessoa", text="Sampaio, Marlene Oliveira", role="socio"))
+        return found
+
+
+class LocalFloorTests(unittest.TestCase):
+    """I-N4: piso local. O motor local roda em TODAS as folhas e o resultado e a uniao com o LLM."""
+
+    def _run(self, discoverer, engine, **kwargs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        source = base / "autos.md"
+        source.write_text(DOC, encoding="utf-8")
+        kwargs.setdefault("verification_rounds", 0)
+        result = run_llm_job(
+            [source],
+            export_root=base / "exportaveis",
+            private_root=base / "privados",
+            discoverer=discoverer,
+            use_cache=False,
+            fallback_engine=engine,
+            **kwargs,
+        )
+        outcome = result.job.outcomes[0]
+        self.assertTrue(outcome.ok, outcome.error)
+        return result, outcome.markdown_path.read_text(encoding="utf-8")
+
+    def test_the_floor_is_on_by_default(self) -> None:
+        from anonimizador_app.settings import load_settings, save_settings
+
+        self.assertTrue(AppSettings().llm_local_floor)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(load_settings(Path(tmp)).llm_local_floor)
+            save_settings(Path(tmp), AppSettings(llm_local_floor=False))
+            self.assertFalse(load_settings(Path(tmp)).llm_local_floor)
+
+    def test_partial_omission_is_covered_by_the_floor(self) -> None:
+        # O LLM leu as duas folhas e esqueceu a socia da folha 2 (e a verificacao esta desligada).
+        engine = FakeLocalEngine(ALL_NAMES)
+        result, text = self._run(FakeDiscoverer(miss_first={"MARLENE OLIVEIRA SAMPAIO"}), engine, local_floor=True)
+
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO".casefold(), text.casefold())
+        self.assertEqual(engine.calls, 1)
+        self.assertTrue(result.local_floor)
+        # Nenhuma folha foi "suspeita": o piso e que acrescentou.
+        self.assertEqual(result.fallback_pages, {})
+        self.assertGreaterEqual(result.reports["autos.md"].floor_entities, 1)
+
+    def test_without_the_floor_the_same_omission_leaves_the_name_in_clear(self) -> None:
+        engine = FakeLocalEngine(ALL_NAMES)
+        result, text = self._run(FakeDiscoverer(miss_first={"MARLENE OLIVEIRA SAMPAIO"}), engine, local_floor=False)
+
+        self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
+        self.assertEqual(engine.calls, 0)
+        self.assertFalse(result.local_floor)
+
+    def test_unanchored_mention_does_not_leave_the_name_in_clear(self) -> None:
+        _result, text = self._run(UnanchoredDiscoverer(), FakeLocalEngine(ALL_NAMES), local_floor=True)
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO".casefold(), text.casefold())
+
+        _result, text = self._run(UnanchoredDiscoverer(), FakeLocalEngine(ALL_NAMES), local_floor=False)
+        self.assertIn("MARLENE OLIVEIRA SAMPAIO", text)
+
+    def test_the_floor_only_adds_protection(self) -> None:
+        # Tudo o que o LLM tokenizou continua tokenizado, com o MESMO token; o que ele manteve (a juiza)
+        # continua em claro mesmo que o motor local aponte o nome.
+        off_result, off_text = self._run(FakeDiscoverer(), FakeLocalEngine([]), local_floor=False)
+        engine = FakeLocalEngine(ALL_NAMES)
+        on_result, on_text = self._run(FakeDiscoverer(), engine, local_floor=True)
+
+        self.assertEqual(off_text, on_text)
+        self.assertIn("LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal", on_text)
+        self.assertEqual(on_result.tokens, off_result.tokens)
+        self.assertEqual(engine.calls, 1)
+
+    def test_a_failed_page_still_goes_to_the_fallback_with_the_floor_on(self) -> None:
+        engine = FakeLocalEngine(PAGE_2_NAMES)
+        result, text = self._run(FakeDiscoverer(fail_pass={1, 2}), engine, local_floor=True, verification_rounds=1)
+
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO".casefold(), text.casefold())
+        self.assertEqual(result.fallback_pages, {"autos.md": [2]})
+        self.assertEqual(engine.calls, 1)
+
+    def test_audit_and_guide_say_whether_the_floor_was_on(self) -> None:
+        on, _ = self._run(FakeDiscoverer(), FakeLocalEngine([]), local_floor=True)
+        off, _ = self._run(FakeDiscoverer(), FakeLocalEngine([]), local_floor=False)
+        for result, word in ((on, "LIGADO"), (off, "DESLIGADO")):
+            audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+            guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+            self.assertIn(f"Piso local: {word}", audit)
+            self.assertIn(f"Piso local: {word}", guide)
+        self.assertNotIn("DESLIGADO", (on.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8"))
+
+    def test_settings_decide_when_the_argument_is_not_given(self) -> None:
+        engine = FakeLocalEngine(ALL_NAMES)
+        result, _text = self._run(FakeDiscoverer(), engine, settings=AppSettings(llm_local_floor=False))
+        self.assertFalse(result.local_floor)
+        self.assertEqual(engine.calls, 0)
+        result, _text = self._run(FakeDiscoverer(), FakeLocalEngine([]))
+        self.assertTrue(result.local_floor)
+
+    def test_the_local_engine_failing_with_no_suspect_page_is_a_warning_not_a_hold(self) -> None:
+        engine = FakeLocalEngine(boom=RuntimeError("modelo ausente: MARLENE"))
+        result, _text = self._run(FakeDiscoverer(), engine, local_floor=True)
+
+        self.assertTrue(result.job.export_allowed)
+        self.assertEqual(result.held, ())
+        self.assertIn("RuntimeError", result.reports["autos.md"].floor_error)
+        self.assertNotIn("MARLENE", result.reports["autos.md"].floor_error)
+        self.assertIn("piso local estava ligado", result.job.export_warning)
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("ALERTA: o motor local nao rodou", audit)
+        self.assertNotIn("MARLENE", audit)
 
 
 if __name__ == "__main__":

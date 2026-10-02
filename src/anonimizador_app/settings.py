@@ -45,6 +45,9 @@ class AppSettings:
     target_ids: list[str] = field(default_factory=list)
     cnpj_lookup_enabled: bool = True
     case_shadow_enabled: bool = False
+    # Piso local do motor LLM (I-N4): o motor local roda em todas as folhas e o resultado e a uniao com o
+    # LLM; o LLM so acrescenta protecao. Ligado por padrao ate o C3 medir o LLM com o gabarito.
+    llm_local_floor: bool = True
 
     def token_labels(self) -> dict[str, str]:
         labels: dict[str, str] = {}
@@ -83,6 +86,7 @@ def load_settings(private_root: Path) -> AppSettings:
         target_ids=target_ids,
         cnpj_lookup_enabled=bool(payload.get("cnpj_lookup_enabled", True)),
         case_shadow_enabled=bool(payload.get("case_shadow_enabled", False)),
+        llm_local_floor=bool(payload.get("llm_local_floor", True)),
     )
 
 
@@ -105,5 +109,6 @@ def save_settings(private_root: Path, settings: AppSettings) -> None:
         "target_ids": list(parse_target_ids(settings.target_ids)),
         "cnpj_lookup_enabled": settings.cnpj_lookup_enabled,
         "case_shadow_enabled": settings.case_shadow_enabled,
+        "llm_local_floor": settings.llm_local_floor,
     }
     destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

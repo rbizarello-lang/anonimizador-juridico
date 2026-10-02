@@ -1200,6 +1200,21 @@ def _build_rules_tab(session: Session) -> None:
                     ).props("color=primary")
 
                 with ui.column().classes("aj-card"):
+                    ui.label("Motor LLM: piso local").classes("aj-card-title")
+                    ui.label(
+                        "Com o motor LLM, o motor local (NER e reconhecedores) roda em TODAS as folhas e o "
+                        "resultado é a união do que o LLM e o motor local apontaram: o LLM só acrescenta "
+                        "proteção, nunca tira. Ligado por padrão. Desligado, o motor local só trata as folhas "
+                        "que o LLM não leu ou respondeu vazio, e um nome que o LLM esquecer numa folha lida "
+                        "sai em claro. A AUDITORIA de cada lote diz se o piso estava ligado."
+                    ).classes("aj-card-note")
+                    ui.switch(
+                        "Piso local ligado (recomendado)",
+                        value=session.settings.llm_local_floor,
+                        on_change=lambda e: persist_floor_flag(bool(e.value)),
+                    ).props("color=primary")
+
+                with ui.column().classes("aj-card"):
                     ui.label("Experimentos").classes("aj-card-title")
                     with ui.expansion(
                         "Passada-sombra de caixa (GLiNER)", icon="science"
@@ -1308,6 +1323,10 @@ def _build_rules_tab(session: Session) -> None:
 
     def persist_cnpj_flag(enabled: bool) -> None:
         session.settings.cnpj_lookup_enabled = enabled
+        persist()
+
+    def persist_floor_flag(enabled: bool) -> None:
+        session.settings.llm_local_floor = enabled
         persist()
 
     def persist_shadow_flag(enabled: bool) -> None:

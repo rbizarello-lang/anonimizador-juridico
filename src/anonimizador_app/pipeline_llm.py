@@ -21,6 +21,12 @@ LEIA-ME e no resultado (``fallback_pages``); a CLI sai com codigo diferente de
 zero se houve alguma, salvo ``--aceitar-fallback``. Se o motor local tambem nao
 puder tratar a pagina, o arquivo NAO vai para a pasta exportavel: fica em
 ``quarentena`` na pasta privada. Resposta vazia ou falha nunca entra no cache.
+
+Piso local (I-N4, ligado por padrao; ``--piso-local`` na CLI, ``llm_local_floor`` nas configuracoes):
+o motor local roda em TODAS as folhas e o resultado final e a UNIAO do que o LLM e o motor local
+apontaram. O LLM so acrescenta protecao: omissao parcial (o LLM acha o executado da folha 1 e esquece
+o socio da folha 2) ou mencao sem ancora no texto nao deixam nome em claro. A AUDITORIA e o LEIA-ME
+dizem se o piso estava ligado e quantas entidades ele acrescentou fora das folhas suspeitas.
 O elenco com originais fica em ``privados``; a legenda exportavel (token -> tipo ->
 papel) nao leva nome.
 
@@ -131,6 +137,11 @@ class LlmFileReport:
     fallback_entities: int = 0
     # Preenchido quando o motor local nao pode tratar as folhas suspeitas: o arquivo fica retido.
     fallback_error: str = ""
+    # Piso local (I-N4): o motor local rodou em todas as folhas; entidades que ele acrescentou FORA das
+    # folhas suspeitas (onde o LLM leu e respondeu com entidades). ``floor_error``: o piso estava ligado
+    # mas o motor local nao rodou (so aviso: as folhas suspeitas, se houver, seguem o fail-closed acima).
+    floor_entities: int = 0
+    floor_error: str = ""
 
     @property
     def unverified(self) -> bool:
@@ -152,6 +163,8 @@ class LlmJobResult:
     fallback_pages: dict[str, list[int]] = field(default_factory=dict)
     # Arquivos retidos na quarentena (privados) porque nem o motor local tratou as folhas.
     held: tuple[str, ...] = ()
+    # Piso local ligado nesta rodada (o motor local rodou em todas as folhas e o resultado e a uniao).
+    local_floor: bool = False
 
 
 def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
@@ -193,6 +206,7 @@ def _run_llm_job(
     job_id: str | None = None,
     on_progress: ProgressFn | None = None,
     fallback_engine: ContextualEngine | None = None,
+    local_floor: bool | None = None,
 ) -> LlmJobResult:
     """Tres fases: descobre em todos os arquivos, confere, e so entao troca.
 
@@ -201,7 +215,10 @@ def _run_llm_job(
 
     ``fallback_engine``: o motor local (``ContextualEngine``) que trata a folha que o LLM nao leu ou
     para a qual respondeu vazio. Sem ele, e criado o mesmo do motor padrao (``build_contextual_engine``),
-    so se alguma folha precisar.
+    so se alguma folha precisar (ou se o piso local estiver ligado).
+
+    ``local_floor``: piso local (I-N4). ``None`` = o que as configuracoes dizem (``llm_local_floor``, ligado
+    por padrao). Ligado, o motor local roda em TODAS as folhas e o resultado e a uniao com o LLM.
     """
 
     sources = _dedupe_paths(files)
@@ -217,6 +234,7 @@ def _run_llm_job(
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
     active = settings or AppSettings()
+    floor = bool(active.llm_local_floor if local_floor is None else local_floor)
     exclusions = tuple(active.exclusions)
     detector = StructuredDetector(recognizers=build_recognizers(active))
     mapping = PseudonymMap(token_labels=active.token_labels())
@@ -260,14 +278,18 @@ def _run_llm_job(
             states.append(state)
 
     for index, state in enumerate(states):
-        if not state.suspect_pages:
+        if not state.suspect_pages and not floor:
             continue
         _report(
             on_progress,
-            f"Motor local nas folhas sem leitura do LLM em {state.source.name} ({index + 1} de {len(states)})",
+            (
+                f"Piso local (motor local em todas as folhas) em {state.source.name} ({index + 1} de {len(states)})"
+                if floor
+                else f"Motor local nas folhas sem leitura do LLM em {state.source.name} ({index + 1} de {len(states)})"
+            ),
             0.5 + 0.1 * index / max(1, len(states)),
         )
-        _apply_local_fallback(state, roster=roster, engine=local_engine, exclusions=exclusions)
+        _apply_local_fallback(state, roster=roster, engine=local_engine, exclusions=exclusions, floor=floor)
 
     for index, state in enumerate(states):
         _report(
@@ -366,7 +388,7 @@ def _run_llm_job(
     for outcome, state in written:
         final_text = outcome.markdown_path.read_text(encoding="utf-8")
         notes.append(
-            (outcome.markdown_path.name, _file_notes(outcome, state.report, discoverer, final_text))
+            (outcome.markdown_path.name, _file_notes(outcome, state.report, discoverer, final_text, floor))
         )
 
     mapping.dump(map_path)
@@ -392,7 +414,9 @@ def _run_llm_job(
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
     }
-    guide_notes = _fallback_lines(fallback_by_file, held)
+    fallback_notes = _fallback_lines(fallback_by_file, held)
+    floor_notes = _floor_lines(floor, reports)
+    guide_notes = [*floor_notes, *fallback_notes]
     secrets = _secrets_of(discoverer)
     network = getattr(discoverer, "network_check", None)
     network_notes = (
@@ -429,7 +453,15 @@ def _run_llm_job(
     )
     if fallback_by_file:
         warning = (
-            "; ".join(guide_notes) + " Confira essas folhas no texto antes de enviar."
+            "; ".join(fallback_notes) + " Confira essas folhas no texto antes de enviar."
+        )
+        job = replace(job, export_warning=(job.export_warning + " " + warning).strip())
+    floor_failed = [name for name, item in reports.items() if item.floor_error]
+    if floor and floor_failed:
+        warning = (
+            "O piso local estava ligado, mas o motor local nao rodou em: "
+            + ", ".join(floor_failed)
+            + ". Nessas folhas vale so a leitura do LLM; confira o texto antes de enviar."
         )
         job = replace(job, export_warning=(job.export_warning + " " + warning).strip())
     unread = {name: item.unread_pages for name, item in reports.items() if item.unverified}
@@ -455,6 +487,7 @@ def _run_llm_job(
         engine=engine_id,
         fallback_pages=fallback_by_file,
         held=tuple(held),
+        local_floor=floor,
     )
 
 
@@ -675,25 +708,35 @@ def _apply_local_fallback(
     roster: Roster,
     engine: _LazyEngine,
     exclusions: Sequence[str],
+    floor: bool = False,
 ) -> None:
-    """B1/I6: o motor local confere as folhas em que o LLM falhou ou respondeu sem entidade.
+    """B1/I6 e I-N4: o motor local confere as folhas em que o LLM falhou ou respondeu sem entidade e,
+    com o piso local ligado (``floor``), TODAS as folhas: o resultado e a uniao do LLM com o motor local.
 
-    O que ele acha nessas folhas entra no elenco (origem ``motor_local``: aparece na revisao e propaga
-    pelo lote) ou, se nao for nome, como ID. Entrada do elenco marcada ``manter`` vence o motor local
-    (juiz, orgao). Folha em que o LLM FALHOU conta como tratada pelo motor local mesmo que ele nao ache
-    nada; folha de resposta vazia (ou, sem rede, fora do cache) so conta se o motor local achar algo.
-    Se o motor local nao puder rodar, ``fallback_error`` retem o arquivo.
+    O que ele acha entra no elenco (origem ``motor_local``: aparece na revisao e propaga pelo lote) ou,
+    se nao for nome, como ID. Entrada do elenco marcada ``manter`` vence o motor local (juiz, orgao).
+    Folha em que o LLM FALHOU conta como tratada pelo motor local mesmo que ele nao ache nada; folha de
+    resposta vazia (ou, sem rede, fora do cache) so conta se o motor local achar algo. Se o motor local
+    nao puder rodar, ``fallback_error`` retem o arquivo (so se ha folha suspeita); sem folha suspeita, o
+    piso que nao rodou fica em ``floor_error`` (aviso).
     """
 
     report = state.report
+
+    def unavailable(reason: str) -> None:
+        if state.suspect_pages:
+            report.fallback_error = reason
+        else:
+            report.floor_error = reason
+
     try:
         local = engine.get()
         if local is None:
-            report.fallback_error = "motor local indisponivel"
+            unavailable("motor local indisponivel")
             return
         found = local.detect(state.text)
     except Exception as exc:  # noqa: BLE001 - nao pode derrubar o lote nem vazar texto na mensagem
-        report.fallback_error = f"motor local falhou ({type(exc).__name__})"
+        unavailable(f"motor local falhou ({type(exc).__name__})")
         return
     ranges = page_ranges(state.text)
     zones = sorted(span for page in state.suspect_pages for span in ranges.get(page, ()))
@@ -708,30 +751,42 @@ def _apply_local_fallback(
         state.text, found, exclusions, source_name=state.source.name, stats=state.stats
     )
     found = sanitize_spans(state.text, found, stats=state.stats)
-    found = [span for span in found if in_zone(span.start)]
+    if not floor:
+        found = [span for span in found if in_zone(span.start)]
 
+    known_ids = [(span.start, span.end) for span in state.ids]
     added = 0
+    floor_new = 0
     pages_with_findings: set[int] = set()
     for span in found:
+        suspect = in_zone(span.start)
         value = state.text[span.start : span.end]
         kind = _NAME_KINDS.get(span.entity_type)
         if kind is None:
+            overlaps_known = any(start < span.end and span.start < end for start, end in known_ids)
             state.ids.append(span)
-            added += 1
-            pages_with_findings.add(page_of(state.text, span.start))
+            if suspect:
+                added += 1
+                pages_with_findings.add(page_of(state.text, span.start))
+            elif not overlaps_known:
+                floor_new += 1
             continue
         entry = roster.lookup(kind, value)
         if entry is not None and entry.action == KEEP:
             continue
-        if entry is None:
+        created = entry is None
+        if created:
             entry = roster.add_mention(
                 Mention(kind=kind, text=value, canonical=value), source=LOCAL_FALLBACK_SOURCE
             )
         if entry is None:
             continue
         state.anchored.append((span.start, span.end, entry.key))
-        added += 1
-        pages_with_findings.add(page_of(state.text, span.start))
+        if suspect:
+            added += 1
+            pages_with_findings.add(page_of(state.text, span.start))
+        elif created:
+            floor_new += 1
 
     # Falha real do LLM: a folha conta como tratada pelo motor local. Vazio (ou sem rede, fora do cache):
     # so conta se o motor local achou alguma coisa nela.
@@ -740,6 +795,27 @@ def _apply_local_fallback(
     report.fallback_pages = sorted(treated)
     report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
     report.fallback_entities = added
+    report.floor_entities = floor_new
+
+
+def _floor_lines(floor: bool, reports: dict[str, LlmFileReport]) -> list[str]:
+    """Linha da AUDITORIA e do LEIA-ME sobre o piso local: ligado ou desligado, e quanto ele acrescentou."""
+
+    if not floor:
+        return [
+            "Piso local: DESLIGADO (o motor local so tratou as folhas que o LLM nao leu ou respondeu vazio; "
+            "omissao parcial do LLM nao tem piso)."
+        ]
+    added = sum(item.floor_entities for item in reports.values())
+    failed = [name for name, item in reports.items() if item.floor_error]
+    lines = [
+        "Piso local: LIGADO (o motor local rodou em todas as folhas e o resultado e a uniao do que o LLM e o "
+        f"motor local apontaram; o LLM so acrescenta protecao). Entidades novas do motor local fora das folhas "
+        f"suspeitas: {added}."
+    ]
+    if failed:
+        lines.append("ALERTA: o motor local nao rodou em " + ", ".join(failed) + " (so valeu a leitura do LLM).")
+    return lines
 
 
 def _fallback_lines(by_file: dict[str, list[int]], held: Sequence[str]) -> list[str]:
@@ -1000,6 +1076,7 @@ def _file_notes(
     report: LlmFileReport,
     discoverer: Discoverer,
     text: str,
+    floor: bool = False,
 ) -> list[str]:
     discovery = report.discovery
     notes = [
@@ -1034,6 +1111,12 @@ def _file_notes(
             "Resposta vazia do LLM, sem nome segundo o motor local: "
             + _pages_label(report.empty_confirmed_pages)
         )
+    if floor:
+        notes.append(
+            f"Piso local ligado: entidades novas do motor local fora das folhas suspeitas: {report.floor_entities}"
+        )
+        if report.floor_error:
+            notes.append("ALERTA: piso local ligado, mas " + report.floor_error + "; so valeu a leitura do LLM.")
     if report.fallback_error:
         notes.append("ALERTA: " + report.fallback_error + ". Arquivo retido em quarentena.")
     if report.unverified:

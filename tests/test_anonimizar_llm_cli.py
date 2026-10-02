@@ -264,5 +264,52 @@ class FallbackExitCodeTests(_Workspace):
         self.assertFalse((folder / "autos.md").exists())
 
 
+
+class LocalFloorCliTests(_Workspace):
+    """I-N4: ``--piso-local`` (padrao) e ``--sem-piso-local``."""
+
+    def _argv(self, *extra):
+        return [str(self.source), "--canal", "gemini-pago", "--confirmo-envio", *self.roots, *extra]
+
+    def _run_with(self, engine, *extra):
+        with patch.object(cli, "build_discoverer", lambda *a, **k: FakeChannelDiscoverer()), patch(
+            "anonimizador_app.pipeline_llm.build_contextual_engine", lambda *a, **k: engine
+        ):
+            return _run(self._argv(*extra), env={ENV_VAR: FAKE}, vault=FakeVault())
+
+    def test_the_floor_is_on_by_default_and_the_local_engine_reads_every_page(self) -> None:
+        engine = FakeLocalEngine([])
+        code, out, err = self._run_with(engine)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(engine.calls, 1)
+        self.assertIn("Piso local: LIGADO", out)
+        folder = next((self.base / "exp").iterdir())
+        self.assertIn("Piso local: LIGADO", (folder / "AUDITORIA.txt").read_text(encoding="utf-8"))
+        self.assertIn("Piso local: LIGADO", (folder / "LEIA-ME.txt").read_text(encoding="utf-8"))
+
+    def test_the_explicit_option_turns_it_on_even_if_the_config_says_off(self) -> None:
+        (self.base / "priv").mkdir(parents=True, exist_ok=True)
+        (self.base / "priv" / "config.json").write_text('{"llm_local_floor": false}', encoding="utf-8")
+        engine = FakeLocalEngine([])
+        code, out, err = self._run_with(engine)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(engine.calls, 0)
+        self.assertIn("Piso local: DESLIGADO", out)
+        engine = FakeLocalEngine([])
+        code, out, err = self._run_with(engine, "--piso-local")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(engine.calls, 1)
+        self.assertIn("Piso local: LIGADO", out)
+
+    def test_the_off_option_leaves_the_local_engine_idle_when_the_llm_read_everything(self) -> None:
+        engine = FakeLocalEngine([])
+        code, out, err = self._run_with(engine, "--sem-piso-local")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(engine.calls, 0)
+        self.assertIn("Piso local: DESLIGADO", out)
+        folder = next((self.base / "exp").iterdir())
+        self.assertIn("Piso local: DESLIGADO", (folder / "AUDITORIA.txt").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
