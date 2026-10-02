@@ -242,6 +242,12 @@ application-default login`. Cadastro: pela tela (projeto, arquivo, regiao) ou po
 (`southamerica-east1` por padrao) aparece na confirmacao e na AUDITORIA; o app nao
 a forca.
 
+**Piso local (ligado por padrao).** Com o motor LLM, o motor local (NER mais reconhecedores) roda em **todas** as
+folhas e o resultado e a **uniao** do que o LLM e o motor local apontaram: o LLM so acrescenta protecao, nunca
+tira (omissao parcial do LLM e mencao sem ancora no texto nao deixam nome em claro). Interruptor na aba de regras
+(`llm_local_floor`) e, na linha de comando, `--piso-local` (padrao) e `--sem-piso-local`. A AUDITORIA e o LEIA-ME
+dizem se o piso estava ligado. Custa o tempo do NER em todas as folhas.
+
 **Folha que o LLM nao leu.** Falha, bloqueio, limite de taxa, trecho fora do cache
 sem rede e resposta **vazia** do LLM nunca deixam nome em claro: a folha passa pelo
 motor local (NER mais reconhecedores). O resultado, a AUDITORIA e o LEIA-ME dizem
@@ -272,7 +278,8 @@ python tools\anonimizar_llm.py autos.pdf --canal vertex-sp --projeto MEU-PROJETO
 ```
 
 O segundo `autos.pdf` mostra o que seria enviado e **nao envia nada**; o terceiro
-envia. Antes de qualquer envio real, passe o ensaio sem rede (abaixo).
+envia. O paralelismo padrao e **4** chamadas simultaneas (`--paralelo N` muda; numa
+chave nova, valores altos geram erro 429). Antes de qualquer envio real, passe o ensaio sem rede (abaixo).
 
 **Roteiro do L4 (primeiro uso real).** 1. Guardar a chave (ou cadastrar o Vertex) e
 conferir com `--verificar`. 2. Rodar `python tools\ensaio_llm.py` (todas as
