@@ -88,7 +88,7 @@ class SisbajudReportTests(unittest.TestCase):
                 (253, "Número do processo:", "0001234-56.2026.4.04.7000"),
                 (271, "Juiz solicitante do bloqueio:", "JUIZA FICTICIA SOUZA"),
                 (289, "Tipo/natureza da ação:", "Execução Fiscal"),
-                (307, "CPF/CNPJ do autor/exequente da ação:", "00000000000191"),
+                (307, "CPF/CNPJ do autor/exequente da ação:", "12769164000167"),
                 (325, "Nome do autor/exequente da ação:", "UNIAO FAZENDA NACIONAL"),
             ]
             if labels_first:
@@ -111,7 +111,7 @@ class SisbajudReportTests(unittest.TestCase):
             # Reu/executado e total bloqueado: cabecalho acima do valor.
             _put(page, 25, 430, "Réu/Executado")
             _put(page, 328, 431, "Total bloqueado pelo bloqueio original e reiterações")
-            _put(page, 25, 441, "00000000000191: EMPRESA FICTICIA DE BENS LTDA")
+            _put(page, 25, 441, "12769164000167: EMPRESA FICTICIA DE BENS LTDA")
             _put(page, 329, 441, "R$ 2.500,00")
             _put(page, 31, 481, "Respostas")
             _put(page, 30, 503, "BANCO FICTICIO S.A.")
@@ -135,7 +135,7 @@ class SisbajudReportTests(unittest.TestCase):
                 "Número do processo: 0001234-56.2026.4.04.7000",
                 "Juiz solicitante do bloqueio: JUIZA FICTICIA SOUZA",
                 "Nome do autor/exequente da ação: UNIAO FAZENDA NACIONAL",
-                "CPF/CNPJ do autor/exequente da ação: 00000000000191",
+                "CPF/CNPJ do autor/exequente da ação: 12769164000167",
                 "Data/hora de protocolamento: 14/08/2026 17:40",
                 "Número do protocolo: 20269990001111",
                 "Protocolo de bloqueio agendado? Não",
@@ -164,7 +164,7 @@ class SisbajudReportTests(unittest.TestCase):
         self.assertLess(text.index("BANCO FICTICIO S.A.\n\n| Data/hora"), text.index("| 14 AGO."))
         self.assertIn(
             "| Réu/Executado | Total bloqueado pelo bloqueio original e reiterações |\n|---|---|\n"
-            "| 00000000000191: EMPRESA FICTICIA DE BENS LTDA | R$ 2.500,00 |",
+            "| 12769164000167: EMPRESA FICTICIA DE BENS LTDA | R$ 2.500,00 |",
             text,
         )
 

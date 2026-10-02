@@ -280,18 +280,18 @@ class FidelityFilterTests(unittest.TestCase):
 
 class Ciclo2FidelityTests(unittest.TestCase):
     def test_nire_and_verification_code_are_not_ids(self) -> None:
-        nire = "NIRE: 4120352196 na junta."
-        start = nire.index("4120352196")
+        nire = "NIRE: 4195861746 na junta."
+        start = nire.index("4195861746")
         self.assertTrue(is_blocked_numeric_context(nire, start, start + 10))
         verificacao = (
-            "CÓDIGO DE VERIFICAÇÃO: 11900654132. NIRE: 41203521963."
+            "CÓDIGO DE VERIFICAÇÃO: 11903323352. NIRE: 41958617463."
         )
-        phone_at = verificacao.index("11900654132")
+        phone_at = verificacao.index("11903323352")
         self.assertTrue(
             is_blocked_numeric_context(verificacao, phone_at, phone_at + 11)
         )
-        registro = "CERTIFICO O REGISTRO EM 22/02/2022 SOB Nº 20221059318."
-        cpf_at = registro.index("20221059318")
+        registro = "CERTIFICO O REGISTRO EM 22/02/2022 SOB Nº 32241792799."
+        cpf_at = registro.index("32241792799")
         self.assertTrue(is_blocked_numeric_context(registro, cpf_at, cpf_at + 11))
 
     def test_uniao_cnpj_is_dropped(self) -> None:
@@ -350,8 +350,8 @@ class Ciclo2FidelityTests(unittest.TestCase):
         self.assertFalse(is_blocked_numeric_context(text, start, start + 14))
 
     def test_unlabeled_compact_phone_is_dropped(self) -> None:
-        text = "Coluna da tabela 1223520231 sem rotulo de telefone."
-        start = text.index("1223520231")
+        text = "Coluna da tabela 1242658019 sem rotulo de telefone."
+        start = text.index("1242658019")
         self.assertTrue(is_unlabeled_compact_phone(text, start, start + 10))
         span = EntitySpan(
             start=start,

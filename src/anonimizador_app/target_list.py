@@ -929,7 +929,7 @@ def _fuzzy_phrase_spans(
     """Uma letra a mais, a menos ou trocada, so em palavra com 6+ letras.
 
     Cauda com ``&`` (VIDROS & ESQUADRIAS) admite 1 edicao por palavra longa,
-    para OCR do tipo VIDRDS & ESQUADDRIAS.
+    para OCR do tipo VIDR0S & ESQUADRLAS.
     """
 
     targets = [
@@ -1220,7 +1220,7 @@ def _extend_company_end(text: str, start: int, end: int, entry: _TargetEntry) ->
 
 
 def _leading_person_phrases(value: str) -> tuple[str, ...]:
-    """Primeiro par do nome (VERA LUCIA, REINALDO LUIZ) e JULIANA DE CASSIA."""
+    """Primeiro par do nome (VERA LUCIA, SUTILOGU CICO) e JULIANA DE CASSIA."""
 
     words = [item.strip(".,;:") for item in value.split() if item.strip(".,;:")]
     if len(words) < 3:

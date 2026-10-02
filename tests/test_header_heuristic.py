@@ -23,7 +23,7 @@ GUSTAVO FICTICIO BARCELOS
 
 | EXEQUENTE | EXECUTADO |
 |-----------|-----------|
-| UNIÃO - FAZENDA NACIONAL (CNPJ 00.000.000/0001-91) - Entidade ALEX MONTEIRO TRIAGEM.GDCJ | Norte Inventado S.A. (CNPJ 12.ABC.345/01DE-35) - Pessoa Jurídica Procurador(es): Marina Ficticia Lopes RS053667 Adriano Marchesi Teste RS115075 |
+| UNIÃO - FAZENDA NACIONAL (CNPJ 12.769.164/0001-67) - Entidade ALEX MONTEIRO TRIAGEM.GDCJ | Norte Inventado S.A. (CNPJ 12.ABC.345/01DE-35) - Pessoa Jurídica Procurador(es): Marina Ficticia Lopes RS053667 Adriano Marchesi Teste RS115075 |
 
 | Grande devedor: Não | Valor da Causa: R$ 90.235,07 |
 

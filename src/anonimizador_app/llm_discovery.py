@@ -137,7 +137,7 @@ def _example_specs() -> list[tuple[str, list[tuple[str, str, str, str]]]]:
             ],
         ),
         (
-            "Defiro a penhora via SISBAJUD. Intime-se o executado JOSÉ CARLOS NUNES na "
+            "Defiro a penhora pelo SISBAJUD. Intime-se o executado JOSÉ CARLOS NUNES na "
             "pessoa de seu advogado, Dr. Tiago Bortolotto. Aplica-se o REsp 1.999.001/RS "
             "(Rel. Min. Heitor Vilela Prado). Documento eletrônico assinado por "
             "LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal.",

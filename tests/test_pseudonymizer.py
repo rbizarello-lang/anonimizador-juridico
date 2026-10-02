@@ -231,7 +231,7 @@ class PseudonymizerTests(unittest.TestCase):
         )
         self.assertEqual(
             canonicalize_location("Rua Pedro Vaz de Caminha, 455"),
-            canonicalize_location("Rua Pero Vaz de Caminht n° 455"),
+            canonicalize_location("Rua Pedro Vaz de Caminha n° 455"),
         )
         self.assertEqual(
             canonicalize_location("Al. das Acácias, 100"),

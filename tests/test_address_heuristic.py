@@ -28,7 +28,7 @@ Complemento
 CASA 17
 
 Residente à Rua Ernesto Garbelotto, 54, Jardim Universitário.
-AV. Juscelino Kubitschek, 3631 – APTO.03, Vila Ipiranga.
+AV. Juscelino Kubitschek, 1450 – APTO.31, Vila Alvorada.
 domiciliado à Rua Raposo Tavares n°
 281, Apto 202, Centro.
 à Rua Santos, 1159 .
@@ -95,7 +95,7 @@ class AddressHeuristicTests(unittest.TestCase):
 
     def test_notary_stamp_is_not_address(self) -> None:
         engine = AddressHeuristicEngine()
-        text = "Av. Duqun de Coxias. B00/810. Terreo."
+        text = "Av. Dimop de Goburu. B00/810. Terreo."
         self.assertEqual(engine.detect(text), [])
         engine = AddressHeuristicEngine()
         text = "Compareceu na Rua 12 da peticao. Evento 12."

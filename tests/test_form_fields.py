@@ -18,9 +18,9 @@ CAROLINA TRAMONTANA QUARESMA BERNARDELLI
 
 Data de Nascimento
 
-26/04/1980
+22/11/1964
 
-Data de Inscrição 12/03/1998 Naturalidade ARAPONGAS Título de Eleitor 73750110655
+Data de Inscrição 12/03/1998 Naturalidade ARAPONGAS Título de Eleitor 92232899391
 
 Nome da Mãe
 
@@ -30,15 +30,15 @@ Sexo
 
 Feminino
 
-Título de Eleitor 64053650620 Nacionalidade
+Título de Eleitor 01755962517 Nacionalidade
 
-Título de Eleitor 114864520671
+Título de Eleitor 535017020620
 """
 
 NASCIDO = """\
 MARCELO ODORCO BERNARDELLI, brasileiro, nascido em dde
-31/03/1978, do comércio.
-REINALDO LUIZ BERNARDELLI, solteiro. nascido em data de 25/12/1779, do comércio.
+13/05/1958, do comércio.
+SUTILOGU CICO BERNARDELLI, solteiro. nascido em data de 18/01/1979, do comércio.
 """
 
 NEGATIVES = """\
@@ -50,7 +50,7 @@ Data de Início de Atividade 01/12/2008.
 Evento 12 em 14/06/1996, valor R$ 9.473,86.
 Data de emissão 01/02/2020.
 Título de Eleitor 111111111111.
-NIRE 4120352196.
+NIRE 4195861746.
 Nome da Mãe
 Não informado
 Nome do Pai
@@ -67,20 +67,20 @@ class FormFieldsTests(unittest.TestCase):
         by_type: dict[str, list[str]] = {}
         for span in spans:
             by_type.setdefault(span.entity_type, []).append(RECEITA[span.start : span.end])
-        self.assertIn("26/04/1980", by_type.get("BR_NASCIMENTO", []))
-        self.assertIn("73750110655", by_type.get("BR_TITULO_ELEITOR", []))
-        self.assertIn("64053650620", by_type.get("BR_TITULO_ELEITOR", []))
-        self.assertIn("114864520671", by_type.get("BR_TITULO_ELEITOR", []))
+        self.assertIn("22/11/1964", by_type.get("BR_NASCIMENTO", []))
+        self.assertIn("92232899391", by_type.get("BR_TITULO_ELEITOR", []))
+        self.assertIn("01755962517", by_type.get("BR_TITULO_ELEITOR", []))
+        self.assertIn("535017020620", by_type.get("BR_TITULO_ELEITOR", []))
         self.assertTrue(any("HILDA" in item for item in by_type.get("PERSON", [])))
         self.assertFalse(any("Feminino" in item for item in by_type.get("PERSON", [])))
-        self.assertEqual(canonicalize("BR_NASCIMENTO", "26/04/1980"), "26041980")
-        self.assertEqual(canonicalize("BR_TITULO_ELEITOR", "73750110655"), "73750110655")
+        self.assertEqual(canonicalize("BR_NASCIMENTO", "22/11/1964"), "22111964")
+        self.assertEqual(canonicalize("BR_TITULO_ELEITOR", "92232899391"), "92232899391")
 
     def test_nascido_em_same_line_and_next(self) -> None:
         spans = FormFieldsEngine().detect(NASCIDO)
         values = {NASCIDO[span.start : span.end] for span in spans}
-        self.assertIn("31/03/1978", values)
-        self.assertIn("25/12/1779", values)
+        self.assertIn("13/05/1958", values)
+        self.assertIn("18/01/1979", values)
 
     def test_does_not_eat_event_contract_protocol_dates(self) -> None:
         spans = FormFieldsEngine().detect(NEGATIVES)
@@ -93,7 +93,7 @@ class FormFieldsTests(unittest.TestCase):
         self.assertNotIn("14/06/1996", blob)
         self.assertNotIn("01/02/2020", blob)
         self.assertNotIn("111111111111", blob)
-        self.assertNotIn("4120352196", blob)
+        self.assertNotIn("4195861746", blob)
         self.assertFalse(any(span.entity_type == "PERSON" for span in spans))
 
     def test_list_beats_form_fields_on_mae(self) -> None:

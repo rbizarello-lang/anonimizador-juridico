@@ -294,7 +294,7 @@ class TargetListCiclo3Tests(unittest.TestCase):
         engine = TargetListEngine(
             companies=["Norte Inventado Comercio de Vidros e Acessorios Ltda"]
         )
-        text = "Compareceu NORTE INVENTADO COMERCIO DE VIDROS E ACESŠÓRIOS ETDA –ME."
+        text = "Compareceu NORTE INVENTADO COMERCIO DE VIDROS E TIZIFAROTA PIDI –ME."
         result = _apply(engine, text)
         self.assertNotIn("ACESŠÓRIOS", result.text)
         self.assertNotIn("ETDA", result.text)
@@ -374,11 +374,11 @@ class TargetListCiclo3Tests(unittest.TestCase):
         self.assertFalse(any("PAULO" in item for item in officer_values))
 
     def test_leading_person_pair_is_tokenized(self) -> None:
-        engine = TargetListEngine(people=["Vera Lucia Bernardelli", "Reinaldo Luiz Bernardelli"])
-        text = "Compareceram VERA LUCIA e REINALDO LUIZ como testemunhas."
+        engine = TargetListEngine(people=["Vera Lucia Bernardelli", "Sutilogu Cico Bernardelli"])
+        text = "Compareceram VERA LUCIA e SUTILOGU CICO como testemunhas."
         values = {text[span.start : span.end] for span in engine.detect(text)}
         self.assertTrue(any("VERA LUCIA" in item for item in values))
-        self.assertTrue(any("REINALDO LUIZ" in item for item in values))
+        self.assertTrue(any("SUTILOGU CICO" in item for item in values))
 
     def test_company_glued_does_not_eat_generic_comercial(self) -> None:
         engine = TargetListEngine(companies=["Norte Comercial e Transportes Ltda"])
@@ -442,7 +442,7 @@ class TargetListCiclo3Tests(unittest.TestCase):
 
     def test_ampersand_ocr_garbled_tail(self) -> None:
         engine = TargetListEngine(companies=["Bernardelli Vidros & Esquadrias"])
-        text = "VIDRDS & ESQUADDRIAS\nDesign"
+        text = "VIDR0S & ESQUADRLAS\nDesign"
         result = _apply(engine, text)
         self.assertNotIn("VIDRDS", result.text)
         self.assertNotIn("ESQUADDRIAS", result.text)

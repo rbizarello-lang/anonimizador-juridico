@@ -102,7 +102,7 @@ PAGES = [
     "Valor atualizado: R$ 2.010.450,10 em 01/09/2025.",
     "A empresa TRANSPORTADORA RIO DO PEIXE EIRELI adquiriu o imóvel da\n"
     "executada em 14/03/2023, por R$ 850.000,00, conforme o evento 45.\n"
-    "Pede-se a penhora via SISBAJUD e RENAJUD, sem prejuízo da\n"
+    "Pede-se a penhora pelo SISBAJUD e RENAJUD, sem prejuízo da\n"
     "indisponibilidade prevista no art. 185-A do CTN, e a citação de\n"
     "ANTONIO CARLOS BARRETO.",
     "Documento eletrônico assinado por LUCIANA MONTEFUSCO DE ALMEIDA,\n"

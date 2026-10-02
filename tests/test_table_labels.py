@@ -100,14 +100,14 @@ class TableLabelsTests(unittest.TestCase):
         table = """\
 | Nome | CEP | UF |
 |------|-----|----|
-| sede | 86032-010 | PR |
+| sede | 86287-124 | PR |
 """
         values = {
             table[span.start : span.end]
             for span in TableLabelsEngine().detect(table)
             if span.entity_type == "BR_CEP"
         }
-        self.assertIn("86032-010", values)
+        self.assertIn("86287-124", values)
 
     def test_disabled_tag_is_skipped(self) -> None:
         tags = {"BR_PLACA": False, "BR_RENAVAM": True, "BR_CHASSI": True}

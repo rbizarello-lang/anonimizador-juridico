@@ -38,7 +38,7 @@ class SpanHygieneTests(unittest.TestCase):
         self.assertNotIn("linha 07", value)
 
     def test_field_label_only_is_dropped(self) -> None:
-        text = "Saldo Conta: 1271/635/8659-0 Uniao."
+        text = "Saldo Conta: 5324/489/8018-2 Uniao."
         kept = sanitize_spans(text, [_span(text, "Conta:", "BR_CONTA_BANCARIA")])
         self.assertEqual(kept, [])
         self.assertIn("Conta:", text)
