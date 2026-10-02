@@ -152,10 +152,22 @@ class VinculosTests(unittest.TestCase):
     def test_successive_renamings_in_a_narrative_are_linked(self) -> None:
         texto = (
             "[fl. 9]\nEm 01/01/2000, há alteração do nome social para [EMPRESA_3] e do objeto. "
-            "Em 05/05/2005, há nova alteração do nome social para [EMPRESA_7]."
+            "Em 05/05/2005, há nova alteração do nome social para [EMPRESA_7]. "
+            "A [EMPRESA_7], antiga denominação [EMPRESA_3], consta da ficha."
         )
         cast = self._cast(("autos.md", texto))
         self.assertIn("| [EMPRESA_7·G1] | antiga denominação | [EMPRESA_3·G1] |", cast)
+
+    def test_successive_renamings_alone_are_only_a_possible_link(self) -> None:
+        # Duas empresas distintas, duas alteracoes proximas, nenhuma declaracao: sem grupo (I-N1).
+        texto = (
+            "[fl. 9]\nA [EMPRESA_3] fez alteração do nome social para [EMPRESA_7]. "
+            "A [EMPRESA_8], outra empresa, fez alteração do nome social para [EMPRESA_9]."
+        )
+        cast = self._cast(("autos.md", texto))
+        self.assertNotIn("·G", cast)
+        self.assertNotIn("antiga denominação", cast)
+        self.assertIn("possível vínculo", cast)
 
     def test_far_apart_mentions_are_not_a_renaming(self) -> None:
         texto = (

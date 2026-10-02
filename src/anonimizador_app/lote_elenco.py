@@ -11,6 +11,9 @@ papel que o cabecalho das pecas da ("EXECUTADO: [EMPRESA_2]") para quem nao esta
 Os tokens nao sao unificados aqui: o vinculo e dito, nao decidido. A unica marca e o sufixo de grupo no
 proprio texto (``[EMPRESA_3·G1]``, ``[EMPRESA_7·G1]``): so para empresas ligadas por vinculo DECLARADO (cadeia
 de mudancas de nome, mesmo CNPJ nas capas); semelhanca de nome nunca cria grupo. A legenda explica cada Gn.
+As "alteracoes sucessivas do nome social" (duas alteracoes a menos de 900 caracteres uma da outra) so
+CORROBORAM um vinculo explicito (declaracao que nomeia o nome antigo e o novo, ou o mesmo CNPJ): sozinhas
+ficam como "possivel vinculo" no ELENCO, sem sufixo de grupo.
 """
 
 from __future__ import annotations
@@ -283,7 +286,9 @@ def _build_cast(documents: Sequence[tuple[str, str]], groups: Sequence[CompanyGr
             "",
             "Mais de um token para a mesma pessoa ou empresa, **só quando o próprio texto diz** "
             "(CNPJ ou CPF igual nas capas; documento que registra a mudança de nome). Os tokens "
-            "não foram unificados: cada um mantém a numeração e a contagem dele.",
+            "não foram unificados: cada um mantém a numeração e a contagem dele. “Possível vínculo” é só "
+            "proximidade de duas alterações de nome social: não afirma que sejam a mesma empresa e não "
+            "forma grupo.",
             "",
         ]
         if groups:
@@ -427,6 +432,7 @@ def _links(
     # Mudanca de nome: o documento registra "nome inicial ... alterado para ...", ou a sequencia de
     # alteracoes do nome social, ou "antiga denominacao"/"atualmente denominada".
     renames: dict[tuple[str, str], list[str]] = defaultdict(list)
+    step_pairs: dict[tuple[str, str], list[str]] = defaultdict(list)
     for name, text in documents:
         for match in _RENAME_PAIR.finditer(text):
             renames[(match.group(1), match.group(2))].append(
@@ -435,7 +441,7 @@ def _links(
         steps = list(_RENAME_STEP.finditer(text))
         for earlier, later in zip(steps, steps[1:]):
             if later.start() - earlier.end() <= _STEP_GAP and earlier.group(1) != later.group(1):
-                renames[(earlier.group(1), later.group(1))].append(
+                step_pairs[(earlier.group(1), later.group(1))].append(
                     f"alterações sucessivas do nome social ({_where(name, text, earlier.start())})"
                 )
         for match in _RENAME_FORMER.finditer(text):
@@ -446,10 +452,25 @@ def _links(
             renames[(match.group(1), match.group(2))].append(
                 f"“denominação atual” no texto ({_where(name, text, match.start())})"
             )
+    # As "alteracoes sucessivas" (duas alteracoes de nome social proximas) so CORROBORAM um vinculo explicito:
+    # uma declaracao que nomeia o nome antigo e o novo, ou o mesmo CNPJ. Sozinhas nao criam grupo: duas
+    # empresas distintas que alteraram o nome na mesma pagina nao sao a mesma empresa (I-N1). Isolada, a
+    # sequencia fica no ELENCO como "possivel vinculo", que nao leva sufixo de grupo.
+    same_id = [set(parties) for parties in cover_ids.values()]
+    possible: dict[tuple[str, str], list[str]] = {}
+    for pair, evidence in step_pairs.items():
+        explicit = pair in renames or pair[::-1] in renames or any(set(pair) <= tokens for tokens in same_id)
+        if explicit:
+            renames[pair].extend(evidence)
+        else:
+            possible[pair] = evidence
     for (old, new), evidence in renames.items():
         shown = "; ".join(dict.fromkeys(evidence[:2]))
         add(new, "antiga denominação", old, shown)
         add(old, "denominação posterior", new, shown)
+    for (first, second), evidence in possible.items():
+        shown = "; ".join(dict.fromkeys(evidence[:2])) + " (sem declaração de que são a mesma empresa; não forma grupo)"
+        add(first, "possível vínculo", second, shown)
 
     # Mesmo CNPJ/CPF nas capas: a mesma pessoa, ainda que o nome tenha sido lido de outro jeito.
     for identifier, parties in cover_ids.items():

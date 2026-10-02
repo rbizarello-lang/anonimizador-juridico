@@ -26,6 +26,13 @@ from anonimizador_juridico import PseudonymMap
 RENAME = (
     "[fl. 9]\nEm 01/01/2000, houve alteração do nome social para [EMPRESA_3] e do objeto. "
     "Em 05/05/2005, houve nova alteração do nome social para [EMPRESA_7]. [EMPRESA_3] [EMPRESA_7] [EMPRESA_7]"
+    "\nA [EMPRESA_7], antiga denominação [EMPRESA_3], consta da ficha cadastral."
+)
+# Duas empresas distintas que alteraram o nome social na mesma pagina, sem dizer que sao a mesma (I-N1).
+DISTINCT = (
+    "[fl. 4]\nA [EMPRESA_1] alterou a razão social, com a alteração do nome social para [EMPRESA_2]. "
+    "A [EMPRESA_4], empresa distinta, fez a alteração do nome social para [EMPRESA_5]. "
+    "[EMPRESA_1] [EMPRESA_2] [EMPRESA_4] [EMPRESA_5]"
 )
 COVER_A = (
     "N.º do processo: [PROCESSO_1]\nClasse da ação: Execução Fiscal\n\nPartes e Representantes\n\n"
@@ -45,6 +52,28 @@ class GroupDetectionTests(unittest.TestCase):
         self.assertEqual(groups[0].members, ("[EMPRESA_3]", "[EMPRESA_7]"))
         self.assertEqual(groups[0].reasons, ("cadeia de mudanças de nome",))
 
+    def test_successive_renamings_alone_make_no_group_but_a_possible_link(self) -> None:
+        # I-N1: duas empresas distintas com alteracao de nome social proximas nao viram um grupo.
+        self.assertEqual(company_groups([("autos.md", DISTINCT)]), [])
+        cast = build_cast([("autos.md", DISTINCT)])
+        self.assertNotIn("·G", cast)
+        self.assertIn("possível vínculo", cast)
+        self.assertNotIn("antiga denominação", cast)
+
+    def test_successive_renamings_corroborate_an_explicit_link_and_the_same_cnpj(self) -> None:
+        # Mesma sequencia, mas o texto declara o nome antigo e o novo: vira grupo.
+        stated = DISTINCT + " NOME INICIAL: [EMPRESA_1], ALTERADO PARA: [EMPRESA_2]."
+        groups = company_groups([("autos.md", stated)])
+        self.assertEqual([group.members for group in groups], [("[EMPRESA_1]", "[EMPRESA_2]")])
+        # So a sequencia (sem a declaracao) mais o mesmo CNPJ nas capas tambem forma grupo.
+        cover = (
+            "N.º do processo: [PROCESSO_1]\nClasse da ação: Execução Fiscal\n\nPartes e Representantes\n\n"
+            "| EXECUTADO |\n|---|\n| [EMPRESA_4] ([CNPJ_9]) - Pessoa Jurídica |\n"
+            "| [EMPRESA_5] ([CNPJ_9]) - Pessoa Jurídica |\n"
+        )
+        groups = company_groups([("autos.md", DISTINCT), ("capa.md", cover)])
+        self.assertEqual([group.members for group in groups], [("[EMPRESA_4]", "[EMPRESA_5]")])
+
     def test_same_cnpj_in_two_covers_makes_one_group_with_the_cnpj_token(self) -> None:
         groups = company_groups([("a.md", COVER_A), ("b.md", COVER_B)])
         self.assertEqual([group.members for group in groups], [("[EMPRESA_20]", "[EMPRESA_21]")])
@@ -54,7 +83,7 @@ class GroupDetectionTests(unittest.TestCase):
         # EMPRESA_3/7 (renomeacao) e EMPRESA_20/21 (CNPJ) sao dois grupos; se 7 e 20 forem ligados, viram um so.
         separate = company_groups([("a.md", RENAME), ("b.md", COVER_A), ("c.md", COVER_B)])
         self.assertEqual([(g.number, g.members[0]) for g in separate], [(1, "[EMPRESA_3]"), (2, "[EMPRESA_20]")])
-        linked = RENAME + " Em 09/09/2009, houve ainda nova alteração do nome social para [EMPRESA_20]."
+        linked = RENAME + " NOME INICIAL: [EMPRESA_7], ALTERADO PARA: [EMPRESA_20]."
         merged = company_groups([("a.md", linked), ("b.md", COVER_A), ("c.md", COVER_B)])
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].members, ("[EMPRESA_3]", "[EMPRESA_7]", "[EMPRESA_20]", "[EMPRESA_21]"))
