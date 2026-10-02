@@ -265,6 +265,22 @@ class FallbackExitCodeTests(_Workspace):
 
 
 
+class DefaultParallelismTests(unittest.TestCase):
+    """M5: o padrao de chamadas simultaneas e 4 (na CLI e na tela), nao 16."""
+
+    def test_cli_and_engine_defaults_are_four(self) -> None:
+        from anonimizador_app.llm_discovery import LlmConfig
+
+        self.assertEqual(cli.build_parser().parse_args(["x.md"]).paralelo, 4)
+        self.assertEqual(cli.build_parser().parse_args(["x.md", "--paralelo", "2"]).paralelo, 2)
+        self.assertEqual(LlmConfig().max_workers, 4)
+
+    def test_detection_version_records_the_h3_bump(self) -> None:
+        from anonimizador_app.version import DETECTION_VERSION
+
+        self.assertEqual(DETECTION_VERSION, "2.8.1")
+
+
 class LocalFloorCliTests(_Workspace):
     """I-N4: ``--piso-local`` (padrao) e ``--sem-piso-local``."""
 

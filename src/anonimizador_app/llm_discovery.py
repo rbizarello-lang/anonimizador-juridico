@@ -202,7 +202,9 @@ class LlmConfig:
     # Vertex AI: caminho do arquivo de conta de servico (vazio = credencial padrao do gcloud). So o
     # caminho; o conteudo e lido no momento de criar o cliente e nao e guardado.
     credentials_path: str = ""
-    max_workers: int = 16
+    # Padrao 4 (H3/M5): numa chave nova, 16 chamadas simultaneas provocam 429 em massa e jogam folhas no motor
+    # local. Sobe-se com --paralelo depois de ver que o limite da conta aguenta.
+    max_workers: int = 4
     chunk_chars: int = 4000
     max_output_tokens: int = 8192
     retries: int = 1

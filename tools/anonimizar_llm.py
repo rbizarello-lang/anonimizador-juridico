@@ -144,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--regiao", default=DEFAULT_LOCATION, help=f"Regiao do Vertex AI (padrao {DEFAULT_LOCATION})."
     )
-    parser.add_argument("--paralelo", type=int, default=16, help="Chamadas simultaneas ao LLM.")
+    parser.add_argument("--paralelo", type=int, default=4, help="Chamadas simultaneas ao LLM (padrao 4).")
     parser.add_argument("--trecho", type=int, default=4000, help="Caracteres por chamada.")
     parser.add_argument(
         "--verificacao",

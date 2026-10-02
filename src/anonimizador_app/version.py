@@ -16,7 +16,10 @@
   2.7 = + matricula por cartorio: o token distingue o cartorio de registro de imoveis mais proximo, e o
   nome do cartorio/oficio/tabelionato fica em claro;
   2.8 = + grupo de empresas ligadas: o token de empresa que o ELENCO liga por vinculo declarado (mudanca de
-  nome, mesmo CNPJ nas capas) leva o sufixo ·Gn no texto, ex. [EMPRESA_3·G1]; os tokens seguem separados).
+  nome, mesmo CNPJ nas capas) leva o sufixo ·Gn no texto, ex. [EMPRESA_3·G1]; os tokens seguem separados);
+  2.8.1 = H3: o par de grafia de rua do ``address.py`` (alterado no H2 sem troca de versao) e a identidade do
+  motor de NER (backend, modelo e revisao) na chave do cache; as "alteracoes sucessivas" de nome so
+  corroboram vinculo explicito (nao criam grupo sozinhas).
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -34,7 +37,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.8"
+DETECTION_VERSION = "2.8.1"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
