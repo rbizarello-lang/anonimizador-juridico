@@ -69,6 +69,7 @@ from .fidelity import FidelityDropStats, drop_protected_spans
 from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges, split_chunks
+from .local_ner import reset_ner_status
 from .llm_gate import FilePlan, GateError, SendPlan, safe_error, scrub_secrets
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
@@ -234,6 +235,7 @@ def _run_llm_job(
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
     active = settings or AppSettings()
+    reset_ner_status()
     floor = bool(active.llm_local_floor if local_floor is None else local_floor)
     exclusions = tuple(active.exclusions)
     detector = StructuredDetector(recognizers=build_recognizers(active))

@@ -90,6 +90,7 @@ from anonimizador_app.llm_engine import (  # noqa: E402
     warning_text,
 )
 from anonimizador_app.llm_gate import RunPermit  # noqa: E402
+from anonimizador_app.local_ner import ner_fallback_warning  # noqa: E402
 from anonimizador_app.netblock import block_network  # noqa: E402
 from anonimizador_app.pipeline import default_export_dir, default_private_dir  # noqa: E402
 from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, plan_send, run_llm_job  # noqa: E402
@@ -414,6 +415,9 @@ def run_and_report(
         )
     for outcome in job.failed:
         print(f"ERRO {outcome.source.name}: {outcome.error}", file=sys.stderr)
+    ner_warning = ner_fallback_warning()
+    if ner_warning:
+        print(f"AVISO NER: {ner_warning}", file=sys.stderr)
     for name, pages in result.fallback_pages.items():
         print(
             f"FALLBACK {name}: folhas tratadas pelo motor local por falha do LLM: "

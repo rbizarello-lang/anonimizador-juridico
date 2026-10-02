@@ -243,12 +243,14 @@ def write_audit_report(
     *,
     engine: str = "local",
 ) -> Path:
+    from .local_ner import ner_status_lines
     from .version import version_info
 
     lines = [
         "AUDITORIA AUTOMATICA DESTE LOTE",
         "Conferencia dos criterios de fidelidade. Nao substitui a revisao humana.",
         f"Versao do app que gerou este lote: {version_info().line(engine)}",
+        *ner_status_lines(),
         "",
     ]
     for name, notes in notes_by_file:

@@ -17,6 +17,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
@@ -64,6 +65,123 @@ _ACTIVE_BACKEND = ""
 PredictFn = Callable[[str], Sequence[dict]]
 
 
+@dataclass(frozen=True, slots=True)
+class NerStatus:
+    """Qual motor de NER roda nesta maquina (I-N3). ``fallback_error`` nao vazio = o GLiNER nao pode ser usado
+    e o spaCy PT (recall menor) o substituiu."""
+
+    backend: str  # "gliner" ou "spacy_pt"
+    model: str
+    revision: str
+    fallback_error: str = ""
+
+    @property
+    def identity(self) -> str:
+        """Id do motor na chave do cache de NER: nunca o mesmo para o GLiNER e para o spaCy."""
+
+        return f"{self.backend}:{self.model}@{self.revision}"
+
+    @property
+    def fallback(self) -> bool:
+        return bool(self.fallback_error)
+
+
+# Resultado do que ja foi carregado de fato neste processo (vence a sondagem) e da sondagem barata
+# (sem carregar o modelo), usada para calcular a chave do cache antes de decidir se o modelo precisa subir.
+_ACTIVE_STATUS: NerStatus | None = None
+_PROBED_STATUS: NerStatus | None = None
+# O NER rodou (ou foi consultado no cache) desde ``reset_ner_status``: a AUDITORIA so fala dele se foi usado.
+_NER_USED = False
+
+
+def reset_ner_status() -> None:
+    """Chamado no inicio de cada lote: a AUDITORIA daquele lote so descreve o NER que ele usou."""
+
+    global _NER_USED
+    _NER_USED = False
+
+
+def ner_status() -> NerStatus | None:
+    """O motor de NER do lote corrente, ou ``None`` se o lote nao usou o NER local."""
+
+    return resolve_backend() if _NER_USED else None
+
+
+def resolve_backend() -> NerStatus:
+    """O motor que vale nesta maquina: o que foi carregado, ou o que a sondagem barata indica (sem carregar)."""
+
+    global _PROBED_STATUS
+    if _ACTIVE_STATUS is not None:
+        return _ACTIVE_STATUS
+    if _PROBED_STATUS is None:
+        reason = _gliner_unavailable_reason()
+        _PROBED_STATUS = (
+            NerStatus("gliner", GLINER_MODEL, GLINER_REVISION) if reason is None else _spacy_status(reason)
+        )
+    return _PROBED_STATUS
+
+
+def _gliner_unavailable_reason() -> str | None:
+    """``None`` se o GLiNER (e o tokenizador) estao disponiveis; senao, o motivo (sem rede: so olha o cache)."""
+
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec("gliner") is None:
+            return "pacote gliner nao instalado"
+    except Exception as exc:  # noqa: BLE001
+        return f"pacote gliner ilegivel ({type(exc).__name__})"
+    if not hub_offline():
+        return None
+    try:
+        _force_hub_offline(True)
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(GLINER_MODEL, revision=GLINER_REVISION, local_files_only=True)
+        snapshot_download(GLINER_TOKENIZER_MODEL, revision=GLINER_TOKENIZER_REVISION, local_files_only=True)
+    except Exception as exc:  # noqa: BLE001 - falta de arquivo local, nunca rede
+        return f"modelo {GLINER_MODEL} na revisao fixada ausente do cache local ({type(exc).__name__})"
+    return None
+
+
+def _spacy_status(reason: str) -> NerStatus:
+    from importlib import metadata
+
+    for name in SPACY_MODELS:
+        try:
+            return NerStatus("spacy_pt", name, metadata.version(name), f"GLiNER indisponivel: {reason}")
+        except metadata.PackageNotFoundError:
+            continue
+    return NerStatus("spacy_pt", "nenhum-modelo", "n/d", f"GLiNER indisponivel: {reason}")
+
+
+def ner_status_lines() -> list[str]:
+    """Linhas da AUDITORIA sobre o motor de NER do lote (vazio se o lote nao usou o NER local)."""
+
+    status = ner_status()
+    if status is None:
+        return []
+    if status.backend == "gliner":
+        return [f"Motor de NER local: GLiNER {status.model} @ {status.revision[:12]}"]
+    return [
+        f"Motor de NER local: spaCy PT ({status.model} {status.revision}), de RESERVA: recall menor que o do GLiNER",
+        f"fallback_error: {status.fallback_error}",
+    ]
+
+
+def ner_fallback_warning() -> str:
+    """Aviso para a tela e a CLI quando o spaCy substituiu o GLiNER neste lote; vazio caso contrario."""
+
+    status = ner_status()
+    if status is None or not status.fallback:
+        return ""
+    return (
+        f"O GLiNER nao esta disponivel nesta maquina ({status.fallback_error.removeprefix('GLiNER indisponivel: ')}); "
+        "os nomes foram detectados pelo spaCy PT, de recall menor. Confira o texto com mais cuidado e, para usar o "
+        "GLiNER, rode `python tools/instalar_modelo_ner.py` (passo explicito, o unico que usa a rede) e refaca o lote."
+    )
+
+
 class LocalNerEngine:
     """GLiNER nesta maquina; spaCy PT so entra se o GLiNER nao estiver instalado."""
 
@@ -89,12 +207,17 @@ class LocalNerEngine:
 
     def detect(self, text: str) -> list[EntitySpan]:
         key = self._cache_key(text) if self._cache_enabled() else None
+        if key is None:
+            self._note_use()
         if key is not None and self.cache_dir is not None:
             loaded = load_spans(self.cache_dir, key)
             if loaded is not None:
                 return loaded
         spans = self._detect_fresh(text)
         if key is not None and self.cache_dir is not None:
+            # O modelo so sobe aqui, e pode ser outro que o da sondagem (o GLiNER falhou ao carregar): a chave
+            # e refeita com o motor que de fato rodou, para o spaCy nunca ficar gravado sob a chave do GLiNER.
+            key = self._cache_key(text)
             save_spans(
                 self.cache_dir,
                 key,
@@ -127,7 +250,13 @@ class LocalNerEngine:
     def _cache_model_id(self) -> str:
         if self._predict is not None:
             return "predict-custom"
-        return GLINER_MODEL
+        self._note_use()
+        return resolve_backend().identity
+
+    def _note_use(self) -> None:
+        global _NER_USED
+        if self._predict is None:
+            _NER_USED = True
 
     def _cache_key(self, text: str) -> str:
         return cache_key(
@@ -209,19 +338,22 @@ def _force_hub_offline(offline: bool) -> None:
 
 
 def load_local_predict() -> PredictFn:
-    global _ACTIVE_BACKEND
+    global _ACTIVE_BACKEND, _ACTIVE_STATUS, _NER_USED
+    _NER_USED = True
     try:
         predict = _load_gliner()
         _ACTIVE_BACKEND = "gliner"
+        _ACTIVE_STATUS = NerStatus("gliner", GLINER_MODEL, GLINER_REVISION)
         return predict
     except Exception as exc:
         _LOG.warning(
-            "GLiNER indisponivel (%s); usando spaCy PT. Se o modelo ainda nao foi baixado, rode "
+            "GLiNER indisponivel (%s); usando spaCy PT, de recall menor. Se o modelo ainda nao foi baixado, rode "
             "`python tools/instalar_modelo_ner.py` (passo explicito, o unico que usa a rede).",
             exc,
         )
         predict = _load_spacy_pt()
         _ACTIVE_BACKEND = "spacy_pt"
+        _ACTIVE_STATUS = _spacy_status(f"{type(exc).__name__}: {str(exc)[:100]}")
         return predict
 
 

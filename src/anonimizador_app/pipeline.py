@@ -32,6 +32,7 @@ from .fidelity import FidelityDropStats, drop_protected_spans
 from .lote_elenco import CAST_NAME, apply_company_groups, write_lote_cast
 from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
 from .gemini_detector import ContextualEngine
+from .local_ner import ner_fallback_warning, reset_ner_status
 from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
 from .settings import AppSettings
@@ -133,10 +134,12 @@ def write_lote_guides(
 ) -> None:
     """Grava um LEIA-ME em cada pasta do lote: textos anonimizados vs mapa."""
 
+    from .local_ner import ner_fallback_warning
     from .version import version_info
 
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
-    attention = "".join(f"ATENCAO: {line}\n" for line in notes if line)
+    ner_warning = ner_fallback_warning()
+    attention = "".join(f"ATENCAO: {line}\n" for line in [*notes, ner_warning] if line)
     if attention:
         attention += "\n"
     generated_by = f"Gerado por: {version_info().line(engine)}\n"
@@ -288,6 +291,7 @@ def run_job(
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
     active = settings or AppSettings()
+    reset_ner_status()
     detector = StructuredDetector(recognizers=build_recognizers(active))
     mapping = PseudonymMap(token_labels=active.token_labels())
     cache_dir = default_cache_dir(private_root) if use_cache else None
@@ -523,6 +527,9 @@ def build_job_result(
         if outcome.ok and outcome.unread_pages
     ]
     warning = extra_warning.strip()
+    ner_warning = ner_fallback_warning()
+    if ner_warning:
+        warning = f"{warning} {ner_warning}".strip()
     if failed:
         allowed = False
         reason = "Há arquivos com erro. Corrija o lote antes de copiar o resultado."
