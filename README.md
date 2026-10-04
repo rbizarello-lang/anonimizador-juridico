@@ -48,6 +48,11 @@ Cada lote tem o mesmo identificador (`lote_AAAAMMDD_HHMMSS`) em dois lugares:
 - Textos anonimizados: `saidas\exportaveis\lote_...` (arquivos `.md` + `LEIA-ME.txt` + `AUDITORIA.txt`)
 - Mapa para reverter: `saidas\privados\lote_...\mapa.json` (+ `LEIA-ME.txt`)
 - Configuracao do app (regras, motor local): `saidas\privados\config.json`
+- Caches (so nesta maquina; apagar so custa tempo na proxima leitura):
+  `saidas\privados\cache_extracao` e `cache_ner` (texto extraido e achados do motor
+  local) e, com o motor LLM, `saidas\privados\cache_llm` (respostas do provedor:
+  **nomes, papeis e trechos em claro**). Trate essas pastas como o `mapa.json`: nao
+  copie, nao envie e apague quando o caso encerrar.
 
 Pode escolher varios PDFs de uma vez (por exemplo PARTES de ~10 MB); o app
 processa um apos o outro e reutiliza os mesmos tokens no lote.

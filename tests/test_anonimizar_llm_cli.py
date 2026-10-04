@@ -275,10 +275,10 @@ class DefaultParallelismTests(unittest.TestCase):
         self.assertEqual(cli.build_parser().parse_args(["x.md", "--paralelo", "2"]).paralelo, 2)
         self.assertEqual(LlmConfig().max_workers, 4)
 
-    def test_detection_version_records_the_h3_bump(self) -> None:
+    def test_detection_version_records_the_h4_bump(self) -> None:
         from anonimizador_app.version import DETECTION_VERSION
 
-        self.assertEqual(DETECTION_VERSION, "2.8.1")
+        self.assertEqual(DETECTION_VERSION, "2.8.2")
 
 
 class LocalFloorCliTests(_Workspace):

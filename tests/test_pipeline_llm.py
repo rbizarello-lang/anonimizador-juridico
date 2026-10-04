@@ -283,6 +283,8 @@ class PipelineLlmTests(unittest.TestCase):
         self.assertIn("motor LLM: gemini-pago", (folder / "LEIA-ME.txt").read_text(encoding="utf-8"))
         private_guide = (result.job.map_path.parent / "LEIA-ME.txt").read_text(encoding="utf-8")
         self.assertIn("motor LLM: gemini-pago", private_guide)
+        self.assertIn("cache_llm/", private_guide)
+        self.assertIn("EM CLARO", private_guide)
         for root in (folder, result.job.map_path.parent, result.job.map_path.parent.parent):
             for path in root.rglob("*"):
                 if path.is_file():
@@ -751,6 +753,81 @@ class LocalFloorTests(unittest.TestCase):
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
         self.assertIn("ALERTA: o motor local nao rodou", audit)
         self.assertNotIn("MARLENE", audit)
+
+
+
+FLOOR_DOC = DOC + """
+<!-- pagina-origem: 3 -->
+
+Manifestou-se o Procurador da Fazenda Nacional RAIMUNDO NONATO FURTADO pelo prosseguimento.
+Penhora no imóvel da Rua Olavo Bilac, nº 50. Novo endereço: Rua Olavo Bilac, nº 52.
+Ordem SISBAJUD às instituições:
+00341 - BANCO PALMEIRAS DO SUL S A
+Também consta a sócia BEATRIZ HELENA CAVALCANTI, que não foi citada.
+"""
+
+FLOOR_LOCAL_NAMES = [
+    *[(kind, value) for kind, value in ALL_NAMES],
+    ("PERSON", "RAIMUNDO NONATO FURTADO"),
+    ("PERSON", "Olavo Bilac"),
+    ("ORGANIZATION", "BANCO PALMEIRAS DO SUL S A"),
+    ("PERSON", "BEATRIZ HELENA CAVALCANTI"),
+]
+
+
+class LocalFloorReviewTests(unittest.TestCase):
+    """O piso local passa pelo mesmo juizo de lote do motor local (BatchRoster.review): o que o modo local
+    deixaria em claro (procurador, banco do SISBAJUD) o piso nao acrescenta; rua com nome de pessoa entra
+    como endereco, nao como pessoa."""
+
+    def _run(self, **kwargs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        source = base / "autos.md"
+        source.write_text(FLOOR_DOC, encoding="utf-8")
+        result = run_llm_job(
+            [source],
+            export_root=base / "exportaveis",
+            private_root=base / "privados",
+            discoverer=FakeDiscoverer(),
+            use_cache=False,
+            fallback_engine=FakeLocalEngine(FLOOR_LOCAL_NAMES),
+            verification_rounds=0,
+            local_floor=True,
+            **kwargs,
+        )
+        outcome = result.job.outcomes[0]
+        self.assertTrue(outcome.ok, outcome.error)
+        return result, outcome.markdown_path.read_text(encoding="utf-8")
+
+    def test_the_floor_still_adds_an_ordinary_name(self) -> None:
+        _result, text = self._run()
+        self.assertNotIn("BEATRIZ HELENA CAVALCANTI", text)
+
+    def test_a_public_officer_seen_by_the_local_engine_stays_in_clear(self) -> None:
+        result, text = self._run()
+        self.assertIn("Procurador da Fazenda Nacional RAIMUNDO NONATO FURTADO", text)
+        self.assertGreaterEqual(result.reports["autos.md"].local_kept, 1)
+
+    def test_a_sisbajud_institution_stays_in_clear(self) -> None:
+        _result, text = self._run()
+        self.assertIn("00341 - BANCO PALMEIRAS DO SUL S A", text)
+
+    def test_a_street_named_after_a_person_becomes_an_address(self) -> None:
+        _result, text = self._run()
+        self.assertNotIn("Olavo Bilac", text)
+        street_lines = [line for line in text.splitlines() if "nº 50" in line or "nº 52" in line]
+        self.assertTrue(street_lines)
+        for line in street_lines:
+            self.assertNotRegex(line, r"\[PESSOA_\d+")
+            self.assertRegex(line, r"\[ENDERECO_\d+")
+
+    def test_the_audit_reports_the_review(self) -> None:
+        result, _text = self._run()
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("Juizo do lote sobre o motor local", audit)
+        self.assertNotIn("RAIMUNDO", audit)
 
 
 if __name__ == "__main__":

@@ -60,6 +60,7 @@ from anonimizador_juridico import (
 from anonimizador_juridico.pseudonymizer import PseudonymizationResult
 
 from .audit import audit_map_records, audit_markdown, write_audit_report
+from .batch_propagation import BatchRoster
 from .coverage import unread_pages as extraction_unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import ExtractedDocument, UnsupportedDocumentError
@@ -143,6 +144,9 @@ class LlmFileReport:
     # mas o motor local nao rodou (so aviso: as folhas suspeitas, se houver, seguem o fail-closed acima).
     floor_entities: int = 0
     floor_error: str = ""
+    # Ocorrencias que o motor local apontou e o juizo do lote deixou fora do elenco, como no motor local:
+    # nome em contexto de juiz ou procurador, instituicao do SISBAJUD.
+    local_kept: int = 0
 
     @property
     def unverified(self) -> bool:
@@ -291,7 +295,8 @@ def _run_llm_job(
             ),
             0.5 + 0.1 * index / max(1, len(states)),
         )
-        _apply_local_fallback(state, roster=roster, engine=local_engine, exclusions=exclusions, floor=floor)
+        _apply_local_fallback(state, engine=local_engine, exclusions=exclusions, floor=floor)
+    _review_local_names(states, roster=roster, exclusions=exclusions)
 
     for index, state in enumerate(states):
         _report(
@@ -508,6 +513,10 @@ class _FileState:
     suspect_pages: set[int] = field(default_factory=set)
     failed_discovery: set[int] = field(default_factory=set)
     offline_discovery: bool = False
+    # Nomes que o motor local achou (fase 1), a espera do juizo do lote (``_review_local_names``).
+    local_names: list[EntitySpan] = field(default_factory=list)
+    local_ran: bool = False
+    local_pages: set[int] = field(default_factory=set)
 
 
 def _extract_and_mask(
@@ -707,7 +716,6 @@ _NAME_KINDS = {"PERSON": "pessoa", "ORGANIZATION": "empresa", "LOCATION": "ender
 def _apply_local_fallback(
     state: _FileState,
     *,
-    roster: Roster,
     engine: _LazyEngine,
     exclusions: Sequence[str],
     floor: bool = False,
@@ -715,12 +723,10 @@ def _apply_local_fallback(
     """B1/I6 e I-N4: o motor local confere as folhas em que o LLM falhou ou respondeu sem entidade e,
     com o piso local ligado (``floor``), TODAS as folhas: o resultado e a uniao do LLM com o motor local.
 
-    O que ele acha entra no elenco (origem ``motor_local``: aparece na revisao e propaga pelo lote) ou,
-    se nao for nome, como ID. Entrada do elenco marcada ``manter`` vence o motor local (juiz, orgao).
-    Folha em que o LLM FALHOU conta como tratada pelo motor local mesmo que ele nao ache nada; folha de
-    resposta vazia (ou, sem rede, fora do cache) so conta se o motor local achar algo. Se o motor local
-    nao puder rodar, ``fallback_error`` retem o arquivo (so se ha folha suspeita); sem folha suspeita, o
-    piso que nao rodou fica em ``floor_error`` (aviso).
+    Fase 1, por arquivo: roda o motor local e filtra (fidelidade e higiene). O que nao e nome entra
+    direto como ID; os nomes esperam o juizo do lote (``_review_local_names``), o mesmo do motor local.
+    Se o motor local nao puder rodar, ``fallback_error`` retem o arquivo (so se ha folha suspeita); sem
+    folha suspeita, o piso que nao rodou fica em ``floor_error`` (aviso).
     """
 
     report = state.report
@@ -740,14 +746,7 @@ def _apply_local_fallback(
     except Exception as exc:  # noqa: BLE001 - nao pode derrubar o lote nem vazar texto na mensagem
         unavailable(f"motor local falhou ({type(exc).__name__})")
         return
-    ranges = page_ranges(state.text)
-    zones = sorted(span for page in state.suspect_pages for span in ranges.get(page, ()))
-    zone_starts = [start for start, _end in zones]
-
-    def in_zone(position: int) -> bool:
-        index = bisect_right(zone_starts, position) - 1
-        return index >= 0 and position < zones[index][1]
-
+    in_zone = _suspect_zone(state)
     found = resolve_overlaps(found)
     found = drop_protected_spans(
         state.text, found, exclusions, source_name=state.source.name, stats=state.stats
@@ -757,47 +756,96 @@ def _apply_local_fallback(
         found = [span for span in found if in_zone(span.start)]
 
     known_ids = [(span.start, span.end) for span in state.ids]
-    added = 0
-    floor_new = 0
-    pages_with_findings: set[int] = set()
     for span in found:
-        suspect = in_zone(span.start)
-        value = state.text[span.start : span.end]
-        kind = _NAME_KINDS.get(span.entity_type)
-        if kind is None:
-            overlaps_known = any(start < span.end and span.start < end for start, end in known_ids)
-            state.ids.append(span)
-            if suspect:
-                added += 1
-                pages_with_findings.add(page_of(state.text, span.start))
-            elif not overlaps_known:
-                floor_new += 1
+        if span.entity_type in _NAME_KINDS:
+            state.local_names.append(span)
             continue
-        entry = roster.lookup(kind, value)
-        if entry is not None and entry.action == KEEP:
-            continue
-        created = entry is None
-        if created:
-            entry = roster.add_mention(
-                Mention(kind=kind, text=value, canonical=value), source=LOCAL_FALLBACK_SOURCE
-            )
-        if entry is None:
-            continue
-        state.anchored.append((span.start, span.end, entry.key))
-        if suspect:
-            added += 1
-            pages_with_findings.add(page_of(state.text, span.start))
-        elif created:
-            floor_new += 1
+        overlaps_known = any(start < span.end and span.start < end for start, end in known_ids)
+        state.ids.append(span)
+        if in_zone(span.start):
+            report.fallback_entities += 1
+            state.local_pages.add(page_of(state.text, span.start))
+        elif not overlaps_known:
+            report.floor_entities += 1
+    state.local_ran = True
 
-    # Falha real do LLM: a folha conta como tratada pelo motor local. Vazio (ou sem rede, fora do cache):
-    # so conta se o motor local achou alguma coisa nela.
-    real_failure = set() if state.offline_discovery else set(state.failed_discovery)
-    treated = real_failure | (state.suspect_pages & pages_with_findings)
-    report.fallback_pages = sorted(treated)
-    report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
-    report.fallback_entities = added
-    report.floor_entities = floor_new
+
+def _review_local_names(
+    states: Sequence[_FileState],
+    *,
+    roster: Roster,
+    exclusions: Sequence[str],
+) -> None:
+    """Fase 2, do lote: os nomes do motor local passam pelo mesmo juizo do motor local
+    (``BatchRoster.review``) antes de entrar no elenco. Nome visto em contexto de juiz ou procurador nao
+    entra; instituicao do SISBAJUD fica em claro; rua com nome de pessoa entra como endereco. O que o LLM
+    ja pos no elenco nao muda: este juizo so decide o que o motor local acrescenta.
+
+    O que passa entra no elenco (origem ``motor_local``: aparece na revisao e propaga pelo lote). Entrada
+    do elenco marcada ``manter`` vence o motor local (juiz, orgao). Folha em que o LLM FALHOU conta como
+    tratada pelo motor local mesmo que ele nao ache nada; folha de resposta vazia (ou, sem rede, fora do
+    cache) so conta se o motor local achar algo.
+    """
+
+    ran = [state for state in states if state.local_ran]
+    if not ran:
+        return
+    batch = BatchRoster(exclusions)
+    for state in ran:
+        batch.add(state.text, state.local_names)
+    batch.review(state.text for state in ran)
+    judged = {entity.key: entity for entity in batch.entities()}
+
+    for state in ran:
+        report = state.report
+        in_zone = _suspect_zone(state)
+        for span in state.local_names:
+            value = state.text[span.start : span.end]
+            kind = _NAME_KINDS[span.entity_type]
+            entity = judged.get(batch.key_for(span.entity_type, value))
+            if entity is not None:
+                if entity.public_agent or entity.financial:
+                    report.local_kept += 1
+                    continue
+                if entity.is_street:
+                    kind = "endereco"
+            entry = roster.lookup(kind, value)
+            if entry is not None and entry.action == KEEP:
+                continue
+            created = entry is None
+            if created:
+                entry = roster.add_mention(
+                    Mention(kind=kind, text=value, canonical=value), source=LOCAL_FALLBACK_SOURCE
+                )
+            if entry is None:
+                continue
+            state.anchored.append((span.start, span.end, entry.key))
+            if in_zone(span.start):
+                report.fallback_entities += 1
+                state.local_pages.add(page_of(state.text, span.start))
+            elif created:
+                report.floor_entities += 1
+
+        # Falha real do LLM: a folha conta como tratada pelo motor local. Vazio (ou sem rede, fora do
+        # cache): so conta se o motor local achou alguma coisa nela.
+        real_failure = set() if state.offline_discovery else set(state.failed_discovery)
+        treated = real_failure | (state.suspect_pages & state.local_pages)
+        report.fallback_pages = sorted(treated)
+        report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
+
+
+def _suspect_zone(state: _FileState) -> Callable[[int], bool]:
+    """Se uma posicao do texto cai numa folha suspeita (que o LLM nao leu ou respondeu vazio)."""
+
+    ranges = page_ranges(state.text)
+    zones = sorted(span for page in state.suspect_pages for span in ranges.get(page, ()))
+    zone_starts = [start for start, _end in zones]
+
+    def in_zone(position: int) -> bool:
+        index = bisect_right(zone_starts, position) - 1
+        return index >= 0 and position < zones[index][1]
+
+    return in_zone
 
 
 def _floor_lines(floor: bool, reports: dict[str, LlmFileReport]) -> list[str]:
@@ -809,11 +857,14 @@ def _floor_lines(floor: bool, reports: dict[str, LlmFileReport]) -> list[str]:
             "omissao parcial do LLM nao tem piso)."
         ]
     added = sum(item.floor_entities for item in reports.values())
+    kept = sum(item.local_kept for item in reports.values())
     failed = [name for name, item in reports.items() if item.floor_error]
     lines = [
         "Piso local: LIGADO (o motor local rodou em todas as folhas e o resultado e a uniao do que o LLM e o "
         f"motor local apontaram; o LLM so acrescenta protecao). Entidades novas do motor local fora das folhas "
-        f"suspeitas: {added}."
+        f"suspeitas: {added}.",
+        "Juizo do lote sobre o motor local (o mesmo do modo local): ocorrencias deixadas fora do elenco por "
+        f"contexto de juiz/procurador ou de instituicao do SISBAJUD: {kept}.",
     ]
     if failed:
         lines.append("ALERTA: o motor local nao rodou em " + ", ".join(failed) + " (so valeu a leitura do LLM).")
@@ -885,6 +936,11 @@ def _append_roster_guide(path: Path) -> None:
             "LLM atribuiu e a acao (tokenizar/manter). Para corrigir, troque 'acao'\n"
             "e rode de novo com --elenco apontando para este arquivo (com --sem-rede,\n"
             "so o cache e usado: nada e enviado ao provedor).\n"
+            "\n"
+            f"{LLM_CACHE_SUBDIR}/ (na pasta privada, ao lado dos lotes): as respostas do\n"
+            "provedor, com nomes, papeis e trechos EM CLARO. E tao sensivel quanto o\n"
+            "mapa.json: nao copie, nao envie. Apagar a pasta so faz o proximo lote\n"
+            "consultar o provedor de novo.\n"
         )
 
 
