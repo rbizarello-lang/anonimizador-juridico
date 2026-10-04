@@ -1,0 +1,32 @@
+# Suite de testes no mesmo ambiente do Operador: Windows, Python 3.14, instalacao completa
+# (motor local + extra llm). Nenhum teste chama o provedor nem baixa o modelo do GLiNER.
+name: testes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      HF_HUB_OFFLINE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Instalar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[llm]" pytest
+      - name: Testes
+        run: python -m pytest -q -p no:cacheprovider
