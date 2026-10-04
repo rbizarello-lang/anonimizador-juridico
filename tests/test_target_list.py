@@ -90,10 +90,10 @@ class TargetListEngineTests(unittest.TestCase):
         self.assertIn("Souza", values)
 
     def test_distinctive_particle_still_matches_alone(self) -> None:
-        engine = TargetListEngine(people=["Carla Castanheira Souza"])
-        text = "CASTANHEIRA juntou peticao. A Uniao permanece."
+        engine = TargetListEngine(people=["Carla Cantagalo Souza"])
+        text = "CANTAGALO juntou peticao. A Uniao permanece."
         values = {text[span.start : span.end] for span in engine.detect(text)}
-        self.assertIn("CASTANHEIRA", values)
+        self.assertIn("CANTAGALO", values)
 
     def test_common_particles_together_support_each_other(self) -> None:
         engine = TargetListEngine(people=["Helena Lopes da Silva"])
@@ -139,12 +139,12 @@ class TargetListEngineTests(unittest.TestCase):
         self.assertEqual(spans, [])
 
     def test_one_char_ocr_typo_on_particle_is_tokenized(self) -> None:
-        engine = TargetListEngine(people=["Marcelo Obdulio Broggi"])
-        text = "ABDULIO assinou. OBDULO tambem. AXCULIO nao."
+        engine = TargetListEngine(people=["Marcelo Odorico Bernardelli"])
+        text = "UDORICO assinou. ODORCO tambem. UXURICO nao."
         values = {text[span.start : span.end] for span in engine.detect(text)}
-        self.assertIn("ABDULIO", values)
-        self.assertIn("OBDULO", values)
-        self.assertNotIn("AXCULIO", values)
+        self.assertIn("UDORICO", values)
+        self.assertIn("ODORCO", values)
+        self.assertNotIn("UXURICO", values)
 
     def test_short_particle_is_not_fuzzed(self) -> None:
         engine = TargetListEngine(people=["Carla Exemplo Souza"])
@@ -154,8 +154,8 @@ class TargetListEngineTests(unittest.TestCase):
         self.assertNotIn("SOUSA", values)
 
     def test_company_ocr_insertion_is_tokenized(self) -> None:
-        engine = TargetListEngine(companies=["Criterium Confeccoes Ltda"])
-        text = "Compareceu CRITERIUM CONFECCCOES LTDA no evento 4."
+        engine = TargetListEngine(companies=["Crisalida Confeccoes Ltda"])
+        text = "Compareceu CRISALIDA CONFECCCOES LTDA no evento 4."
         blob = " ".join(text[span.start : span.end] for span in engine.detect(text))
         self.assertIn("CONFECCCOES", blob)
 
@@ -214,10 +214,10 @@ class TargetListAliasTests(unittest.TestCase):
 
     def test_ambiguous_particle_with_company_context(self) -> None:
         engine = TargetListEngine(
-            companies=["Quintal Comercio de Pecas Ltda"],
-            people=["Ana Quintal Souza"],
+            companies=["Valverde Comercio de Pecas Ltda"],
+            people=["Ana Valverde Souza"],
         )
-        text = "A empresa Quintal Comercio executou. A Uniao permanece."
+        text = "A empresa Valverde Comercio executou. A Uniao permanece."
         result = _apply(engine, text)
         self.assertIn("[EMPRESA_1]", result.text)
         self.assertNotIn("[PESSOA_", result.text)
@@ -227,14 +227,14 @@ class TargetListAliasTests(unittest.TestCase):
         from anonimizador_app.target_list import _entry_particles
 
         self.assertEqual(
-            _entry_particles("Quintal Comercio de Pecas Ltda", company=True),
+            _entry_particles("Valverde Comercio de Pecas Ltda", company=True),
             (),
         )
-        engine = TargetListEngine(companies=["Quintal Comercio de Pecas Ltda"])
-        self.assertEqual(engine.detect("A empresa Quintal executou. A Uniao permanece."), [])
+        engine = TargetListEngine(companies=["Valverde Comercio de Pecas Ltda"])
+        self.assertEqual(engine.detect("A empresa Valverde executou. A Uniao permanece."), [])
 
     def test_listed_company_does_not_eat_cnae_or_ctn(self) -> None:
-        engine = TargetListEngine(companies=["Quintal Comercio de Pecas Ltda"])
+        engine = TargetListEngine(companies=["Valverde Comercio de Pecas Ltda"])
         text = (
             "CNAE 47.89-0-99 comercio varejista de artigos. "
             "CTN art. 133 nome individual. A Uniao permanece."
@@ -243,12 +243,12 @@ class TargetListAliasTests(unittest.TestCase):
 
     def test_nearest_complete_mention_without_marker(self) -> None:
         engine = TargetListEngine(
-            companies=["Quintal Comercio de Pecas Ltda"],
-            people=["Ana Quintal Souza", "Bruno Quintal Souza"],
+            companies=["Valverde Comercio de Pecas Ltda"],
+            people=["Ana Valverde Souza", "Bruno Valverde Souza"],
         )
         text = (
-            "Compareceu Ana Quintal Souza no evento 2. "
-            "Depois Quintal juntou peticao. Uniao permanece."
+            "Compareceu Ana Valverde Souza no evento 2. "
+            "Depois Valverde juntou peticao. Uniao permanece."
         )
         result = _apply(engine, text)
         self.assertEqual(result.text.count("[PESSOA_1]"), 2)
@@ -273,12 +273,12 @@ class TargetListAliasTests(unittest.TestCase):
         self.assertEqual(len(result.mapping.records[0].originals), 3)
 
     def test_fuzzy_particle_shares_token(self) -> None:
-        engine = TargetListEngine(people=["Marcelo Obdulio Broggi"])
-        text = "MARCELO OBDULIO BROGGI assinou. ABDULIO tambem."
+        engine = TargetListEngine(people=["Marcelo Odorico Bernardelli"])
+        text = "MARCELO ODORICO BERNARDELLI assinou. UDORICO tambem."
         result = _apply(engine, text)
         self.assertEqual(result.text.count("[PESSOA_1]"), 2)
         self.assertEqual(len(result.mapping.records), 1)
-        self.assertIn("ABDULIO", result.mapping.records[0].originals)
+        self.assertIn("UDORICO", result.mapping.records[0].originals)
 
     def test_map_is_reversible_via_originals(self) -> None:
         engine = TargetListEngine(companies=["Horizonte Ficticio Ltda"])
@@ -294,7 +294,7 @@ class TargetListCiclo3Tests(unittest.TestCase):
         engine = TargetListEngine(
             companies=["Norte Inventado Comercio de Vidros e Acessorios Ltda"]
         )
-        text = "Compareceu NORTE INVENTADO COMERCIO DE VIDROS E ACESŠÓRIOS ETDA –ME."
+        text = "Compareceu NORTE INVENTADO COMERCIO DE VIDROS E TIZIFAROTA PIDI –ME."
         result = _apply(engine, text)
         self.assertNotIn("ACESŠÓRIOS", result.text)
         self.assertNotIn("ETDA", result.text)
@@ -340,19 +340,19 @@ class TargetListCiclo3Tests(unittest.TestCase):
 
     def test_particle_does_not_eat_street_or_judge(self) -> None:
         engine = TargetListEngine(
-            people=["Sonia Aparecida de Oliveira", "Vilson Floriano de Souza"]
+            people=["Solange Aparecida de Oliveira", "Valmor Fiorentino de Souza"]
         )
-        street = "sede na Rua Nei José de Oliveira Machado, nº 579."
+        street = "sede na Rua Ari Jose de Oliveira Meireles, nº 579."
         self.assertEqual(
             {street[span.start : span.end] for span in engine.detect(street)},
             set(),
         )
-        judge = "Juiz(a):\n\nGILSON LUIZ INACIO\n\nPartes"
+        judge = "Juiz(a):\n\nOSVALDO LUIZ FICTICIO\n\nPartes"
         values = {judge[span.start : span.end] for span in engine.detect(judge)}
-        self.assertNotIn("GILSON", values)
-        pfn = "Juliano Franco Dias dos Reis, Procurador da Fazenda Nacional, juntou."
+        self.assertNotIn("OSVALDO", values)
+        pfn = "Rafael Teste das Neves, Procurador da Fazenda Nacional, juntou."
         pfn_values = {pfn[span.start : span.end] for span in engine.detect(pfn)}
-        self.assertFalse(any("Juliano" in item for item in pfn_values))
+        self.assertFalse(any("Rafael" in item for item in pfn_values))
 
     def test_listed_full_name_is_tokenized_near_pgfn(self) -> None:
         engine = TargetListEngine(
@@ -374,11 +374,11 @@ class TargetListCiclo3Tests(unittest.TestCase):
         self.assertFalse(any("PAULO" in item for item in officer_values))
 
     def test_leading_person_pair_is_tokenized(self) -> None:
-        engine = TargetListEngine(people=["Vera Lucia Broggi", "Reinaldo Luiz Broggi"])
-        text = "Compareceram VERA LUCIA e REINALDO LUIZ como testemunhas."
+        engine = TargetListEngine(people=["Vera Lucia Bernardelli", "Sutilogu Cico Bernardelli"])
+        text = "Compareceram VERA LUCIA e SUTILOGU CICO como testemunhas."
         values = {text[span.start : span.end] for span in engine.detect(text)}
         self.assertTrue(any("VERA LUCIA" in item for item in values))
-        self.assertTrue(any("REINALDO LUIZ" in item for item in values))
+        self.assertTrue(any("SUTILOGU CICO" in item for item in values))
 
     def test_company_glued_does_not_eat_generic_comercial(self) -> None:
         engine = TargetListEngine(companies=["Norte Comercial e Transportes Ltda"])
@@ -411,67 +411,67 @@ class TargetListCiclo3Tests(unittest.TestCase):
     def test_domain_stem_shares_company_token(self) -> None:
         engine = TargetListEngine(
             companies=[
-                "Altmann Comercio de Vidros Ltda",
-                "Broggi Comercio de Vidros e Acessorios Ltda",
-                "Broggi Vidros & Esquadrias",
+                "Tramontana Comercio de Vidros Ltda",
+                "Bernardelli Comercio de Vidros e Acessorios Ltda",
+                "Bernardelli Vidros & Esquadrias",
             ]
         )
         text = (
-            "ALTMANN COMERCIO DE VIDROS citou o site broggividros.com.br/blog "
-            "e criteriumconfeccoes.com"
+            "TRAMONTANA COMERCIO DE VIDROS citou o site bernardellividros.com.br/blog "
+            "e crisalidaconfeccoes.com"
         )
         result = _apply(engine, text)
-        self.assertNotIn("broggividros", result.text.casefold())
+        self.assertNotIn("bernardellividros", result.text.casefold())
         self.assertIn("[EMPRESA_1]", result.text)
         self.assertIn("[EMPRESA_2]", result.text)
 
     def test_ocr_glued_domain_without_word_boundary(self) -> None:
-        engine = TargetListEngine(companies=["Broggi Comercio de Vidros Ltda"])
-        text = "visite vendasuabroggidros.co.or e vendasabroggivdros.combr"
+        engine = TargetListEngine(companies=["Bernardelli Comercio de Vidros Ltda"])
+        text = "visite vendasuabernardellidros.co.or e vendasabernardellivdros.combr"
         result = _apply(engine, text)
-        self.assertNotIn("broggidros", result.text.casefold())
-        self.assertNotIn("broggivdros", result.text.casefold())
+        self.assertNotIn("bernardellidros", result.text.casefold())
+        self.assertNotIn("bernardellivdros", result.text.casefold())
         self.assertIn("[EMPRESA_1]", result.text)
 
     def test_two_word_brand_prefix(self) -> None:
-        engine = TargetListEngine(companies=["Broggi Vidros & Esquadrias"])
-        text = "A loja Broggi Vidros abriu filial."
+        engine = TargetListEngine(companies=["Bernardelli Vidros & Esquadrias"])
+        text = "A loja Bernardelli Vidros abriu filial."
         result = _apply(engine, text)
-        self.assertNotIn("Broggi Vidros", result.text)
+        self.assertNotIn("Bernardelli Vidros", result.text)
         self.assertIn("[EMPRESA_1]", result.text)
 
     def test_ampersand_ocr_garbled_tail(self) -> None:
-        engine = TargetListEngine(companies=["Broggi Vidros & Esquadrias"])
-        text = "VIDRDS & ESQUADDRIAS\nDesign"
+        engine = TargetListEngine(companies=["Bernardelli Vidros & Esquadrias"])
+        text = "VIDR0S & ESQUADRLAS\nDesign"
         result = _apply(engine, text)
         self.assertNotIn("VIDRDS", result.text)
         self.assertNotIn("ESQUADDRIAS", result.text)
         self.assertIn("[EMPRESA_1]", result.text)
 
-    def test_criterium_domain_stem(self) -> None:
-        engine = TargetListEngine(companies=["Criterium Confeccoes Ltda"])
-        text = "site criteriumconfeccoes.com.br da executada."
+    def test_crisalida_domain_stem(self) -> None:
+        engine = TargetListEngine(companies=["Crisalida Confeccoes Ltda"])
+        text = "site crisalidaconfeccoes.com.br da executada."
         result = _apply(engine, text)
-        self.assertNotIn("criteriumconfeccoes", result.text.casefold())
+        self.assertNotIn("crisalidaconfeccoes", result.text.casefold())
         self.assertIn("[EMPRESA_1]", result.text)
 
 
 class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
     def test_uf_in_other_reason_does_not_tokenize_state(self) -> None:
-        engine = TargetListEngine(companies=["Decor Vidros do Parana Ltda"])
+        engine = TargetListEngine(companies=["Aurora Vidros do Parana Ltda"])
         text = "Registro na Junta Comercial do Paraná. A Uniao permanece."
         values = {text[span.start : span.end] for span in engine.detect(text)}
         self.assertFalse(any("paran" in item.casefold() for item in values))
 
     def test_full_reason_with_uf_still_tokenizes(self) -> None:
-        engine = TargetListEngine(companies=["Decor Vidros do Parana Ltda"])
-        text = "Compareceu DECOR VIDROS DO PARANA LTDA no evento 4."
+        engine = TargetListEngine(companies=["Aurora Vidros do Parana Ltda"])
+        text = "Compareceu AURORA VIDROS DO PARANA LTDA no evento 4."
         result = _apply(engine, text)
-        self.assertNotIn("DECOR VIDROS DO PARANA", result.text)
+        self.assertNotIn("AURORA VIDROS DO PARANA", result.text)
         self.assertIn("[EMPRESA_1]", result.text)
 
     def test_campos_particle_does_not_eat_campo_mourao(self) -> None:
-        engine = TargetListEngine(people=["Claudia Maria Campos Schmalz"])
+        engine = TargetListEngine(people=["Claudia Maria Campos Hollerbach"])
         text = "Subseção de Campo Mourão. CAMPOS juntou peticao."
         result = _apply(engine, text)
         self.assertIn("Campo Mourão", result.text)
@@ -482,21 +482,21 @@ class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
         self.assertIn("[PESSOA_1]", cued.text)
 
     def test_casado_as_marital_status_is_not_tokenized(self) -> None:
-        engine = TargetListEngine(people=["Sidnei Aparecido Casado"])
+        engine = TargetListEngine(people=["Osvaldo Eustaquio Casado"])
         text = (
-            "SIDNEI APARECIDO CASADO, brasileiro, casado, comerciante. "
+            "OSVALDO EUSTAQUIO CASADO, brasileiro, casado, comerciante. "
             "A Uniao permanece."
         )
         result = _apply(engine, text)
-        self.assertNotIn("SIDNEI APARECIDO CASADO", result.text)
+        self.assertNotIn("OSVALDO EUSTAQUIO CASADO", result.text)
         self.assertIn("casado, comerciante", result.text)
         self.assertIn("[PESSOA_1]", result.text)
 
     def test_marcos_does_not_eat_month(self) -> None:
-        engine = TargetListEngine(people=["Marcos Mitsuo Noma"])
-        text = "MARCOS MITSUO NOMA assinou em 26 de março de 2010."
+        engine = TargetListEngine(people=["Marcos Mitsuo Kanamori"])
+        text = "MARCOS MITSUO KANAMORI assinou em 26 de março de 2010."
         result = _apply(engine, text)
-        self.assertNotIn("MARCOS MITSUO NOMA", result.text)
+        self.assertNotIn("MARCOS MITSUO KANAMORI", result.text)
         self.assertIn("26 de março de 2010", result.text)
 
     def test_sistemas_particle_does_not_eat_thesis(self) -> None:
@@ -513,10 +513,10 @@ class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
 
     def test_recuperacao_judicial_is_not_a_particle(self) -> None:
         engine = TargetListEngine(
-            companies=["Schumann Moveis Ltda em Recuperacao Judicial"]
+            companies=["Lindenau Moveis Ltda em Recuperacao Judicial"]
         )
         text = (
-            "SCHUMANN MOVEIS LTDA EM RECUPERACAO JUDICIAL. "
+            "LINDENAU MOVEIS LTDA EM RECUPERACAO JUDICIAL. "
             "Pedido de recuperacao judicial. Uniao."
         )
         result = _apply(engine, text)
@@ -526,29 +526,29 @@ class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
     def test_parenthetical_labels_are_not_particles(self) -> None:
         engine = TargetListEngine(
             companies=[
-                "Joaquim Peres Goncalves (Empresa Individual / antiga Multitex Ltda)"
+                "Joaquim Peixoto Gontijo (Empresa Individual / antiga Tramatex Ltda)"
             ]
         )
         text = (
             "Pessoa juridica. Empresa individual. A antiga regra permanece. "
-            "MULTITEX juntou. Uniao."
+            "TRAMATEX juntou. Uniao."
         )
         result = _apply(engine, text)
         self.assertIn("Empresa individual", result.text)
         self.assertIn("antiga regra", result.text)
-        self.assertIn("MULTITEX", result.text)
+        self.assertIn("TRAMATEX", result.text)
 
-    def test_correia_does_not_eat_correio(self) -> None:
-        engine = TargetListEngine(people=["Carla Correia Guimaraes Ferreira"])
-        text = "CARLA CORREIA GUIMARAES FERREIRA. Citacao pelo correio. Uniao."
+    def test_cordeiro_does_not_eat_correio(self) -> None:
+        engine = TargetListEngine(people=["Carla Cordeiro Magalhaes Ferreira"])
+        text = "CARLA CORDEIRO MAGALHAES FERREIRA. Citacao pelo correio. Uniao."
         result = _apply(engine, text)
-        self.assertNotIn("CARLA CORREIA", result.text)
+        self.assertNotIn("CARLA CORDEIRO", result.text)
         self.assertIn("correio", result.text)
 
     def test_espolio_prefix_is_not_a_particle(self) -> None:
-        engine = TargetListEngine(people=["Espólio de Romolo Augusto de Oliveira"])
+        engine = TargetListEngine(people=["Espólio de Vitorino Augusto de Oliveira"])
         text = (
-            "Espólio de Romolo Augusto de Oliveira juntou. "
+            "Espólio de Vitorino Augusto de Oliveira juntou. "
             "O espólio do executado. Uniao."
         )
         result = _apply(engine, text)
@@ -556,9 +556,9 @@ class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
         self.assertIn("espólio do executado", result.text)
 
     def test_brasil_particle_does_not_eat_oab(self) -> None:
-        engine = TargetListEngine(companies=["Noma do Brasil Sociedade Anonima"])
+        engine = TargetListEngine(companies=["Kanamori do Brasil Sociedade Anonima"])
         text = (
-            "NOMA DO BRASIL SOCIEDADE ANONIMA. "
+            "KANAMORI DO BRASIL SOCIEDADE ANONIMA. "
             "Ordem dos Advogados do Brasil. Uniao."
         )
         result = _apply(engine, text)
@@ -571,12 +571,12 @@ class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
         self.assertTrue(is_blocked_particle("Paraná"))
         self.assertTrue(is_blocked_particle("casado"))
         self.assertTrue(is_blocked_particle("locação"))
-        self.assertFalse(is_blocked_particle("Decor Vidros do Parana"))
+        self.assertFalse(is_blocked_particle("Aurora Vidros do Parana"))
         self.assertFalse(is_blocked_particle("Helena"))
 
     def test_apostrophe_variants_share_company(self) -> None:
-        engine = TargetListEngine(companies=["CACAU'S DISTRIBUIDORA LTDA"])
-        text = "Compareceu CACAU´S DISTRIBUIDORA LTDA no polo. Uniao."
+        engine = TargetListEngine(companies=["CANJICA'S DISTRIBUIDORA LTDA"])
+        text = "Compareceu CANJICA´S DISTRIBUIDORA LTDA no polo. Uniao."
         values = {text[span.start : span.end] for span in engine.detect(text)}
         self.assertTrue(any("DISTRIBUIDORA" in item for item in values))
 

@@ -1,0 +1,139 @@
+"""Versao do que esta rodando, para conferir na janela e em cada lote qual implementacao gerou o texto.
+
+- ``APP_VERSION``: versao do app (a mesma do ``pyproject.toml``).
+- extrator: ``FAST_EXTRACTOR_VERSION`` (muda quando a leitura do PDF muda; invalida o cache).
+- ``DETECTION_VERSION``: cadeia de deteccao (IDs, lista de alvos, capa, GLiNER, fidelidade; 2.1 = + propagacao do lote;
+  2.2 = + limites do token, fila 3.x E1: CNPJ alfanumerico com digito, telefone dentro de codigo,
+  endereco que para na celula e nao corta numero; 2.3 = + tipo por entidade, E7: rua com nome
+  de pessoa vira endereco, instituicao financeira do SISBAJUD fica em claro; 2.4 = + rotulo
+  fora do token, E11: "Agencia:", "Debcad:", "Matricula n", "CEP:" e o papel da parte ("executada X")
+  ficam no texto e o valor inteiro vai no token; CNPJ com a filial partida; CEP de 8 digitos em tabela;
+  2.5 = + identidade do lote, E13: hifen de quebra de linha ("ME-TAIS"), pontuacao de OCR, forma curta
+  do nome com varias capturas, prenome e ramo de atividade sem juntar por uma letra, "Filho"/"Junior"
+  separados, marca de empresa usada sozinha com token proprio;
+  2.6 = + endurecimento antes do L4, B3: a marca de uma palavra nunca e nome de municipio ou de estado
+  (lista do IBGE) nem ocorrencia em contexto de foro ou de endereco;
+  2.7 = + matricula por cartorio: o token distingue o cartorio de registro de imoveis mais proximo, e o
+  nome do cartorio/oficio/tabelionato fica em claro;
+  2.8 = + grupo de empresas ligadas: o token de empresa que o ELENCO liga por vinculo declarado (mudanca de
+  nome, mesmo CNPJ nas capas) leva o sufixo ·Gn no texto, ex. [EMPRESA_3·G1]; os tokens seguem separados);
+  2.8.1 = H3: o par de grafia de rua do ``address.py`` (alterado no H2 sem troca de versao) e a identidade do
+  motor de NER (backend, modelo e revisao) na chave do cache; as "alteracoes sucessivas" de nome so
+  corroboram vinculo explicito (nao criam grupo sozinhas).
+  2.8.2 = H4: com o motor LLM, os nomes do piso local passam pelo juizo do lote do motor local
+  (procurador e juiz, banco do SISBAJUD e rua com nome de pessoa) antes de entrarem no elenco.
+- motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
+  no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
+- codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
+- commit: o commit do git em que a pasta esta, lido direto de ``.git`` (sem chamar programa externo).
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+from .fast_extract import FAST_EXTRACTOR_VERSION
+
+ENGINE_LOCAL = "local"
+APP_VERSION = "0.4.1"
+DETECTION_VERSION = "2.8.2"
+
+_SRC = Path(__file__).resolve().parents[1]
+_ROOT = _SRC.parent
+
+
+@dataclass(frozen=True, slots=True)
+class VersionInfo:
+    app: str
+    extractor: str
+    detection: str
+    code: str
+    commit: str = ""
+    branch: str = ""
+
+    def short(self) -> str:
+        return f"v{self.app} · código {self.code}"
+
+    def line(self, engine: str = ENGINE_LOCAL) -> str:
+        """``engine``: ``local`` (ou vazio) ou o id do canal do LLM ("gemini-pago")."""
+
+        parts = [
+            f"v{self.app}",
+            f"extração {self.extractor}",
+            f"detecção {self.detection}",
+            engine_label(engine),
+            f"código {self.code}",
+        ]
+        if self.commit:
+            parts.append(f"commit {self.commit}" + (f" ({self.branch})" if self.branch else ""))
+        return " · ".join(parts)
+
+
+def engine_label(engine: str = ENGINE_LOCAL) -> str:
+    """"motor local" ou "motor LLM: gemini-pago"."""
+
+    channel = (engine or "").strip()
+    return "motor local" if channel in ("", ENGINE_LOCAL) else f"motor LLM: {channel}"
+
+
+@lru_cache(maxsize=1)
+def version_info() -> VersionInfo:
+    commit, branch = git_head()
+    return VersionInfo(
+        app=APP_VERSION,
+        extractor=FAST_EXTRACTOR_VERSION,
+        detection=DETECTION_VERSION,
+        code=code_fingerprint(),
+        commit=commit,
+        branch=branch,
+    )
+
+
+def code_fingerprint(root: Path = _SRC) -> str:
+    """SHA-256 dos .py do app (quebra de linha normalizada: CRLF e LF dao o mesmo valor)."""
+
+    hasher = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        hasher.update(path.relative_to(root).as_posix().encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes().replace(b"\r\n", b"\n"))
+        hasher.update(b"\0")
+    return hasher.hexdigest()[:7]
+
+
+def git_head(root: Path = _ROOT) -> tuple[str, str]:
+    """(commit curto, branch) da pasta; vazio se nao for um checkout git."""
+
+    try:
+        git_dir = root / ".git"
+        if git_dir.is_file():
+            pointer = git_dir.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return "", ""
+            git_dir = (root / pointer[len("gitdir:"):].strip()).resolve()
+        common = git_dir
+        commondir = git_dir / "commondir"
+        if commondir.is_file():
+            common = (git_dir / commondir.read_text(encoding="utf-8").strip()).resolve()
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head[:7], ""
+        ref = head[len("ref:"):].strip()
+        branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+        for base in (git_dir, common):
+            ref_file = base / ref
+            if ref_file.is_file():
+                return ref_file.read_text(encoding="utf-8").strip()[:7], branch
+        packed = common / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                if line.endswith(" " + ref):
+                    return line.split(" ", 1)[0][:7], branch
+        return "", branch
+    except OSError:
+        return "", ""

@@ -1,0 +1,665 @@
+"""Ensaio do motor LLM SEM REDE (L4, passo zero): prova que o caminho inteiro funciona antes da 1a chamada real.
+
+Usa um PDF sintetico (dados inventados) e um LLM falso (modelo do LangExtract
+que acha as entidades por busca de texto). Todo o ensaio roda com os sockets
+BLOQUEADOS: qualquer tentativa de conexao, resolucao de nome ou datagrama
+aborta e reprova o ensaio. A chave e falsa e o cofre e falso; o Gerenciador de
+Credenciais real nao e tocado.
+
+Passos:
+
+  1. portao do motor: bloqueia sem canal, canal gratuito, canal desconhecido, sem chave, config.json com chave;
+  1c. confirmacao por rodada: a escolha do motor nao arma o envio; o descobridor real recusa sem a
+      confirmacao ativa; a confirmacao mostra canal, arquivos e caracteres e expira no fim da rodada;
+  2. rodada A: PDF -> lote (ancoras, INDICE, ELENCO, AUDITORIA com o motor e a confirmacao);
+  3. revisao do elenco: linhas com tipo, papel, mencoes e token; decisoes fixas;
+  4. rodada B: elenco revisado reaplicado SEM rede (so cache);
+  5. as duas reguas (tools/medir_estrutura.py e tools/medir_vazamento.py) nas rodadas A e B;
+  6. falha forcada do LLM (resposta quebrada, resposta vazia, motor local que tambem falha): a folha passa
+     pelo motor local, nunca sai com nome em claro, resposta vazia e falha nao vao para o cache, e se o motor
+     local tambem falhar o arquivo fica retido na quarentena, fora da pasta exportavel;
+  6b. piso local (I-N4): omissao parcial do LLM (esquece uma socia) e mencao sem ancora (devolve o nome
+      "normalizado"): com o piso ligado nenhum nome sai em claro; com o piso desligado a omissao aparece
+      (prova de que o cenario e real); a AUDITORIA e o LEIA-ME dizem se o piso estava ligado;
+  7. varredura: a chave falsa nao aparece em nenhum arquivo gerado nem na saida do ensaio.
+
+Uso:  python tools/ensaio_llm.py [--saida PASTA] [--manter]
+Codigo de saida: 0 se todas as conferencias passaram; 1 se alguma falhou.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+KEYRING_WAS_LOADED = "keyring" in sys.modules
+
+from anonimizador_app import credentials  # noqa: E402
+from anonimizador_app.credentials import ENV_VAR, VAULT_SERVICE, VAULT_USER  # noqa: E402
+from anonimizador_app.llm_discovery import LangExtractDiscoverer  # noqa: E402
+from anonimizador_app.llm_engine import (  # noqa: E402
+    EngineChoice,
+    audit_lines,
+    build_discoverer,
+    check_engine,
+    confirmation_lines,
+)
+from anonimizador_app.llm_discovery import LlmConfigError  # noqa: E402
+from anonimizador_app.llm_gate import RunPermit  # noqa: E402
+from anonimizador_app.netblock import block_network  # noqa: E402
+from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, plan_send, run_llm_job  # noqa: E402
+from anonimizador_app.contextual import build_contextual_engine  # noqa: E402
+from anonimizador_app.settings import AppSettings  # noqa: E402
+from anonimizador_app.roster import KEEP, TOKENIZE  # noqa: E402
+from anonimizador_app.roster_review import build_rows, reapply_offline, summarize  # noqa: E402
+
+FAKE_KEY = "chave-ficticia-ensaio-7f3a91c2d4e6b8a0"
+OTHER_FAKE_KEY = "outra-chave-ficticia-nao-usar-123456"
+CHANNEL = "gemini-pago"
+PDF_NAME = "autos_sinteticos.pdf"
+
+# (tipo, texto, papel). Tudo inventado.
+ENTITIES = [
+    ("empresa", "MADEIREIRA PINHAL VERDE LTDA", "parte"),
+    ("pessoa", "ANTONIO CARLOS BARRETO", "socio"),
+    ("pessoa", "CLAUDETE HOFFMEISTER BARRETO", "socio"),
+    ("empresa", "TRANSPORTADORA RIO DO PEIXE EIRELI", "terceiro"),
+    ("endereco", "Rua Tupinambás, 1.520", "parte"),
+    ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "magistrado"),
+]
+# Numeros de teste de gerador publico (DV valido): nao pertencem a ninguem de caso nenhum.
+CPF = "529.982.247-25"
+CNPJ = "11.222.333/0001-81"
+
+PAGES = [
+    "EXECUÇÃO FISCAL\n"
+    "Exequente: UNIÃO - FAZENDA NACIONAL\n"
+    f"Executada: MADEIREIRA PINHAL VERDE LTDA, CNPJ {CNPJ},\n"
+    "estabelecida na Rua Tupinambás, 1.520, centro.\n"
+    "A UNIÃO (FAZENDA NACIONAL), por intermédio da PGFN, ajuíza esta execução\n"
+    "fiscal para cobrança dos créditos inscritos em dívida ativa, no valor de\n"
+    "R$ 1.234.567,89, apurado em 12/03/2024.",
+    f"O sócio-administrador ANTONIO CARLOS BARRETO, CPF {CPF},\n"
+    "e a sócia CLAUDETE HOFFMEISTER BARRETO dirigiam a sociedade ao tempo\n"
+    "dos fatos geradores, conforme a ficha cadastral da Junta Comercial.\n"
+    "Requer-se a inclusão de ambos no polo passivo, com fundamento no\n"
+    "art. 135, III, do CTN e no Tema 962 do STJ.\n"
+    "Valor atualizado: R$ 2.010.450,10 em 01/09/2025.",
+    "A empresa TRANSPORTADORA RIO DO PEIXE EIRELI adquiriu o imóvel da\n"
+    "executada em 14/03/2023, por R$ 850.000,00, conforme o evento 45.\n"
+    "Pede-se a penhora pelo SISBAJUD e RENAJUD, sem prejuízo da\n"
+    "indisponibilidade prevista no art. 185-A do CTN, e a citação de\n"
+    "ANTONIO CARLOS BARRETO.",
+    "Documento eletrônico assinado por LUCIANA MONTEFUSCO DE ALMEIDA,\n"
+    "Juíza Federal. Defiro a penhora requerida, devendo a Secretaria cumprir\n"
+    "as diligências no prazo legal, a contar de 20/10/2025, com ciência à\n"
+    "executada MADEIREIRA PINHAL VERDE LTDA e aos sócios, na pessoa de seus\n"
+    "advogados.",
+]
+
+_RESULTS: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> bool:
+    _RESULTS.append((name, bool(ok), detail))
+    print(f"[{'OK' if ok else 'FALHOU'}] {name}" + (f": {detail}" if detail else ""), flush=True)
+    return bool(ok)
+
+
+class MemoryVault:
+    """Cofre falso em memoria: o Gerenciador de Credenciais real nao e tocado."""
+
+    def __init__(self) -> None:
+        self.stored: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, username):
+        return self.stored.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.stored[(service, username)] = password
+
+    def delete_password(self, service, username):
+        self.stored.pop((service, username), None)
+
+
+def make_pdf(folder: Path) -> Path:
+    import pymupdf
+
+    document = pymupdf.open()
+    for number, body in enumerate(PAGES, start=1):
+        page = document.new_page(width=595, height=842)
+        page.insert_text((50, 80), body, fontsize=10.5, fontname="helv")
+        page.insert_text(
+            (50, 800),
+            f"Processo 5009999-11.2025.4.04.7001/PR, Evento {number}, PET{number}, Página 1",
+            fontsize=8,
+            fontname="helv",
+        )
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / PDF_NAME
+    document.save(path)
+    document.close()
+    return path
+
+
+def fake_langextract_model():
+    """Modelo falso do LangExtract: devolve as entidades que achar no trecho, por busca de texto."""
+
+    from langextract.core import base_model
+    from langextract.core import types as lx_types
+
+    class FakeModel(base_model.BaseLanguageModel):
+        def infer(self, batch_prompts, **kwargs):
+            for prompt in batch_prompts:
+                chunk = prompt.rsplit("Q: ", 1)[-1]
+                items = []
+                for kind, value, role in ENTITIES:
+                    if value.casefold() in chunk.casefold():
+                        items.append(
+                            {kind: value, f"{kind}_attributes": {"papel": role, "nome_canonico": value}}
+                        )
+                yield [lx_types.ScoredOutput(score=1.0, output=json.dumps({"extractions": items}))]
+
+    return FakeModel()
+
+
+def load_tool(name: str):
+    spec = importlib.util.spec_from_file_location(f"ensaio_{name}", ROOT / "tools" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_ruler(module, argv: list[str]) -> str:
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        module.main(argv)
+    return buffer.getvalue()
+
+
+def structure_totals(output: str) -> dict:
+    match = re.search(r"TOTAL: (\{.*\})", output)
+    return eval(match.group(1), {"__builtins__": {}}, {}) if match else {}  # noqa: S307 - saida da propria regua
+
+
+def leak_counts(output: str) -> dict[str, int]:
+    """rotulo -> mencoes em claro (primeiro lote da tabela); so contagens."""
+
+    counts: dict[str, list[int]] = {}
+    for line in output.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 3 or not parts[-1].isdigit():
+            continue
+        numbers = []
+        for token in reversed(parts):
+            if token.isdigit():
+                numbers.insert(0, int(token))
+            else:
+                break
+        label = " ".join(parts[1 : len(parts) - len(numbers)])  # sem a coluna da categoria
+        counts[label] = numbers
+    return counts
+
+
+def write_gabarito(path: Path) -> None:
+    gabarito = {
+        "entidades": [
+            {"categoria": "EMPRESA-parte", "rotulo": "executada", "padroes": ["MADEIREIRA PINHAL VERDE"]},
+            {"categoria": "PESSOA-socio", "rotulo": "socio A", "padroes": ["ANTONIO CARLOS BARRETO"]},
+            {"categoria": "PESSOA-socio", "rotulo": "socia B", "padroes": ["CLAUDETE HOFFMEISTER BARRETO"]},
+            {"categoria": "EMPRESA-terceiro", "rotulo": "adquirente", "padroes": ["TRANSPORTADORA RIO DO PEIXE"]},
+            {"categoria": "AGENTE-PUBLICO", "rotulo": "juiza", "padroes": ["LUCIANA MONTEFUSCO DE ALMEIDA"]},
+        ],
+        "ids": [
+            {"categoria": "ID", "rotulo": "CPF socio A", "valor": CPF},
+            {"categoria": "ID", "rotulo": "CNPJ executada", "valor": CNPJ},
+        ],
+    }
+    path.write_text(json.dumps(gabarito, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def scan_for_key(folders: list[Path], extra_text: str = "") -> list[str]:
+    needles = {FAKE_KEY, OTHER_FAKE_KEY}
+    hits: list[str] = []
+    for folder in folders:
+        for path in folder.rglob("*"):
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            if any(needle.encode("utf-8") in data for needle in needles):
+                hits.append(path.name)
+    if any(needle in extra_text for needle in needles):
+        hits.append("(saida do ensaio)")
+    return hits
+
+
+def step_gate(private_root: Path, vault: MemoryVault) -> None:
+    print("\n== 1. Portao do motor ==")
+    env = {ENV_VAR: FAKE_KEY}
+    good = EngineChoice(channel=CHANNEL)
+    base = dict(private_root=private_root, env=env, vault=vault)
+    for name, choice in (
+        ("sem canal", EngineChoice()),
+        ("canal gratuito", EngineChoice(channel="gemini-gratuito")),
+        ("canal desconhecido", EngineChoice(channel="outro")),
+    ):
+        check(f"bloqueia: {name}", not check_engine(choice, **base).allowed)
+    check(
+        "bloqueia: sem chave (GEMINI_API_KEY/GOOGLE_API_KEY nao contam)",
+        not check_engine(good, private_root=private_root, env={"GEMINI_API_KEY": FAKE_KEY, "GOOGLE_API_KEY": FAKE_KEY}, vault=vault).allowed,
+    )
+    config_json = private_root / "config.json"
+    config_json.write_text(json.dumps({"api_key": "x"}), encoding="utf-8")
+    check("bloqueia: config.json com chave", not check_engine(good, **base).allowed)
+    config_json.unlink()
+    decision = check_engine(good, **base)
+    check("libera com tudo em ordem", decision.allowed, "; ".join(decision.reasons))
+    check("a chave nao aparece em repr da decisao", FAKE_KEY not in repr(decision) and FAKE_KEY not in repr(decision.config))
+    # O cofre: chave guardada la tambem libera; a fonte e o que a interface mostra.
+    credentials.store_key(FAKE_KEY, vault=vault)
+    from_vault = check_engine(good, private_root=private_root, env={}, vault=vault)
+    check("chave do cofre falso libera", from_vault.allowed and from_vault.key_source == credentials.SOURCE_VAULT)
+    credentials.delete_key(vault=vault)
+    check("apagar a chave bloqueia de novo", not check_engine(good, private_root=private_root, env={}, vault=vault).allowed)
+
+
+def step_real_model_is_built_with_the_explicit_key(decision, cache_dir: Path) -> None:
+    print("\n== 1b. Modelo real do provedor: criado com a chave explicita, sem rede ==")
+    discoverer = build_discoverer(decision, cache_dir=cache_dir)
+    previous = os.environ.get("GEMINI_API_KEY")
+    os.environ["GEMINI_API_KEY"] = OTHER_FAKE_KEY
+    try:
+        with block_network() as attempts:
+            try:
+                model = discoverer._build_model()
+                error = ""
+            except Exception as exc:  # noqa: BLE001
+                model, error = None, type(exc).__name__
+    finally:
+        if previous is None:
+            os.environ.pop("GEMINI_API_KEY", None)
+        else:
+            os.environ["GEMINI_API_KEY"] = previous
+    check("construir o modelo nao abre socket", not attempts, f"{len(attempts)} tentativa(s) {error}")
+    if model is not None:
+        used = model._client._api_client.api_key  # o cliente do SDK e quem tem a chave
+        check("o modelo usa a chave do cofre, nao a GEMINI_API_KEY do ambiente", used == FAKE_KEY)
+        shown = repr(model) + str(model) + f"{model!r}" + repr(vars(model))
+        check("L2: a chave nao aparece em repr, str nem nos campos do modelo do LangExtract", FAKE_KEY not in shown and OTHER_FAKE_KEY not in shown)
+        base = model._client._api_client._http_options.base_url
+        check("I4: o cliente do SDK aponta para o host oficial do canal", base == "https://generativelanguage.googleapis.com/", base)
+        check("I4: o portao registrou o endpoint conferido", getattr(discoverer.network_check, "host", "") == "generativelanguage.googleapis.com")
+        check("I5: o cliente do SDK nao esta em modo de gravar/reproduzir chamadas em disco", not model._client._debug_config.client_mode)
+    # I4: variavel do SDK que desvia o trafego derruba a criacao do modelo, sem rede.
+    for variable, value in (
+        ("GOOGLE_GEMINI_BASE_URL", "https://desvio.example.invalid/x"),
+        ("GOOGLE_GENAI_CLIENT_MODE", "record"),
+        ("GOOGLE_GENAI_REPLAYS_DIRECTORY", "replays_do_sdk"),
+    ):
+        previous = os.environ.get(variable)
+        os.environ[variable] = value
+        try:
+            with block_network() as attempts_redirect:
+                try:
+                    build_discoverer(decision, cache_dir=cache_dir)._build_model()
+                    refused = False
+                except LlmConfigError as exc:
+                    refused = variable in str(exc) and "desvio" not in str(exc) and "replays_do_sdk" not in str(exc)
+        finally:
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
+        check(f"I4/I5: {variable} definida recusa o envio (sem mostrar o valor, sem rede)", refused and not attempts_redirect)
+
+
+def broken_model(mode: str):
+    """Modelo falso que FALHA: ``quebrado`` (resposta fora do formato) ou ``vazio`` (JSON valido, sem nada)."""
+
+    from langextract.core import base_model
+    from langextract.core import types as lx_types
+
+    class BrokenModel(base_model.BaseLanguageModel):
+        def infer(self, batch_prompts, **kwargs):
+            for _prompt in batch_prompts:
+                if mode == "excecao":
+                    # Excecao do provedor com a chave e texto da peca na mensagem (como um 4xx que ecoa a chamada).
+                    raise RuntimeError(f"HTTP 401 chave={FAKE_KEY} trecho: MADEIREIRA PINHAL VERDE LTDA")
+                output = "{truncado" if mode == "quebrado" else json.dumps({"extractions": []})
+                yield [lx_types.ScoredOutput(score=1.0, output=output)]
+
+    return BrokenModel()
+
+
+def partial_model():
+    """Modelo falso que le tudo mas acerta so em parte: esquece a socia (omissao parcial) e devolve o nome do
+    socio "normalizado", fora do texto (mencao sem ancora)."""
+
+    from langextract.core import base_model
+    from langextract.core import types as lx_types
+
+    class PartialModel(base_model.BaseLanguageModel):
+        def infer(self, batch_prompts, **kwargs):
+            for prompt in batch_prompts:
+                chunk = prompt.rsplit("Q: ", 1)[-1]
+                items = []
+                for kind, value, role in ENTITIES:
+                    if value.startswith("CLAUDETE") or value.casefold() not in chunk.casefold():
+                        continue
+                    shown = "A. C. Barreto" if value.startswith("ANTONIO") else value
+                    items.append({kind: shown, f"{kind}_attributes": {"papel": role, "nome_canonico": shown}})
+                yield [lx_types.ScoredOutput(score=1.0, output=json.dumps({"extractions": items}))]
+
+    return PartialModel()
+
+
+def local_engine():
+    """O motor local do ensaio: reconhecedores e lista de alvos (sem NER, que e opcional e pesado)."""
+
+    people = [value for kind, value, role in ENTITIES if kind == "pessoa" and role != "magistrado"]
+    companies = [value for kind, value, _role in ENTITIES if kind == "empresa"]
+    return build_contextual_engine(
+        AppSettings(local_ner_enabled=False, target_people=people, target_companies=companies)
+    )
+
+
+class ExplodingEngine:
+    def detect(self, text):
+        raise RuntimeError("motor local indisponivel (simulado)")
+
+    def scan_residual(self, text):
+        return []
+
+
+def step_forced_failure(pdf: Path, export_root: Path, private_root: Path, decision, choice) -> None:
+    print("\n== 6. Falha forcada do LLM: motor local, nada em claro, nada no cache ==")
+    private_names = [value for _kind, value, role in ENTITIES if role != "magistrado"]
+    for mode in ("quebrado", "vazio", "excecao"):
+        cache = private_root / f"cache_llm_falha_{mode}"
+        permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
+        broken = LangExtractDiscoverer(
+            decision.config, cache_dir=cache, model_factory=lambda mode=mode: broken_model(mode), permit=permit
+        )
+        result = run_llm_job(
+            [pdf],
+            export_root=export_root,
+            private_root=private_root,
+            discoverer=broken,
+            verification_rounds=0,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, permit),
+            fallback_engine=local_engine(),
+            job_id=f"lote_falha_{mode}",
+        )
+        outcome = result.job.outcomes[0]
+        text = outcome.markdown_path.read_text(encoding="utf-8") if outcome.ok else ""
+        check(f"LLM {mode}: o arquivo e gravado (o motor local tratou as folhas)", outcome.ok and bool(text), outcome.error)
+        leaked = [value for value in private_names if value.casefold() in text.casefold()]
+        check(f"LLM {mode}: nenhum nome privado em claro", not leaked, f"{len(leaked)} em claro")
+        check(f"LLM {mode}: CPF e CNPJ nao saem em claro", CPF not in text and CNPJ not in text)
+        listed = result.fallback_pages.get(PDF_NAME, [])
+        check(f"LLM {mode}: as folhas tratadas pelo motor local aparecem no resultado", bool(listed), str(listed))
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        check(f"LLM {mode}: AUDITORIA e LEIA-ME dizem 'folhas tratadas pelo motor local por falha do LLM'",
+              "olhas tratadas pelo motor local por falha do LLM" in audit and "olhas tratadas pelo motor local por falha do LLM" in guide)
+        cached = list(cache.glob("*.json")) if cache.exists() else []
+        check(f"LLM {mode}: resposta {mode} nao foi guardada no cache", not cached, f"{len(cached)} arquivo(s)")
+        if mode == "excecao":
+            everything = " ".join(
+                path.read_text(encoding="utf-8", errors="ignore")
+                for root in (result.job.export_dir, result.job.map_path.parent)
+                for path in root.rglob("*") if path.is_file()
+            )
+            check("L2: a excecao crua (chave e texto da peca) nao vai para a AUDITORIA nem para nenhum arquivo do lote",
+                  FAKE_KEY not in everything and "chave=" not in everything and "trecho: MADEIREIRA" not in everything)
+            check("L2: o motivo da falha na AUDITORIA e so o tipo da excecao", "RuntimeError" in audit and "HTTP 401" not in audit)
+    # O motor local tambem cai: o arquivo nao vai para a pasta exportavel.
+    permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
+    broken = LangExtractDiscoverer(
+        decision.config, cache_dir=None, model_factory=lambda: broken_model("quebrado"), permit=permit
+    )
+    held = run_llm_job(
+        [pdf],
+        export_root=export_root,
+        private_root=private_root,
+        discoverer=broken,
+        verification_rounds=0,
+        engine=decision.channel,
+        fallback_engine=ExplodingEngine(),
+        job_id="lote_falha_retido",
+    )
+    exported = [path for path in held.job.export_dir.glob("*.md") if path.name not in {"INDICE.md", "ELENCO.md"}]
+    quarantine = list((held.job.map_path.parent / "quarentena").glob("*.md"))
+    check("motor local tambem falhou: nada e exportado, o arquivo fica retido na pasta privada",
+          not exported and len(quarantine) == 1 and not held.job.export_allowed)
+    check("motor local tambem falhou: a AUDITORIA e o LEIA-ME avisam", "quarentena" in (held.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8"))
+
+
+def step_local_floor(pdf: Path, export_root: Path, private_root: Path, decision, choice) -> None:
+    print("\n== 6b. Piso local: omissao parcial e mencao sem ancora, com e sem o piso ==")
+    private_names = [value for _kind, value, role in ENTITIES if role != "magistrado"]
+    texts: dict[bool, str] = {}
+    for floor in (True, False):
+        permit = RunPermit(channel=decision.channel, files=(PDF_NAME,), total_chars=1)
+        partial = LangExtractDiscoverer(
+            decision.config, cache_dir=None, model_factory=partial_model, permit=permit
+        )
+        result = run_llm_job(
+            [pdf],
+            export_root=export_root,
+            private_root=private_root,
+            discoverer=partial,
+            verification_rounds=0,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, permit),
+            fallback_engine=local_engine(),
+            local_floor=floor,
+            job_id=f"lote_piso_{'ligado' if floor else 'desligado'}",
+        )
+        outcome = result.job.outcomes[0]
+        text = outcome.markdown_path.read_text(encoding="utf-8") if outcome.ok else ""
+        texts[floor] = text
+        label = "piso ligado" if floor else "piso desligado"
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
+        word = "LIGADO" if floor else "DESLIGADO"
+        check(f"{label}: AUDITORIA e LEIA-ME dizem 'Piso local: {word}'",
+              f"Piso local: {word}" in audit and f"Piso local: {word}" in guide)
+        leaked = [value for value in private_names if value.casefold() in text.casefold()]
+        if floor:
+            check("piso ligado: omissao parcial e mencao sem ancora, nenhum nome privado em claro", outcome.ok and not leaked,
+                  f"{len(leaked)} em claro")
+            check("piso ligado: CPF e CNPJ nao saem em claro", CPF not in text and CNPJ not in text)
+            check("piso ligado: nada em quarentena e nenhuma folha tratada como falha do LLM",
+                  not result.held and not result.fallback_pages)
+        else:
+            check("piso desligado: a omissao parcial deixa o nome em claro (o cenario e real)",
+                  outcome.ok and any(value.startswith(("CLAUDETE", "ANTONIO")) for value in leaked),
+                  f"{len(leaked)} em claro")
+    check("o piso so acrescenta protecao: tudo o que o LLM tokenizou segue tokenizado",
+          "MADEIREIRA PINHAL VERDE" not in texts[True] and "MADEIREIRA PINHAL VERDE" not in texts[False]
+          and texts[True].count("[PESSOA_") >= texts[False].count("[PESSOA_"))
+    check("o piso nao tirou a juiza do claro (o LLM a manteve)", "LUCIANA MONTEFUSCO DE ALMEIDA" in texts[True])
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--saida", help="Pasta de trabalho (padrao: temporaria, apagada no fim).")
+    parser.add_argument("--manter", action="store_true", help="Nao apaga a pasta de trabalho.")
+    args = parser.parse_args(argv)
+
+    if importlib.util.find_spec("langextract") is None:
+        print("langextract nao instalado: o ensaio precisa dele (pip install -e .[llm]).", file=sys.stderr)
+        return 2
+
+    workdir = Path(args.saida).expanduser() if args.saida else Path(tempfile.mkdtemp(prefix="ensaio_llm_"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    pdf_dir, export_root, private_root = workdir / "pdfs", workdir / "exportaveis", workdir / "privados"
+    private_root.mkdir(parents=True, exist_ok=True)
+    print(f"Pasta de trabalho: {workdir}")
+    print("Rede: BLOQUEADA durante todo o ensaio. Chave e cofre: falsos.")
+
+    vault = MemoryVault()
+    pdf = make_pdf(pdf_dir)
+    step_gate(private_root, vault)
+
+    choice = EngineChoice(channel=CHANNEL)
+    decision = check_engine(choice, private_root=private_root, env={ENV_VAR: FAKE_KEY}, vault=vault)
+    if not decision.allowed:
+        check("portao liberado para a rodada", False, decision.blocked_message())
+        return finish(workdir, args)
+    step_real_model_is_built_with_the_explicit_key(decision, private_root / LLM_CACHE_SUBDIR)
+
+    structure = load_tool("medir_estrutura")
+    structure.CACHE = private_root / "cache_extracao"
+    leak = load_tool("medir_vazamento")
+    gabarito = workdir / "gabarito_sintetico.json"
+    write_gabarito(gabarito)
+
+    with block_network() as attempts:
+        print("\n== 1c. Confirmacao por rodada ==")
+        live = LangExtractDiscoverer(
+            decision.config,
+            cache_dir=private_root / LLM_CACHE_SUBDIR,
+            model_factory=fake_langextract_model,
+        )
+        plan = plan_send([pdf], private_root=private_root, discoverer=live)
+        shown = "\n".join(confirmation_lines(decision, plan))
+        check("a confirmacao mostra canal, arquivo e total de caracteres",
+              f"Canal: {CHANNEL}" in shown and PDF_NAME in shown and "Total:" in shown and plan.total_chars > 0, shown.splitlines()[0])
+        real = build_discoverer(decision, cache_dir=private_root / LLM_CACHE_SUBDIR)
+        try:
+            real.discover("<!-- pagina-origem: 1 -->\nTexto com nome PESSOA FICTICIA DE TESTE para ler.\n")
+            refused = False
+        except LlmConfigError:
+            refused = True
+        check("escolher o motor nao arma o envio: o descobridor real recusa sem a confirmacao", refused)
+        permit = RunPermit.for_plan(decision.channel, plan)
+        check("a confirmacao nasce inativa e so vale na rodada", not permit.active)
+
+        print("\n== 2. Rodada A: PDF sintetico -> lote ==")
+        live.permit = permit
+        first = run_llm_job(
+            [pdf],
+            export_root=export_root,
+            private_root=private_root,
+            discoverer=live,
+            verification_rounds=1,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, permit),
+            fallback_engine=local_engine(),  # piso local ligado (padrao); o motor leve nao carrega o NER
+        )
+        check("a confirmacao expirou ao fim da rodada", permit.state == "expirada" and not permit.active)
+        try:
+            permit.start()
+            reused = True
+        except Exception:  # noqa: BLE001
+            reused = False
+        check("a mesma confirmacao nao vale para a rodada seguinte", not reused)
+        folder_a = first.job.export_dir
+        text_a = first.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
+        check("exportacao liberada", first.job.export_allowed, first.job.export_block_reason)
+        check("ancora visivel em todas as folhas", len(re.findall(r"(?m)^\[fl\. \d+ · Evento \d+ · PET\d+ · p\. 1\]$", text_a)) == len(PAGES))
+        check("INDICE.md e ELENCO.md gravados", (folder_a / "INDICE.md").is_file() and (folder_a / "ELENCO.md").is_file())
+        cast = (folder_a / "ELENCO.md").read_text(encoding="utf-8")
+        check("ELENCO.md tem a secao de papeis do LLM", "## Papéis atribuídos pelo LLM" in cast)
+        audit = (folder_a / "AUDITORIA.txt").read_text(encoding="utf-8")
+        check("AUDITORIA registra o motor e a fonte da chave", f"motor LLM: {CHANNEL}" in audit and "variavel de ambiente" in audit)
+        check("AUDITORIA registra a confirmacao da rodada (so contagens)", "Confirmacao desta rodada" in audit and PDF_NAME not in audit)
+        check("sem falha do LLM, nenhuma folha vai ao motor local", "tratadas pelo motor local" not in audit and not first.fallback_pages)
+        check("LEIA-ME registra o motor", f"motor LLM: {CHANNEL}" in (folder_a / "LEIA-ME.txt").read_text(encoding="utf-8"))
+        check("o piso local esta ligado por padrao e a AUDITORIA e o LEIA-ME dizem",
+              first.local_floor and "Piso local: LIGADO" in audit
+              and "Piso local: LIGADO" in (folder_a / "LEIA-ME.txt").read_text(encoding="utf-8"))
+        for _kind, value, role in ENTITIES:
+            if role != "magistrado":
+                check(f"sem '{value[:14]}...' em claro (A)", value.casefold() not in text_a.casefold())
+        check("juiza em claro (item H)", "LUCIANA MONTEFUSCO DE ALMEIDA" in text_a)
+        for fixed in ("UNIÃO - FAZENDA NACIONAL", "R$ 1.234.567,89", "12/03/2024", "SISBAJUD", "Tema 962 do STJ"):
+            check(f"permanece: {fixed}", fixed in text_a)
+        check("CPF e CNPJ sem sair em claro", CPF not in text_a and CNPJ not in text_a)
+
+        print("\n== 3. Revisao do elenco ==")
+        rows = build_rows(first.roster, occurrences=first.occurrences, tokens=first.tokens)
+        for row in rows:
+            print(f"  {row.kind_label:9s} | {row.role_label:12s} | {row.occurrences:2d} mencoes | {row.token or '(mantido)':14s} | {row.action}")
+        print("  " + summarize(rows))
+        check("uma linha por entidade", len(rows) == len(ENTITIES), f"{len(rows)} linhas")
+        check("toda linha tokenizada tem token e mencoes", all(r.token and r.occurrences for r in rows if r.action == TOKENIZE))
+        claudete = next(r for r in rows if r.name.startswith("CLAUDETE"))
+        judge = next(r for r in rows if r.name.startswith("LUCIANA"))
+        decisions = {claudete.key: KEEP, judge.key: TOKENIZE}
+
+        print("\n== 4. Rodada B: elenco revisado, SEM rede (so cache) ==")
+        second = reapply_offline(
+            first, decisions, [pdf], export_root=export_root, private_root=private_root, fallback_engine=local_engine()
+        )
+        folder_b = second.result.job.export_dir
+        text_b = second.result.job.outcomes[0].markdown_path.read_text(encoding="utf-8")
+        check("duas decisoes aplicadas", second.changed == 2)
+        check("lote novo (a rodada A fica intacta)", folder_b != folder_a and (folder_a / "AUDITORIA.txt").is_file())
+        check("a socia mantida volta ao claro", "CLAUDETE HOFFMEISTER BARRETO" in text_b)
+        check("a juiza tokenizada some", "LUCIANA MONTEFUSCO DE ALMEIDA" not in text_b)
+        check("os outros seguem tokenizados", "ANTONIO CARLOS BARRETO" not in text_b and "MADEIREIRA PINHAL VERDE" not in text_b)
+        check("exportacao liberada", second.result.job.export_allowed, second.result.job.export_block_reason)
+        audit_b = (folder_b / "AUDITORIA.txt").read_text(encoding="utf-8")
+        check("AUDITORIA da B registra o modo sem rede", "Modo sem rede" in audit_b and f"motor LLM: {CHANNEL}" in audit_b)
+        check("elenco revisado so na pasta privada", (second.reviewed_path.parent == first.roster_path.parent) and not list(export_root.rglob("elenco*.json")))
+
+        print("\n== 5. As duas reguas ==")
+        out_a = run_ruler(structure, ["x", str(pdf_dir), str(folder_a)])
+        out_b = run_ruler(structure, ["x", str(pdf_dir), str(folder_b)])
+        tot_a, tot_b = structure_totals(out_a), structure_totals(out_b)
+        print(f"  estrutura A: {tot_a}")
+        print(f"  estrutura B: {tot_b}")
+        for label, totals in (("A", tot_a), ("B", tot_b)):
+            check(f"estrutura {label}: ancoras = folhas", totals.get("ancoras") == totals.get("folhas") == len(PAGES))
+            check(f"estrutura {label}: 0 valores, decimais e datas perdidos", all(totals.get(f"{kind}_perdidos_na_troca", 0) == 0 and totals.get(f"{kind}_perdidos_na_extracao", 0) == 0 for kind in ("valores", "decimais", "datas")))
+            check(f"estrutura {label}: 0 token colado em numero e 0 nao lida", totals.get("tokens_colados_em_numero", 0) == 0 and totals.get("nao_lidas", 0) == 0)
+        check("estrutura igual entre A e B", {k: v for k, v in tot_a.items() if k != "tokens_em_cabecalho_de_tabela"} == {k: v for k, v in tot_b.items() if k != "tokens_em_cabecalho_de_tabela"})
+        leak_out = run_ruler(leak, ["x", str(gabarito), str(folder_a), str(folder_b)])
+        print(leak_out.rstrip())
+        counts = leak_counts(leak_out)
+        check("vazamento: 0 em claro nas entidades e IDs privados (A)", all(c[0] == 0 for label, c in counts.items() if label not in {"juiza"}))
+        check("vazamento: a regua enxerga a decisao (socia B 0 -> mais; juiza mais -> 0)", counts.get("socia B", [1, 0])[1] > 0 and counts.get("juiza", [0, 1])[1] == 0)
+
+        step_forced_failure(pdf, export_root, private_root, decision, choice)
+        step_local_floor(pdf, export_root, private_root, decision, choice)
+
+    check("nenhuma tentativa de rede", not attempts, f"{len(attempts)} tentativa(s)")
+    check("o Gerenciador de Credenciais real nao foi tocado (keyring nem importado)", KEYRING_WAS_LOADED or "keyring" not in sys.modules)
+    hits = scan_for_key([workdir], extra_text="\n".join(detail for _n, _ok, detail in _RESULTS))
+    check("a chave falsa nao esta em nenhum arquivo gerado", not hits, ", ".join(hits))
+    return finish(workdir, args)
+
+
+def finish(workdir: Path, args: argparse.Namespace) -> int:
+    failed = [name for name, ok, _detail in _RESULTS if not ok]
+    print(f"\nEnsaio: {len(_RESULTS) - len(failed)} de {len(_RESULTS)} conferencias passaram.")
+    for name in failed:
+        print(f"  FALHOU: {name}")
+    if args.manter or args.saida:
+        print(f"Arquivos mantidos em {workdir}")
+    else:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

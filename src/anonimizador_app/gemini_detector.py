@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 from typing import Protocol
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
+from anonimizador_juridico.pseudonymizer import fold_lexical
 
 KEEP_TERMS = frozenset(
     {
@@ -61,6 +62,11 @@ KEEP_TERMS = frozenset(
         "presidente da republica",
         "presidente da república",
         "pessoa natural",
+        # 26/09/2026: o NER tomava "pessoa jurídica" por empresa (lote eproc de 25/09).
+        "pessoa juridica",
+        "pessoa jurídica",
+        "pessoa fisica",
+        "pessoa física",
         "socio controlador",
         "sócio controlador",
         "consumidor final",
@@ -173,6 +179,25 @@ _STREET_HINTS = (
     "quadra ",
 )
 _STREET_ABBREV = re.compile(r"(?:^|[\s,;])r\s")
+
+
+# Nome de cartorio ou de oficio ("1o Registro de Imoveis de X", "Cartorio de Notas de X", "Tabelionato de
+# Protesto", "Cartorio do 2o Oficio"): e ente do registro publico, fica em claro, nunca vira [EMPRESA_n].
+_REGISTRY_OFFICE = re.compile(
+    r"^(?:\d{1,2}\s*o?\s*)?(?:"
+    r"(?:cartorio|oficio|servico|tabelionato)\s+(?:d[eao]s?\s+)?(?:\d{1,2}\s*o?\s*)?"
+    r"(?:oficio\s+|cartorio\s+)?(?:registro|notas|protesto|imoveis|titulos|registral|civil|\d)"
+    r"|(?:cartorio|oficio|servico|tabelionato)\s+d[eao]s?\s+\d{1,2}\s*o?\s*(?:oficio|cartorio|registro)"
+    r"|registro\s+(?:geral\s+)?de\s+(?:imoveis|titulos|documentos|pessoas)"
+    r"|registro\s+civil|servico\s+registral|(?:oficio|cartorio|tabelionato)\b"
+    r")"
+)
+
+
+def is_registry_office(value: str) -> bool:
+    """O valor abre com o nome de um cartorio/oficio de registro ou de notas."""
+
+    return bool(_REGISTRY_OFFICE.match(fold_lexical(value)))
 
 
 def is_kept_term(value: str, extra: Iterable[str] = ()) -> bool:

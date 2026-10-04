@@ -84,14 +84,14 @@ class StructuredDetectionTests(unittest.TestCase):
         entities = StructuredDetector().detect(text)
         self.assertEqual([entity.entity_type for entity in entities], ["BR_OAB", "BR_OAB"])
         values = [entity.value_from(text) for entity in entities]
-        self.assertEqual(values, ["OAB/RS n.º 54.321", "N.OAB- 11223"])
+        self.assertEqual(values, ["RS n.º 54.321", "11223"])
         self.assertIn("Evento 203", text)
 
     def test_labeled_cep_with_optional_thousand_dot(self) -> None:
         text = "CEP 86000-000 na CDA; outro CEP 86.000-000 na inicial."
         entities = StructuredDetector().detect(text)
         values = [entity.value_from(text) for entity in entities if entity.entity_type == "BR_CEP"]
-        self.assertEqual(values, ["CEP 86000-000", "CEP 86.000-000"])
+        self.assertEqual(values, ["86000-000", "86.000-000"])
 
     def test_cpf_validator_still_applies_without_label(self) -> None:
         valid = StructuredDetector().detect("Identificador 52998224725 no Evento 203.")

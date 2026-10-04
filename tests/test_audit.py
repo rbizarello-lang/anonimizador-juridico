@@ -91,7 +91,7 @@ class AuditMapTests(unittest.TestCase):
         self.assertIn("ancora HTML", joined)
 
     def test_leftover_formatted_cnpj_is_counted(self) -> None:
-        notes = " ".join(audit_markdown("Orgao 04.252.011/0001-10. Uniao."))
+        notes = " ".join(audit_markdown("Orgao 61.738.402/0001-82. Uniao."))
         self.assertIn("CNPJ formatado em claro: 1", notes)
 
     def test_leftover_formatted_cpf_alerts(self) -> None:
@@ -100,7 +100,7 @@ class AuditMapTests(unittest.TestCase):
         self.assertIn("ALERTA", notes)
 
     def test_leftover_formatted_cep_is_counted(self) -> None:
-        notes = " ".join(audit_markdown("Endereco 86032-010. Uniao."))
+        notes = " ".join(audit_markdown("Endereco 86287-124. Uniao."))
         self.assertIn("CEP formatado em claro: 1", notes)
 
     def test_audit_report_has_no_party_pii(self) -> None:

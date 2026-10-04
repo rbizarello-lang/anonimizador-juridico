@@ -8,6 +8,7 @@ from anonimizador_juridico import EntitySpan
 from anonimizador_app.fidelity import (
     drop_protected_spans,
     is_blocked_numeric_context,
+    is_code_fragment,
     is_magistrate_or_citation,
     is_pfn_officer,
     is_precedent_party,
@@ -35,10 +36,10 @@ GUSTAVO FICTICIO BARCELOS
 
 ## Listagem dos Eventos do Processo
 
-Segundo estudo de Fabio Konder Comparato, o grupo e de fato.
-(TRF4, AG 0015031, Relatora Maria de Fatima Labarrere, D.E. 15/02/2012)
-Rel. Ministro Napoleao Nunes Maia Filho, PRIMEIRA TURMA.
-No dizer da Ministra Andrighi, do STJ:
+Segundo estudo de Fabio Konrad Comparini, o grupo e de fato.
+(TRF4, AG 0015031, Relatora Maria de Lourdes Labruna, D.E. 15/02/2012)
+Rel. Ministro Nestor Neves Mota Filho, PRIMEIRA TURMA.
+No dizer da Ministra Andreazza, do STJ:
 A executada Carla Exemplo Souza juntou defesa. R$ 10.000,00. SISBAJUD.
 """
 
@@ -69,39 +70,39 @@ class FidelityFilterTests(unittest.TestCase):
 
     def test_relator_and_ministro_are_protected(self) -> None:
         text = (
-            "Relatora Maria de Fatima Labarrere, D.E. 15/02/2012. "
-            "Rel. Ministro Napoleao Nunes Maia Filho, TURMA."
+            "Relatora Maria de Lourdes Labruna, D.E. 15/02/2012. "
+            "Rel. Ministro Nestor Neves Mota Filho, TURMA."
         )
         self.assertTrue(
             is_magistrate_or_citation(
                 text,
                 text.index("Maria"),
-                text.index("Maria") + len("Maria de Fatima Labarrere"),
+                text.index("Maria") + len("Maria de Lourdes Labruna"),
             )
         )
         self.assertTrue(
             is_magistrate_or_citation(
                 text,
-                text.index("Napoleao"),
-                text.index("Napoleao") + len("Napoleao Nunes Maia Filho"),
+                text.index("Nestor"),
+                text.index("Nestor") + len("Nestor Neves Mota Filho"),
             )
         )
 
     def test_doctrine_and_ministra_title_are_protected(self) -> None:
-        study = "Segundo estudo de Fabio Konder Comparato, o grupo e de fato."
+        study = "Segundo estudo de Fabio Konrad Comparini, o grupo e de fato."
         self.assertTrue(
             is_magistrate_or_citation(
                 study,
-                study.index("Fabio Konder"),
-                study.index("Fabio Konder") + len("Fabio Konder"),
+                study.index("Fabio Konrad"),
+                study.index("Fabio Konrad") + len("Fabio Konrad"),
             )
         )
-        saying = "No dizer da Ministra Andrighi, do STJ:"
+        saying = "No dizer da Ministra Andreazza, do STJ:"
         self.assertTrue(
             is_magistrate_or_citation(
                 saying,
-                saying.index("Ministra Andrighi"),
-                saying.index("Ministra Andrighi") + len("Ministra Andrighi"),
+                saying.index("Ministra Andreazza"),
+                saying.index("Ministra Andreazza") + len("Ministra Andreazza"),
             )
         )
 
@@ -116,11 +117,11 @@ class FidelityFilterTests(unittest.TestCase):
         self.assertTrue(is_magistrate_or_citation(text, start, start + len("Silva")))
 
     def test_min_dot_ementa_is_protected(self) -> None:
-        text = "Min. Teori Zavascki, Tribunal Pleno."
-        start = text.index("Teori")
+        text = "Min. Teodoro Zambelli, Tribunal Pleno."
+        start = text.index("Teodoro")
         self.assertTrue(
             is_magistrate_or_citation(
-                text, start, start + len("Teori Zavascki")
+                text, start, start + len("Teodoro Zambelli")
             )
         )
 
@@ -146,8 +147,8 @@ class FidelityFilterTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)
 
     def test_gliner_distinctive_name_is_kept(self) -> None:
-        text = "Carla Castanheira Souza juntou defesa."
-        kept = drop_protected_spans(text, [_person(text, "Carla Castanheira Souza")])
+        text = "Carla Cantagalo Souza juntou defesa."
+        kept = drop_protected_spans(text, [_person(text, "Carla Cantagalo Souza")])
         self.assertEqual(len(kept), 1)
 
     def test_party_name_is_not_protected(self) -> None:
@@ -177,10 +178,10 @@ class FidelityFilterTests(unittest.TestCase):
             hits = []
             mapping = (
                 ("GUSTAVO FICTICIO BARCELOS", "pessoa"),
-                ("Fabio Konder", "pessoa"),
-                ("Maria de Fatima Labarrere", "pessoa"),
-                ("Napoleao Nunes Maia Filho", "pessoa"),
-                ("Ministra Andrighi", "pessoa"),
+                ("Fabio Konrad", "pessoa"),
+                ("Maria de Lourdes Labruna", "pessoa"),
+                ("Nestor Neves Mota Filho", "pessoa"),
+                ("Ministra Andreazza", "pessoa"),
                 ("Carla Exemplo Souza", "pessoa"),
                 ("Norte Inventado S.A.", "empresa privada"),
             )
@@ -209,10 +210,10 @@ class FidelityFilterTests(unittest.TestCase):
             )
             markdown = job.outcomes[0].markdown_path.read_text(encoding="utf-8")
         self.assertIn("GUSTAVO FICTICIO BARCELOS", markdown)
-        self.assertIn("Fabio Konder", markdown)
-        self.assertIn("Maria de Fatima Labarrere", markdown)
-        self.assertIn("Napoleao Nunes Maia Filho", markdown)
-        self.assertIn("Ministra Andrighi", markdown)
+        self.assertIn("Fabio Konrad", markdown)
+        self.assertIn("Maria de Lourdes Labruna", markdown)
+        self.assertIn("Nestor Neves Mota Filho", markdown)
+        self.assertIn("Ministra Andreazza", markdown)
         self.assertIn("[PESSOA_", markdown)
         self.assertNotIn("Carla Exemplo Souza", markdown)
         self.assertIn("UNIÃO - FAZENDA NACIONAL", markdown)
@@ -221,31 +222,31 @@ class FidelityFilterTests(unittest.TestCase):
 
     def test_pfn_officer_from_ner_is_dropped(self) -> None:
         text = (
-            "Juliano Ficticio Reis, Procurador da Fazenda Nacional, "
+            "Rafael Ficticio Neves, Procurador da Fazenda Nacional, "
             "requereu SISBAJUD. A Uniao permanece."
         )
-        start = text.index("Juliano")
-        end = start + len("Juliano Ficticio Reis")
+        start = text.index("Rafael")
+        end = start + len("Rafael Ficticio Neves")
         self.assertTrue(is_pfn_officer(text, start, end))
-        kept = drop_protected_spans(text, [_person(text, "Juliano Ficticio Reis")])
+        kept = drop_protected_spans(text, [_person(text, "Rafael Ficticio Neves")])
         self.assertEqual(kept, [])
 
     def test_pfn_event_code_on_same_line_is_dropped(self) -> None:
         text = (
-            "26/08/2025 15:45:55 PFN2041305 - Juliano Ficticio Reis - "
-            "PROCURADOR 5017674-26.2025.4.04.7001/PR 1"
+            "26/08/2025 15:45:55 PFN9000305 - Rafael Ficticio Neves - "
+            "PROCURADOR 5001111-54.2025.4.04.7001/PR 1"
         )
-        start = text.index("Juliano")
-        end = start + len("Juliano Ficticio Reis")
+        start = text.index("Rafael")
+        end = start + len("Rafael Ficticio Neves")
         self.assertTrue(is_pfn_officer(text, start, end))
-        kept = drop_protected_spans(text, [_person(text, "Juliano Ficticio Reis")])
+        kept = drop_protected_spans(text, [_person(text, "Rafael Ficticio Neves")])
         self.assertEqual(kept, [])
 
     def test_pfn_does_not_protect_target_list(self) -> None:
-        text = "Roger Ficticio Bizarello, Procurador da Fazenda Nacional."
+        text = "Marcos Ficticio Souza, Procurador da Fazenda Nacional."
         kept = drop_protected_spans(
             text,
-            [_person(text, "Roger Ficticio Bizarello", recognizer="ListaDeAlvos")],
+            [_person(text, "Marcos Ficticio Souza", recognizer="ListaDeAlvos")],
         )
         self.assertEqual(len(kept), 1)
 
@@ -279,18 +280,18 @@ class FidelityFilterTests(unittest.TestCase):
 
 class Ciclo2FidelityTests(unittest.TestCase):
     def test_nire_and_verification_code_are_not_ids(self) -> None:
-        nire = "NIRE: 4120352196 na junta."
-        start = nire.index("4120352196")
+        nire = "NIRE: 4195861746 na junta."
+        start = nire.index("4195861746")
         self.assertTrue(is_blocked_numeric_context(nire, start, start + 10))
         verificacao = (
-            "CÓDIGO DE VERIFICAÇÃO: 11900654132. NIRE: 41203521963."
+            "CÓDIGO DE VERIFICAÇÃO: 11903323352. NIRE: 41958617463."
         )
-        phone_at = verificacao.index("11900654132")
+        phone_at = verificacao.index("11903323352")
         self.assertTrue(
             is_blocked_numeric_context(verificacao, phone_at, phone_at + 11)
         )
-        registro = "CERTIFICO O REGISTRO EM 22/02/2022 SOB Nº 20221059318."
-        cpf_at = registro.index("20221059318")
+        registro = "CERTIFICO O REGISTRO EM 22/02/2022 SOB Nº 32241792799."
+        cpf_at = registro.index("32241792799")
         self.assertTrue(is_blocked_numeric_context(registro, cpf_at, cpf_at + 11))
 
     def test_uniao_cnpj_is_dropped(self) -> None:
@@ -311,18 +312,18 @@ class Ciclo2FidelityTests(unittest.TestCase):
     def test_private_cnpj_on_same_row_is_kept(self) -> None:
         text = (
             "UNIÃO - FAZENDA NACIONAL (00.394.460/0216-53) | "
-            "NORTE INVENTADO LTDA (04.252.011/0001-10)"
+            "NORTE INVENTADO LTDA (61.738.402/0001-82)"
         )
-        start = text.index("04.252.011/0001-10")
-        end = start + len("04.252.011/0001-10")
-        self.assertFalse(is_uniao_cnpj(text, start, end, "04.252.011/0001-10"))
+        start = text.index("61.738.402/0001-82")
+        end = start + len("61.738.402/0001-82")
+        self.assertFalse(is_uniao_cnpj(text, start, end, "61.738.402/0001-82"))
 
     def test_precedent_ag_is_dropped_cover_process_stays(self) -> None:
-        ementa = "(TRF4, AG 5013638-94.2022.4.04.0000, SEGUNDA TURMA)"
-        start = ementa.index("5013638-94.2022.4.04.0000")
+        ementa = "(TRF4, AG 5002222-32.2022.4.04.0000, SEGUNDA TURMA)"
+        start = ementa.index("5002222-32.2022.4.04.0000")
         self.assertTrue(is_precedent_process(ementa, start))
-        capa = "Processo 5017674-26.2025.4.04.7001/PR, Evento 1"
-        cover_start = capa.index("5017674-26.2025.4.04.7001")
+        capa = "Processo 5001111-54.2025.4.04.7001/PR, Evento 1"
+        cover_start = capa.index("5001111-54.2025.4.04.7001")
         self.assertFalse(is_precedent_process(capa, cover_start))
 
     def test_natureza_juridica_is_too_generic(self) -> None:
@@ -344,13 +345,13 @@ class Ciclo2FidelityTests(unittest.TestCase):
         self.assertEqual(drop_protected_spans(text, [span]), [])
 
     def test_cpf_formatted_after_sob_numero_stays(self) -> None:
-        text = "inscrito no CPF/MF sob o nº 023.650.449-56 na ficha."
-        start = text.index("023.650.449-56")
+        text = "inscrito no CPF/MF sob o nº 148.903.627-03 na ficha."
+        start = text.index("148.903.627-03")
         self.assertFalse(is_blocked_numeric_context(text, start, start + 14))
 
     def test_unlabeled_compact_phone_is_dropped(self) -> None:
-        text = "Coluna da tabela 1223520231 sem rotulo de telefone."
-        start = text.index("1223520231")
+        text = "Coluna da tabela 1242658019 sem rotulo de telefone."
+        start = text.index("1242658019")
         self.assertTrue(is_unlabeled_compact_phone(text, start, start + 10))
         span = EntitySpan(
             start=start,
@@ -360,6 +361,27 @@ class Ciclo2FidelityTests(unittest.TestCase):
             recognizer="BrPhoneRecognizer",
         )
         self.assertEqual(drop_protected_spans(text, [span]), [])
+
+    def test_phone_inside_longer_code_is_dropped(self) -> None:
+        # Protocolo CNIB: o comeco do numero casava telefone e o resto sobrava colado.
+        text = "Protocolo de Indisponibilidade n° 202605.2912.12345678-IA-773, de 29/05/2026"
+        start = text.index("202605.2912")
+        self.assertTrue(is_code_fragment(text, start, start + 11))
+        span = EntitySpan(
+            start=start,
+            end=start + 11,
+            entity_type="BR_PHONE",
+            score=0.8,
+            recognizer="BrPhoneRecognizer",
+        )
+        self.assertEqual(drop_protected_spans(text, [span]), [])
+
+    def test_phone_ending_the_number_stays(self) -> None:
+        text = "Tel. (43) 3555-0192, no rodape. Fone 43 3555.0192."
+        for value in ("(43) 3555-0192", "43 3555.0192"):
+            start = text.index(value)
+            with self.subTest(value=value):
+                self.assertFalse(is_code_fragment(text, start, start + len(value)))
 
     def test_labeled_compact_phone_stays(self) -> None:
         text = "Tel. 11987654321 no rodape da peticao."
@@ -377,10 +399,10 @@ class Ciclo2FidelityTests(unittest.TestCase):
     def test_precedent_organization_is_dropped(self) -> None:
         text = (
             "EMENTA: REsp 1.234.567, Rel. Ministro Ficticio. "
-            "Jornal do Brasil S.A. vs. Uniao, julgado em 2012, DJe 20/01/2012."
+            "Gazeta do Planalto S.A. vs. Uniao, julgado em 2012, DJe 20/01/2012."
         )
-        start = text.index("Jornal do Brasil S.A.")
-        end = start + len("Jornal do Brasil S.A.")
+        start = text.index("Gazeta do Planalto S.A.")
+        end = start + len("Gazeta do Planalto S.A.")
         self.assertTrue(is_precedent_party(text, start, end))
         span = EntitySpan(
             start=start,
@@ -392,7 +414,7 @@ class Ciclo2FidelityTests(unittest.TestCase):
         self.assertEqual(drop_protected_spans(text, [span]), [])
 
     def test_own_case_ag_stays_when_filename_matches(self) -> None:
-        number = "5017674-26.2025.4.04.7001"
+        number = "5001111-54.2025.4.04.7001"
         text = f"Interposto AG {number} contra a sentenca."
         start = text.index(number)
         end = start + len(number)
@@ -402,7 +424,7 @@ class Ciclo2FidelityTests(unittest.TestCase):
                 text,
                 start,
                 end,
-                source_name="PR-50176742620254047001-2026-8-21_PARTE_1.pdf",
+                source_name="PR-50011115420254047001-2026-8-21_PARTE_1.pdf",
             )
         )
 
@@ -410,9 +432,9 @@ class Ciclo2FidelityTests(unittest.TestCase):
         text = (
             "Z" * 5000
             + "comprar\n\n<!-- pagina-origem: 47 -->\n"
-            + "Processo 5017674-26.2025.4.04.7001/PR,"
+            + "Processo 5001111-54.2025.4.04.7001/PR,"
         )
-        start = text.index("5017674-26.2025.4.04.7001")
+        start = text.index("5001111-54.2025.4.04.7001")
         self.assertFalse(is_precedent_process(text, start, start + 25))
 
 

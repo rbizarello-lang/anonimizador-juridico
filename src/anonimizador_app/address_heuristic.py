@@ -17,8 +17,15 @@ from .gemini_detector import is_kept_term
 RECOGNIZER = "HeuristicaEndereco"
 _SCORE = 0.90
 
-_VIA = r"(?:Rua|R\.|R\s+|Avenida|Ave\.?|Av\.|Avn\.|Alameda|Travessa|Pra[cç]a|P[cç]\.)"
+# "R" sem ponto so abrevia Rua antes de palavra: "R E G I S T R O" (cabecalho espacado) e
+# "R D ATIVA" (celula de tabela) nao sao logradouro.
+_VIA = r"(?:Rua|R\.|R\s+(?=[A-ZÁ-Ú]{2})|Avenida|Ave\.?|Av\.|Avn\.|Alameda|Travessa|Pra[cç]a|P[cç]\.)"
 _NUMBER_MARK = r"(?:n[º°o.]?\s*|n[uú]mero\s+)?"
+# Nome do logradouro: nao atravessa celula de tabela ("|") nem vao de coluna (3+ espacos).
+_NAME = r"(?:(?![^\S\n]{3})[^,\n|])"
+_NAME_NO_DIGIT = r"(?:(?![^\S\n]{3})[^,\n|\d])"
+# Predial com milhar ("2.350") e um numero so: parar no ponto deixava ".350" colado ao token.
+_PREDIAL = r"\d{1,5}(?:\.\d{3})?"
 
 _VIA_NUMBER = re.compile(
     r"(?ix)"
@@ -26,11 +33,11 @@ _VIA_NUMBER = re.compile(
     r"("
     rf"{_VIA}"
     r"\s*[A-ZÁ-Ú]"
-    r"[^,\n]{2,80}?"
+    rf"{_NAME}{{2,80}}?"
     r"\s*(?:[,;.\-–—]\s*)?"
     rf"{_NUMBER_MARK}"
     r"(?<![A-Za-z0-9/])"
-    r"\d{1,5}"
+    rf"{_PREDIAL}"
     r")\b"
 )
 
@@ -39,7 +46,7 @@ _VIA_ONLY = re.compile(
     r"(?:(?<=^)|(?<=[\s,;:(]))"
     r"("
     rf"{_VIA}"
-    r"\s+[A-ZÁ-Ú][^,\n]{3,80}?"
+    rf"\s+[A-ZÁ-Ú]{_NAME}{{3,80}}?"
     r")"
     r"\s+n[º°o.]?\s*$"
 )
@@ -56,7 +63,7 @@ _VIA_PARTIAL = re.compile(
     r"(?:(?<=^)|(?<=[\s,;:(]))"
     r"("
     rf"{_VIA}"
-    r"\s+[A-ZÁ-Ú][^,\n\d]{1,60}"
+    rf"\s+[A-ZÁ-Ú]{_NAME_NO_DIGIT}{{1,60}}"
     r")"
     r"\s*$"
 )
@@ -65,16 +72,16 @@ _CONTINUATION_NUMBER = re.compile(
     r"(?ix)"
     r"^\s*"
     r"("
-    r"[A-ZÁ-Ú][^,\n]{0,60}?"
+    rf"[A-ZÁ-Ú]{_NAME}{{0,60}}?"
     r"(?:[,;.\-–—]\s*)?"
     rf"{_NUMBER_MARK}"
     r"(?<![A-Za-z0-9/])"
-    r"\d{1,5}"
+    rf"{_PREDIAL}"
     r")"
     r"\b"
 )
 
-_NEXT_NUMBER = re.compile(r"^\s*(\d{1,5})\b")
+_NEXT_NUMBER = re.compile(rf"^\s*({_PREDIAL})\b")
 
 _FORM_LABEL = re.compile(
     r"^(?:Logradouro|Endere[cç]o(?:\s+Completo)?|RUA|AV\.|AVENIDA)\b",

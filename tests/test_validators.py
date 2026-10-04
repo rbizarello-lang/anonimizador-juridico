@@ -41,7 +41,7 @@ class ValidatorTests(unittest.TestCase):
         self.assertFalse(is_valid_pis(valid[:10] + ("0" if valid[10] != "0" else "1")))
 
     def test_titulo_eleitor_dv(self) -> None:
-        valid = titulo_with_dv("11486452", "06")
+        valid = titulo_with_dv("52906347", "06")
         self.assertEqual(len(valid), 12)
         self.assertTrue(is_valid_titulo_eleitor(valid))
         self.assertFalse(is_valid_titulo_eleitor("111111111111"))

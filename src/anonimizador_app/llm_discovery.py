@@ -1,4 +1,4 @@
-"""Descoberta de entidades por LLM com LangExtract (Gemini, Vertex AI ou Ollama).
+"""Descoberta de entidades por LLM com LangExtract (Gemini API paga ou Vertex AI).
 
 O LLM le trechos do texto — ja com CPF, CNPJ e afins trocados por token nesta
 maquina — e devolve quem aparece e com que papel. Nao reescreve nada: a troca
@@ -10,6 +10,11 @@ ficam aqui, e nao no provedor: no LangExtract, um trecho com erro (bloqueio
 de seguranca, JSON truncado) derruba o lote inteiro ou e descartado em
 silencio. Aqui o trecho que falhar e registrado (fail-closed) e a auditoria
 diz quais paginas nao foram lidas.
+
+Este modulo nao le variavel de ambiente nem cofre: a chave chega pronta em
+``LlmConfig.api_key`` (``credentials.ApiKey``) e so depois de o portao do
+motor (``llm_engine.check_engine``) liberar. ``offline=True`` usa so o cache
+(reaplica um elenco revisado sem rede).
 """
 
 from __future__ import annotations
@@ -17,7 +22,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 from collections.abc import Callable, Sequence
@@ -26,19 +30,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .credentials import ApiKey
+from .llm_gate import (
+    HIDDEN,
+    GateError,
+    NetworkCheck,
+    RunPermit,
+    check_network_point,
+    quiet_sdk_logging,
+    safe_error,
+    scrub_secrets,
+    verify_client_endpoint,
+    verify_no_disk_replay,
+)
 from .roster import Mention
 
-PROMPT_VERSION = "2026-09-25.1"
+PROMPT_VERSION = "2026-10-01.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_LOCATION = "southamerica-east1"
-API_KEY_ENVS = ("GEMINI_API_KEY", "LANGEXTRACT_API_KEY")
 _EMPTY_OUTPUT = '{"extractions": []}'
 _PAGE_ANCHOR = re.compile(r"<!--\s*pagina-origem:\s*(\d+)\s*-->")
 _LETTER = re.compile(r"[^\W\d_]")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 # Token ja aplicado: a numeracao muda de um lote para outro (um CPF novo na
 # capa renumera todos os seguintes); a chave do cache ignora o numero.
-_TOKEN_NUMBER = re.compile(r"\[([A-Z0-9_]+)_\d+\]")
+_TOKEN_NUMBER = re.compile(r"\[([A-Z0-9_]+)_\d+(?:·G\d+)?\]")
 # Pecas de execucao fiscal falam de fraude, crime e violencia; o filtro
 # padrao bloquearia o trecho e a pagina ficaria sem leitura.
 _SAFETY_OFF = [
@@ -100,11 +116,11 @@ def _example_specs() -> list[tuple[str, list[tuple[str, str, str, str]]]]:
             "EXECUÇÃO FISCAL Nº 5009999-11.2025.4.04.7001/PR\n"
             "EXEQUENTE: UNIÃO - FAZENDA NACIONAL\n"
             "EXECUTADO: MADEIREIRA PINHAL VERDE LTDA ([CNPJ_1])\n"
-            "ADVOGADO: RAFAEL KOWALSKI BERTOLDI ([OAB_1])\n"
+            "ADVOGADO: RAFAEL TEIXEIRA ALBUQUERQUE ([OAB_1])\n"
             "Endereço: RODOVIA PR-445, KM 12, LOTE 7, ZONA RURAL",
             [
                 ("empresa", "MADEIREIRA PINHAL VERDE LTDA", "parte", "Madeireira Pinhal Verde Ltda"),
-                ("pessoa", "RAFAEL KOWALSKI BERTOLDI", "advogado", "Rafael Kowalski Bertoldi"),
+                ("pessoa", "RAFAEL TEIXEIRA ALBUQUERQUE", "advogado", "Rafael Teixeira Albuquerque"),
                 ("endereco", "RODOVIA PR-445, KM 12, LOTE 7", "parte", "Rodovia PR-445, Km 12, Lote 7"),
             ],
         ),
@@ -121,27 +137,27 @@ def _example_specs() -> list[tuple[str, list[tuple[str, str, str, str]]]]:
             ],
         ),
         (
-            "Defiro a penhora via SISBAJUD. Intime-se o executado JOSÉ CARLOS NUNES na "
-            "pessoa de seu advogado, Dr. Tiago Brandalise. Aplica-se o REsp 1.999.001/RS "
-            "(Rel. Min. Heitor Vasconcellos Prado). Documento eletrônico assinado por "
-            "LUCIANA MARCHETTI DE ALMEIDA, Juíza Federal.",
+            "Defiro a penhora pelo SISBAJUD. Intime-se o executado JOSÉ CARLOS NUNES na "
+            "pessoa de seu advogado, Dr. Tiago Bortolotto. Aplica-se o REsp 1.999.001/RS "
+            "(Rel. Min. Heitor Vilela Prado). Documento eletrônico assinado por "
+            "LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal.",
             [
                 ("pessoa", "JOSÉ CARLOS NUNES", "parte", "José Carlos Nunes"),
-                ("pessoa", "Tiago Brandalise", "advogado", "Tiago Brandalise"),
-                ("pessoa", "Heitor Vasconcellos Prado", "magistrado", "Heitor Vasconcellos Prado"),
-                ("pessoa", "LUCIANA MARCHETTI DE ALMEIDA", "magistrado", "Luciana Marchetti de Almeida"),
+                ("pessoa", "Tiago Bortolotto", "advogado", "Tiago Bortolotto"),
+                ("pessoa", "Heitor Vilela Prado", "magistrado", "Heitor Vilela Prado"),
+                ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "magistrado", "Luciana Montefusco de Almeida"),
             ],
         ),
         (
-            "CONTRATO SOCIAL - VIDRAÇARIA SOL NASCENTE LTDA - ME\n"
-            "Sócios: ANTONIO CARLOS PEDROSO, residente na Rua Tupinambás, 1.520, apto 302, "
-            "e CLAUDETE SCHNElDER PEDROSO. Site: www.vidracariasolnascente.com.br",
+            "CONTRATO SOCIAL - VIDRAÇARIA ALVORADA LTDA - ME\n"
+            "Sócios: ANTONIO CARLOS BARRETO, residente na Rua Tupinambás, 1.520, apto 302, "
+            "e CLAUDETE HOFFMElSTER BARRETO. Site: www.vidracariaalvorada.com.br",
             [
-                ("empresa", "VIDRAÇARIA SOL NASCENTE LTDA - ME", "parte", "Vidraçaria Sol Nascente Ltda"),
-                ("pessoa", "ANTONIO CARLOS PEDROSO", "socio", "Antonio Carlos Pedroso"),
+                ("empresa", "VIDRAÇARIA ALVORADA LTDA - ME", "parte", "Vidraçaria Alvorada Ltda"),
+                ("pessoa", "ANTONIO CARLOS BARRETO", "socio", "Antonio Carlos Barreto"),
                 ("endereco", "Rua Tupinambás, 1.520, apto 302", "socio", "Rua Tupinambás, 1.520, apto 302"),
-                ("pessoa", "CLAUDETE SCHNElDER PEDROSO", "socio", "Claudete Schneider Pedroso"),
-                ("empresa", "www.vidracariasolnascente.com.br", "parte", "Vidraçaria Sol Nascente Ltda"),
+                ("pessoa", "CLAUDETE HOFFMElSTER BARRETO", "socio", "Claudete Hoffmeister Barreto"),
+                ("empresa", "www.vidracariaalvorada.com.br", "parte", "Vidraçaria Alvorada Ltda"),
             ],
         ),
     ]
@@ -171,24 +187,34 @@ class LlmConfigError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class LlmConfig:
-    """Provedor do LLM. Conta gratuita do Gemini e vedada: o conteudo treina o modelo."""
+    """Provedor do LLM. Conta gratuita do Gemini e vedada: o conteudo treina o modelo.
 
-    provider: str = "gemini"  # gemini (API paga) | vertex | ollama
+    ``channel`` e o canal liberado pelo portao (``gemini-pago`` ou ``vertex-sp``).
+    ``api_key`` nao aparece no ``repr``.
+    """
+
+    provider: str = "gemini"  # gemini (API paga) | vertex
+    channel: str = ""
+    api_key: ApiKey | None = field(default=None, repr=False, compare=False)
     model_id: str = DEFAULT_MODEL
     project: str = ""
     location: str = DEFAULT_LOCATION
-    model_url: str = "http://localhost:11434"
-    max_workers: int = 16
+    # Vertex AI: caminho do arquivo de conta de servico (vazio = credencial padrao do gcloud). So o
+    # caminho; o conteudo e lido no momento de criar o cliente e nao e guardado.
+    credentials_path: str = ""
+    # Padrao 4 (H3/M5): numa chave nova, 16 chamadas simultaneas provocam 429 em massa e jogam folhas no motor
+    # local. Sobe-se com --paralelo depois de ver que o limite da conta aguenta.
+    max_workers: int = 4
     chunk_chars: int = 4000
     max_output_tokens: int = 8192
     retries: int = 1
-    timeout: int = 180
 
     def describe(self) -> str:
+        if self.channel:
+            return f"{self.model_id} via {self.channel}"
         where = {
             "gemini": "Gemini API",
             "vertex": f"Vertex AI ({self.location})",
-            "ollama": f"Ollama local ({self.model_url})",
         }.get(self.provider, self.provider)
         return f"{self.model_id} via {where}"
 
@@ -208,6 +234,12 @@ class DiscoveryReport:
     failed: list[tuple[int, int]] = field(default_factory=list)
     failure_reasons: list[str] = field(default_factory=list)
     ungrounded: int = 0
+    # Trechos que o LLM respondeu com JSON valido mas SEM nenhuma entidade. Pode ser pagina sem nome, ou
+    # resposta ruim: o LLM nao e quem decide. O pipeline manda o motor local conferir (B1/I6) e a resposta
+    # vazia nunca vai para o cache.
+    empty: list[tuple[int, int]] = field(default_factory=list)
+    # Modo sem rede: trecho fora do cache nao foi lido (nao e falha do provedor).
+    offline: bool = False
 
 
 @dataclass(slots=True)
@@ -268,6 +300,16 @@ def page_of(text: str, position: int) -> int:
             break
         page = int(match.group(1))
     return page
+
+
+def page_ranges(text: str) -> dict[int, list[tuple[int, int]]]:
+    """Faixas do texto por numero de pagina (``pagina-origem``); o que vem antes da primeira ancora e a
+    pagina 0. Texto sem nenhuma ancora e uma pagina 0 so (o texto todo)."""
+
+    ranges: dict[int, list[tuple[int, int]]] = {}
+    for start, end in _page_blocks(text):
+        ranges.setdefault(page_of(text, start), []).append((start, end))
+    return ranges
 
 
 def _page_blocks(text: str) -> list[tuple[int, int]]:
@@ -343,7 +385,9 @@ def wrap_model(
                     scored = next(iter(inner.infer([prompt], **kwargs)))
                     output = scored[0].output or ""
                 except Exception as exc:  # noqa: BLE001 - trecho isolado
-                    reason = f"{type(exc).__name__}: {exc}"[:300]
+                    # So o tipo, o codigo HTTP e o status: a mensagem crua pode ter a chave e texto da peca,
+                    # e esta frase vai para a AUDITORIA (pasta exportavel) e para o log.
+                    reason = safe_error(exc)
                     continue
                 if _parses(output):
                     return output
@@ -363,15 +407,33 @@ class LangExtractDiscoverer:
         *,
         cache_dir: Path | None = None,
         model_factory: Callable[[], Any] | None = None,
+        offline: bool = False,
+        permit: RunPermit | None = None,
     ) -> None:
         self.config = config or LlmConfig()
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self._model_factory = model_factory
+        self.offline = offline
+        # B2: a confirmacao da rodada. Sem ela ativa, o modelo (e a rede) nao e criado.
+        self.permit = permit
+        # I4: o que o portao conferiu no ponto da rede na ultima vez que o modelo foi criado.
+        self.network_check: NetworkCheck | None = None
 
     def describe(self) -> str:
         if self._model_factory is not None:
             return f"{self.config.model_id} (modelo injetado)"
+        if self.offline:
+            return f"{self.config.describe()} (sem rede: so o cache)"
         return self.config.describe()
+
+    def plan(self, text: str) -> tuple[int, int, int, int]:
+        """(trechos, caracteres, trechos ja no cache, caracteres que seriam enviados) do texto. So le o
+        disco: serve para mostrar ao Operador o que a rodada vai mandar ao provedor."""
+
+        chunks = split_chunks(text, self.config.chunk_chars)
+        cached = sum(1 for chunk in chunks if self._cache_load(chunk) is not None)
+        pending = sum(len(chunk.text) for chunk in chunks if self._cache_load(chunk) is None)
+        return len(chunks), sum(len(chunk.text) for chunk in chunks), cached, pending
 
     def discover(self, text: str) -> Discovery:
         chunks = split_chunks(text, self.config.chunk_chars)
@@ -385,10 +447,20 @@ class LangExtractDiscoverer:
             else:
                 found[index] = cached
                 report.cached += 1
-        if pending:
+        if pending and self.offline:
+            # Sem rede: trecho fora do cache nao e lido (fail-closed, como falha de API).
+            report.failed = [(chunks[index].start, chunks[index].end) for index in pending]
+            report.failure_reasons = ["sem rede: trecho fora do cache"]
+            report.offline = True
+        elif pending:
             report.sent = len(pending)
             failed = self._run(chunks, pending, found, report)
             report.failed = [(chunks[index].start, chunks[index].end) for index in sorted(failed)]
+            report.empty = [
+                (chunks[index].start, chunks[index].end)
+                for index in pending
+                if index not in failed and not found.get(index)
+            ]
         mentions: list[Mention] = []
         for index in sorted(found):
             for item in found[index]:
@@ -405,6 +477,18 @@ class LangExtractDiscoverer:
         found: dict[int, list[dict]],
         report: DiscoveryReport,
     ) -> set[int]:
+        if self._model_factory is None:
+            # Ponto da rede: so com a confirmacao desta rodada ativa (B2). A escolha do motor, sozinha,
+            # nao autoriza o envio.
+            if self.permit is None:
+                raise LlmConfigError(
+                    "Envio ao provedor sem a confirmacao desta rodada: confirme canal, arquivos e "
+                    "caracteres antes de cada rodada com LLM."
+                )
+            try:
+                self.permit.require_active()
+            except GateError as exc:
+                raise LlmConfigError(str(exc)) from None
         lx = import_langextract()
         from langextract import prompt_validation
 
@@ -436,6 +520,9 @@ class LangExtractDiscoverer:
             max_workers=self.config.max_workers,
             use_schema_constraints=False,
             show_progress=False,
+            fetch_urls=False,
+            # I5: nada de log de depuracao do LangExtract (traz prompts, ou seja, texto de peca).
+            debug=False,
             prompt_validation_level=prompt_validation.PromptValidationLevel.OFF,
             resolver_params={"suppress_parse_errors": True},
         )
@@ -451,7 +538,7 @@ class LangExtractDiscoverer:
             _LOG.warning(
                 "LLM: %d trecho(s) sem leitura (%s)",
                 len(failed),
-                " | ".join(report.failure_reasons[:3]),
+                " | ".join(scrub_secrets(reason) for reason in report.failure_reasons[:3]),
             )
         for document in annotated:
             index = int(str(document.document_id).rsplit("_", 1)[1])
@@ -462,46 +549,82 @@ class LangExtractDiscoverer:
                 for extraction in document.extractions or []
             ]
             found[index] = items
-            self._cache_save(chunks[index], items)
+            # Resposta vazia nao e guardada: pode ser falha disfarcada (JSON valido sem nada), e o cache
+            # a serviria para sempre como "lida". O motor local confere o que ficou sem entidade.
+            if items:
+                self._cache_save(chunks[index], items)
         return failed
 
     def _build_model(self) -> Any:
         lx = import_langextract()
         cfg = self.config
+        if self.offline:
+            raise LlmConfigError("Modo sem rede: o modelo nao pode ser criado.")
+        if not cfg.channel:
+            raise LlmConfigError(
+                "Canal nao liberado: o provedor so e chamado depois do portao do motor "
+                "(llm_engine.check_engine)."
+            )
+        # I4: o portao reconferido AQUI, onde o texto sai da maquina (nao basta ter passado pela tela).
+        try:
+            check = check_network_point(
+                channel=cfg.channel,
+                provider=cfg.provider,
+                location=cfg.location,
+                project=cfg.project,
+            )
+        except GateError as exc:
+            raise LlmConfigError(str(exc)) from None
         kwargs: dict[str, Any] = {"temperature": 0.0}
         if cfg.provider in {"gemini", "vertex"}:
             kwargs.update(
                 max_workers=1,
                 max_output_tokens=cfg.max_output_tokens,
                 safety_settings=_SAFETY_OFF,
+                # O endereco vai fixo, pelo canal: nenhuma variavel de ambiente o troca.
+                http_options={"base_url": check.base_url},
             )
             if cfg.provider == "vertex":
                 if not cfg.project:
                     raise LlmConfigError("Vertex AI exige o projeto do Google Cloud (--projeto).")
                 kwargs.update(vertexai=True, project=cfg.project, location=cfg.location)
+                if cfg.credentials_path:
+                    kwargs["credentials"] = _service_account_credentials(cfg.credentials_path)
             else:
-                key = next((os.environ[name] for name in API_KEY_ENVS if os.environ.get(name)), "")
-                if not key:
+                if cfg.api_key is None:
                     raise LlmConfigError(
-                        "Defina GEMINI_API_KEY com a chave de um projeto com faturamento "
-                        "ativo. Chave gratuita nao: o conteudo pode treinar o modelo."
+                        "Sem chave do Gemini pago. Guarde-a no Gerenciador de Credenciais "
+                        "(tools/anonimizar_llm.py --guardar-chave). Chave gratuita nao: "
+                        "o conteudo pode treinar o modelo."
                     )
-                kwargs["api_key"] = key
+                kwargs["api_key"] = cfg.api_key.reveal()
             provider = "gemini"
-        elif cfg.provider == "ollama":
-            kwargs.update(model_url=cfg.model_url, timeout=cfg.timeout)
-            provider = "ollama"
         else:
             raise LlmConfigError(f"Provedor desconhecido: {cfg.provider!r}")
         config = lx.factory.ModelConfig(
             model_id=cfg.model_id, provider=provider, provider_kwargs=kwargs
         )
-        return lx.factory.create_model(
-            config=config,
-            examples=build_examples(),
-            use_schema_constraints=True,
-            fence_output=False,
-        )
+        try:
+            model = lx.factory.create_model(
+                config=config,
+                examples=build_examples(),
+                use_schema_constraints=True,
+                fence_output=False,
+            )
+        finally:
+            # A chave nao fica em dicionario de configuracao (traceback, log %r) depois de o cliente a ter.
+            kwargs.pop("api_key", None)
+            if isinstance(getattr(config, "provider_kwargs", None), dict):
+                config.provider_kwargs.pop("api_key", None)
+        hide_credentials(model)
+        try:
+            verify_client_endpoint(model, check)
+            verify_no_disk_replay(model)
+        except GateError as exc:
+            raise LlmConfigError(str(exc)) from None
+        quiet_sdk_logging()
+        self.network_check = check
+        return model
 
     def _cache_path(self, chunk: Chunk) -> Path | None:
         if self.cache_dir is None:
@@ -526,13 +649,14 @@ class LangExtractDiscoverer:
         except (OSError, ValueError):
             return None
         items = payload.get("extracoes") if isinstance(payload, dict) else None
-        if not isinstance(items, list):
+        if not isinstance(items, list) or not items:
+            # Cache de versao antiga com resposta vazia: nao vale (a regra agora e nao guardar vazio).
             return None
         return [_realign(item, chunk.text) for item in items if isinstance(item, dict)]
 
     def _cache_save(self, chunk: Chunk, items: list[dict]) -> None:
         path = self._cache_path(chunk)
-        if path is None:
+        if path is None or not items:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -542,6 +666,39 @@ class LangExtractDiscoverer:
             "extracoes": items,
         }
         path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _service_account_credentials(path: str) -> Any:
+    """Credencial do arquivo de conta de servico (Vertex AI), criada so na hora de montar o cliente."""
+
+    try:
+        from google.oauth2 import service_account
+
+        return service_account.Credentials.from_service_account_file(
+            str(Path(path).expanduser()), scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    except Exception as exc:  # noqa: BLE001 - a mensagem crua pode trazer pedacos do arquivo
+        raise LlmConfigError(
+            f"Nao foi possivel usar o arquivo de credencial do Vertex AI ({safe_error(exc)})."
+        ) from None
+
+
+def _hidden_repr(self: Any) -> str:
+    return f"{type(self).__mro__[1].__name__}(model_id={getattr(self, 'model_id', '?')!r}, <credenciais ocultas>)"
+
+
+def hide_credentials(model: Any) -> None:
+    """O modelo do LangExtract (``GeminiLanguageModel``) e um dataclass que guarda ``api_key`` e a mostra no
+    ``repr``: um traceback com variaveis, um log ``%r`` ou um ``print(model)`` vazaria a chave. O cliente do SDK
+    ja a tem; aqui o campo vira um marcador e o repr/str deixam de listar campos."""
+
+    if getattr(model, "api_key", None):
+        model.api_key = HIDDEN
+    cls = type(model)
+    try:
+        model.__class__ = type(cls.__name__, (cls,), {"__repr__": _hidden_repr, "__str__": _hidden_repr})
+    except TypeError:  # classe com __slots__ ou imutavel: o campo ja foi ocultado acima
+        pass
 
 
 def _to_item(extraction: Any, chunk_text: str) -> dict:

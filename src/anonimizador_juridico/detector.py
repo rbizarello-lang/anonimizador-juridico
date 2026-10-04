@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 from bisect import bisect_left
 from collections.abc import Iterable
+from dataclasses import replace
 
 from presidio_analyzer import PatternRecognizer
 
+from .pseudonymizer import canonicalize
 from .recognizers import build_structured_recognizers
+from .registry_office import office_key
 from .types import EntitySpan
 
 
@@ -85,7 +88,21 @@ class StructuredDetector:
                             recognizer=recognizer.name,
                         )
                     )
-        return resolve_overlaps(candidates)
+        return [_matricula_with_office(text, span) for span in resolve_overlaps(candidates)]
+
+
+def _matricula_with_office(text: str, span: EntitySpan) -> EntitySpan:
+    """Matricula: a chave inclui o cartorio de registro de imoveis mais proximo ("1o Registro de Imoveis
+    de X" e "2o Registro de Imoveis de X" tem matriculas diferentes de mesmo numero). Sem cartorio por
+    perto a chave e o numero sozinho, como antes."""
+
+    if span.entity_type != "BR_MATRICULA_IMOVEL" or span.canonical_key:
+        return span
+    office = office_key(text, span.start, span.end)
+    if not office:
+        return span
+    number = canonicalize(span.entity_type, span.value_from(text))
+    return replace(span, canonical_key=f"{number}@{office}")
 
 
 _PAGE_ANCHOR = re.compile(r"<!--\s*pagina-origem:\s*\d+\s*-->")

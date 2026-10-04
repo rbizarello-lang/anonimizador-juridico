@@ -3,7 +3,7 @@
 Camada deterministica aceita em 29/08/2026 (GOVERNANCA.md, secao 8.5).
 Nao e regex faminta: so busca o que o usuario mandou. Indiferente a
 maiusculas, acentos e quebra de linha no meio da razao social.
-Pessoas: tambem as particulas do nome ja informado (MATEUS, BROGGI),
+Pessoas: tambem as particulas do nome ja informado (MATEUS, BERNARDELLI),
 com fronteira de palavra. Empresa: so frase completa, sufixo societario
 retirado, prefixo com >=2 palavras de conteudo e cauda com ``&``.
 Nao extrai particula de 1 palavra da razao (2.0-A). Palavras com 6+
@@ -111,7 +111,7 @@ _COMPANY_PARTICLE_SKIP = _PARTICLE_SKIP | frozenset(
     }
 )
 # Prenome/sobrenome frequente (≥5 letras). A frase completa, a frase
-# traseira (Lopes da Silva) e a partícula distinta (CASTANHEIRA, BROGGI)
+# traseira (Lopes da Silva) e a partícula distinta (CANTAGALO, BERNARDELLI)
 # continuam. Isolado só com rótulo de parte ou cola onomástica DE/DA/DO.
 _COMMON_PERSON_PARTICLES = frozenset(
     {
@@ -429,7 +429,7 @@ def is_common_person_name_span(value: str) -> bool:
     """Nome com 2+ palavras em que nenhuma particula e distintiva.
 
     NER nao deve tokenizar 'Helena Lopes da Silva' no corpo se a lista e a
-    capa nao ancoraram. Uma palavra distintiva (Castanheira, Broggi) salva.
+    capa nao ancoraram. Uma palavra distintiva (Cantagalo, Bernardelli) salva.
     """
 
     tokens = [
@@ -929,7 +929,7 @@ def _fuzzy_phrase_spans(
     """Uma letra a mais, a menos ou trocada, so em palavra com 6+ letras.
 
     Cauda com ``&`` (VIDROS & ESQUADRIAS) admite 1 edicao por palavra longa,
-    para OCR do tipo VIDRDS & ESQUADDRIAS.
+    para OCR do tipo VIDR0S & ESQUADRLAS.
     """
 
     targets = [
@@ -1063,7 +1063,7 @@ def _clean(values: Iterable[str]) -> tuple[str, ...]:
 def _company_search_terms(companies: Iterable[str]) -> tuple[str, ...]:
     """Tambem busca a razao sem sufixo societario (LTDA, ME, EIRELI, ETDA, LIDA).
 
-    Prefixo de 2 e 3 palavras de conteudo (BROGGI VIDROS, ALTMANN COMÉRCIO DE
+    Prefixo de 2 e 3 palavras de conteudo (BERNARDELLI VIDROS, TRAMONTANA COMÉRCIO DE
     VIDROS) e cauda distintiva com ``&`` (VIDROS & ESQUADRIAS) so entram se a
     entrada da lista as contiver — nao ha busca de VIDROS generico.
     """
@@ -1130,7 +1130,7 @@ def _distinctive_ampersand_tail(value: str) -> str | None:
 
 
 def _glued_pairs(value: str) -> tuple[str, ...]:
-    """Concatenacao sem espaco de pares consecutivos (MATEUSALTMANN, JUILIANADE)."""
+    """Concatenacao sem espaco de pares consecutivos (MATEUSTRAMONTANA, JUILIANADE)."""
 
     parts = [item.strip(".,;:") for item in value.split() if item.strip(".,;:")]
     found: list[str] = []
@@ -1220,7 +1220,7 @@ def _extend_company_end(text: str, start: int, end: int, entry: _TargetEntry) ->
 
 
 def _leading_person_phrases(value: str) -> tuple[str, ...]:
-    """Primeiro par do nome (VERA LUCIA, REINALDO LUIZ) e JULIANA DE CASSIA."""
+    """Primeiro par do nome (VERA LUCIA, SUTILOGU CICO) e JULIANA DE CASSIA."""
 
     words = [item.strip(".,;:") for item in value.split() if item.strip(".,;:")]
     if len(words) < 3:
@@ -1352,7 +1352,7 @@ def _ocr_glued_domain_pattern(brand: str, products: Sequence[str]) -> re.Pattern
 def _company_domain_spans(
     text: str, entries: Sequence[_TargetEntry]
 ) -> list[tuple[int, int, _TargetEntry]]:
-    """Dominio e marca colada da empresa alvo (broggividros.com.br, OCR .co.or)."""
+    """Dominio e marca colada da empresa alvo (bernardellividros.com.br, OCR .co.or)."""
 
     owned: dict[str, _TargetEntry] = {}
     ocr_jobs: list[tuple[re.Pattern[str], _TargetEntry]] = []

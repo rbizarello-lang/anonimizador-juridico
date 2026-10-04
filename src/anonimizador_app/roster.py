@@ -116,7 +116,7 @@ _ROLE_ALIASES = {
     "doutrina": "autor_citado",
 }
 
-_TOKEN_MARK = re.compile(r"\[[A-Z0-9_]+_\d+\]")
+_TOKEN_MARK = re.compile(r"\[[A-Z0-9_]+_\d+(?:·G\d+)?\]")
 _ID_LABEL_TAIL = re.compile(
     r"(?i)(?:[\s,;:(\-–—]+(?:cep|cpf|cnpj|oab|rg|n[º°o.]?|inscrit[oa]\s+no))?"
     r"[\s,;:(\-–—]*$"
@@ -296,6 +296,12 @@ class Roster:
     def entries(self) -> tuple[RosterEntry, ...]:
         return tuple(self._entries.values())
 
+    def lookup(self, kind: str, text: str) -> RosterEntry | None:
+        """A entrada do elenco a que uma grafia pertence (por nome ou variante), ou ``None``."""
+
+        key = self._by_variant.get((kind, entity_core(kind, text)))
+        return self._entries.get(key) if key is not None else None
+
     def to_tokenize(self) -> tuple[RosterEntry, ...]:
         return tuple(item for item in self._entries.values() if item.action == TOKENIZE)
 
@@ -350,21 +356,29 @@ class Roster:
         if not entry.pinned:
             entry.action = policy_action(entry.roles)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, annotations: Mapping[str, Mapping] | None = None) -> dict:
+        """``annotations``: por chave, campos so de leitura (token, ocorrencias) para revisar a mao."""
+
+        entries = []
+        for entry in self._entries.values():
+            item = entry.to_dict()
+            item.update(annotations.get(entry.key, {}) if annotations else {})
+            entries.append(item)
         return {
             "aviso": "CONTEUDO SENSIVEL: NAO ENVIAR A SERVICOS EXTERNOS",
             "como_revisar": (
                 "Troque 'acao' para 'manter' ou 'tokenizar' e marque 'fixo': true. "
-                "Rode de novo com --elenco apontando para este arquivo."
+                "Rode de novo com --elenco apontando para este arquivo "
+                "(com --sem-rede, so o cache e usado)."
             ),
-            "entradas": [entry.to_dict() for entry in self._entries.values()],
+            "entradas": entries,
         }
 
-    def dump(self, path: str | Path) -> Path:
+    def dump(self, path: str | Path, annotations: Mapping[str, Mapping] | None = None) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(self.to_dict(annotations), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         return destination

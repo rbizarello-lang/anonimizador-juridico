@@ -52,16 +52,16 @@ class Ciclo2PropagationTests(unittest.TestCase):
 
     def test_cnpj_comma_shares_canonical(self) -> None:
         text = (
-            "CNPJ 01.294.953/0001-72 da sede e, no OCR, "
-            "CNPJ/MF: 01.294,953/0001-72 no contrato."
+            "CNPJ 38.915.670/0001-00 da sede e, no OCR, "
+            "CNPJ/MF: 38.915,670/0001-00 no contrato."
         )
         structured = StructuredDetector().detect(text)
         merged = propagate_mapped_ids(text, structured)
         result = pseudonymize(text, merged)
-        self.assertNotIn("01.294,953/0001-72", result.text)
+        self.assertNotIn("38.915,670/0001-00", result.text)
         cnpj_records = [item for item in result.mapping.records if item.entity_type == "BR_CNPJ"]
         self.assertEqual(len(cnpj_records), 1)
-        self.assertEqual(cnpj_records[0].canonical, "01294953000172")
+        self.assertEqual(cnpj_records[0].canonical, "38915670000100")
 
     def test_uses_existing_map_canonical(self) -> None:
         mapping = PseudonymMap()
@@ -79,10 +79,10 @@ class Ciclo2PropagationTests(unittest.TestCase):
     def test_filial_cnpj_shares_token_of_known_root(self) -> None:
         from anonimizador_juridico.validators import is_valid_cnpj
 
-        sede = "04.252.011/0001-10"
+        sede = "61.738.402/0001-82"
         filial = ""
         for check in range(100):
-            compact = f"042520110004{check:02d}"
+            compact = f"617384020004{check:02d}"
             if is_valid_cnpj(compact):
                 filial = (
                     f"{compact[:2]}.{compact[2:5]}.{compact[5:8]}/"
@@ -97,6 +97,14 @@ class Ciclo2PropagationTests(unittest.TestCase):
         self.assertNotIn(sede, result.text)
         self.assertNotIn(filial, result.text)
         self.assertGreaterEqual(result.text.count("[CNPJ_1]"), 2)
+
+    def test_table_word_is_not_a_filial_of_known_root(self) -> None:
+        # Lote de 25/09: "CONTRIBUICAO" + dia virou CNPJ e cada outro dia virou "filial".
+        mapping = PseudonymMap()
+        mapping.resolve("BR_CNPJ", "CONTRIBUICAO23")
+        text = "CONTRIBUICAO                    20/06/2023     01/07/2023"
+        spans = propagate_mapped_ids(text, StructuredDetector().detect(text), mapping=mapping)
+        self.assertEqual([span for span in spans if span.entity_type == "BR_CNPJ"], [])
 
 
 if __name__ == "__main__":

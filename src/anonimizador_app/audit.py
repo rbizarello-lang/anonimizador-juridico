@@ -6,12 +6,13 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from .coverage import Coverage, pages_label, parse_coverage
 from .fidelity import FidelityDropStats
 from .gemini_detector import KEEP_TERMS
 from .header_heuristic import street_values
 
-_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)\]")
-_TOKEN_MARK = r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]"
+_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)(?:·G\d+)?\]")
+_TOKEN_MARK = r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]"
 # Colado a R$ sem espaço, ou token no meio do valor (R$ [TOKEN],28).
 # Não usa \s: CAPITAL R$ + pessoa na linha seguinte e "[TOKEN] R$2.971,28" não alertam.
 _MONEY_TOUCH = re.compile(
@@ -21,8 +22,8 @@ _MONEY_TOUCH = re.compile(
     re.IGNORECASE,
 )
 _DATE_GLUED = re.compile(
-    r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]\d{1,2}/\d{1,2}/\d{2,4}"
-    r"|\d{1,2}/\d{1,2}/\d{2,4}\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+\]"
+    r"\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]\d{1,2}/\d{1,2}/\d{2,4}"
+    r"|\d{1,2}/\d{1,2}/\d{2,4}\[[A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+_\d+(?:·G\d+)?\]"
 )
 _CNPJ_LEFT = re.compile(r"(?<!\d)\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}(?!\d)")
 _CPF_LEFT = re.compile(r"(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)")
@@ -56,9 +57,9 @@ def fidelity_preservation_notes(stats: FidelityDropStats | None) -> list[str]:
         f"natureza jurídica: {stats.natureza_juridica}",
         f"parte de precedente: {stats.parte_precedente}",
         f"processo de precedente: {stats.processo_precedente}",
-        f"higiene HTML/rotulo/fusao/tamanho: "
+        f"higiene HTML/rotulo/fusao/tamanho/limite: "
         f"{stats.higiene_html}/{stats.higiene_rotulo}/"
-        f"{stats.higiene_fusao}/{stats.higiene_tamanho}",
+        f"{stats.higiene_fusao}/{stats.higiene_tamanho}/{stats.higiene_limite}",
     ]
 
 
@@ -75,6 +76,11 @@ def extractor_note(extractor: str) -> str:
         return (
             "ALERTA: extrator pymupdf-reserva (o Docling falhou neste arquivo; "
             "estrutura de tabelas pode ter se perdido)."
+        )
+    if extractor.startswith("docling"):
+        return (
+            f"Extrator: {extractor} (legado: ancora por contagem de quebras e "
+            "teto de 15 min; confira a cobertura)"
         )
     return f"Extrator: {extractor}"
 
@@ -136,14 +142,28 @@ def audit_markdown(text: str) -> list[str]:
     )
     notes.append("Tokens no corpo: " + _format_counts(corpo_counts))
 
-    if "<!-- pagina-origem:" in text:
-        pages = len(re.findall(r"<!-- pagina-origem:\s*\d+", text))
-        notes.append(f"Ancoras de pagina: {pages}")
+    anchors = len(re.findall(r"<!-- pagina-origem:\s*\d+", text))
+    if anchors:
+        notes.append(f"Ancoras de pagina: {anchors}")
     else:
         notes.append("Sem ancora de pagina neste arquivo.")
-    ocr_pages = re.search(r"<!--\s*ocr-paginas:\s*(\d+)", text)
-    if ocr_pages:
-        notes.append(f"Paginas lidas por OCR (so imagem): {ocr_pages.group(1)}")
+    coverage = parse_coverage(text)
+    if coverage is not None:
+        notes.append(coverage_note(coverage))
+        if anchors and anchors != coverage.pages:
+            notes.append(
+                f"ALERTA: {anchors} ancora(s) para {coverage.pages} folha(s); "
+                "a citacao por pagina pode estar deslocada."
+            )
+        if coverage.unread:
+            notes.append(
+                f"ALERTA: {len(coverage.unread)} folha(s) nao lida(s): "
+                f"{pages_label(coverage.unread)}. Marcadas no texto; exportacao bloqueada."
+            )
+    else:
+        ocr_pages = re.search(r"<!--\s*ocr-paginas:\s*(\d+)", text)
+        if ocr_pages:
+            notes.append(f"Paginas lidas por OCR (so imagem): {ocr_pages.group(1)}")
     ocr_failed = re.search(r"<!--\s*ocr-falhas:\s*(\d+)", text)
     if ocr_failed:
         notes.append(
@@ -151,6 +171,17 @@ def audit_markdown(text: str) -> list[str]:
             "essas folhas ficaram so com o carimbo eproc."
         )
     return notes
+
+
+def coverage_note(coverage: Coverage) -> str:
+    """Uma linha: de onde veio o texto de cada folha (nativo, OCR, em branco, nao lida)."""
+
+    return (
+        f"Cobertura: {coverage.pages} folha(s); {coverage.native} com texto nativo; "
+        f"{coverage.ocr} por OCR ({coverage.scanned} escaneada(s), "
+        f"{coverage.vector} com texto vetorizado, {coverage.broken_font} com fonte quebrada); "
+        f"{coverage.blank} em branco; {len(coverage.unread)} nao lida(s)."
+    )
 
 
 def audit_map_records(records: Sequence[object]) -> list[str]:
@@ -206,10 +237,20 @@ def audit_map_records(records: Sequence[object]) -> list[str]:
     return notes
 
 
-def write_audit_report(export_dir: Path, notes_by_file: Sequence[tuple[str, list[str]]]) -> Path:
+def write_audit_report(
+    export_dir: Path,
+    notes_by_file: Sequence[tuple[str, list[str]]],
+    *,
+    engine: str = "local",
+) -> Path:
+    from .local_ner import ner_status_lines
+    from .version import version_info
+
     lines = [
         "AUDITORIA AUTOMATICA DESTE LOTE",
         "Conferencia dos criterios de fidelidade. Nao substitui a revisao humana.",
+        f"Versao do app que gerou este lote: {version_info().line(engine)}",
+        *ner_status_lines(),
         "",
     ]
     for name, notes in notes_by_file:

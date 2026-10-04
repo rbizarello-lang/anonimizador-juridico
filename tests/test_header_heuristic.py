@@ -23,7 +23,7 @@ GUSTAVO FICTICIO BARCELOS
 
 | EXEQUENTE | EXECUTADO |
 |-----------|-----------|
-| UNIÃO - FAZENDA NACIONAL (CNPJ 00.000.000/0001-91) - Entidade ALEX SERRA TRIAGEM.GDCJ | Norte Inventado S.A. (CNPJ 12.ABC.345/01DE-35) - Pessoa Jurídica Procurador(es): Marina Ficticia Lopes RS053667 Adriano Maggio Teste RS115075 |
+| UNIÃO - FAZENDA NACIONAL (CNPJ 12.769.164/0001-67) - Entidade ALEX MONTEIRO TRIAGEM.GDCJ | Norte Inventado S.A. (CNPJ 12.ABC.345/01DE-35) - Pessoa Jurídica Procurador(es): Marina Ficticia Lopes RS053667 Adriano Marchesi Teste RS115075 |
 
 | Grande devedor: Não | Valor da Causa: R$ 90.235,07 |
 
@@ -46,8 +46,8 @@ No Evento 50, Helena Corpo Texto Silva protocolou peticao.
 
 ## Evento 4
 
-JFO04 - JOAO BATISTA BRITO OSORIO - MAGISTRADO
-Documento eletronico assinado por JOAO BATISTA BRITO OSORIO, Juiz Federal
+JFO04 - JOAO BATISTA LACERDA PINHO - MAGISTRADO
+Documento eletronico assinado por JOAO BATISTA LACERDA PINHO, Juiz Federal
 A conferencia da autenticidade esta no endereco eletronico http://www.trf4.jus.br/verifica.php
 """
 
@@ -63,14 +63,14 @@ class HeaderHeuristicTests(unittest.TestCase):
         places = {value for kind, value in mentions if kind == "LOCATION"}
         self.assertTrue(any("Norte Inventado" in item for item in orgs))
         self.assertIn("Marina Ficticia Lopes", people)
-        self.assertIn("Adriano Maggio Teste", people)
+        self.assertIn("Adriano Marchesi Teste", people)
         self.assertTrue(any("R GAMA 120" in item for item in places))
         self.assertTrue(any("RUA DAS ACACIAS" in item and "100" in item for item in places))
         joined = " ".join(value for _kind, value in mentions)
         self.assertNotIn("UNIÃO", joined)
         self.assertNotIn("Uniao", joined)
         self.assertNotIn("GUSTAVO FICTICIO BARCELOS", joined)
-        self.assertNotIn("JOAO BATISTA BRITO OSORIO", joined)
+        self.assertNotIn("JOAO BATISTA LACERDA PINHO", joined)
         self.assertNotIn("Helena Corpo Texto Silva", joined)
         self.assertNotIn("SANTA MARIA", joined)
 
@@ -97,7 +97,7 @@ class HeaderHeuristicTests(unittest.TestCase):
         self.assertNotIn("Marina Ficticia Lopes", markdown)
         self.assertIn("UNIÃO - FAZENDA NACIONAL", markdown)
         self.assertIn("GUSTAVO FICTICIO BARCELOS", markdown)
-        self.assertIn("JOAO BATISTA BRITO OSORIO", markdown)
+        self.assertIn("JOAO BATISTA LACERDA PINHO", markdown)
         self.assertIn("Helena Corpo Texto Silva", markdown)
         self.assertIn("SISBAJUD", markdown)
         self.assertIn("R$ 90.235,07", markdown)
@@ -140,19 +140,19 @@ class HeaderHeuristicTests(unittest.TestCase):
             "EXEQUENTE: UNIÃO - FAZENDA NACIONAL\n"
             "EXECUTADO: Norte Inventado Comercio Ltda\n"
             "\n## Listagem dos Eventos do Processo\n"
-            "mudança da sua sede para a Rua Suindara, 177, Vila Yara.\n"
-            "a sede societária passa a ser na RUA NEI JOSE DE OLIVEIRA MACHADO, 579.\n"
+            "mudança da sua sede para a Rua Tuiuiu, 177, Vila Aurora.\n"
+            "a sede societária passa a ser na RUA ARI JOSE DE OLIVEIRA MEIRELES, 579.\n"
             "é criada filial na Av. das Palmeiras, 100.\n"
             "o socio, residente e domiciliado na Rua das\nLaranjeiras, 50.\n"
         )
         mentions = extract_header_mentions(text)
         places = {value for kind, value in mentions if kind == "LOCATION"}
         joined = " ".join(places)
-        self.assertTrue(any("Suindara" in item and "177" in item for item in places))
-        self.assertTrue(any("NEI JOSE" in item and "579" in item for item in places))
+        self.assertTrue(any("Tuiuiu" in item and "177" in item for item in places))
+        self.assertTrue(any("ARI JOSE" in item and "579" in item for item in places))
         self.assertTrue(any("Palmeiras" in item and "100" in item for item in places))
         self.assertTrue(any("Laranjeiras" in item and "50" in item for item in places), joined)
-        self.assertFalse(any("Vila Yara" == item for item in places))
+        self.assertFalse(any("Vila Aurora" == item for item in places))
 
     def test_unlabeled_corpus_is_not_scanned(self) -> None:
         text = CORPUS.read_text(encoding="utf-8")

@@ -78,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     elapsed = time.perf_counter() - started
     print(str(job.export_dir))
     print(f"{elapsed:.1f}s")
+    if job.export_warning:
+        print(f"AVISO: {job.export_warning}", file=sys.stderr)
     if job.failed:
         for outcome in job.failed:
             print(f"ERRO {outcome.source.name}: {outcome.error}", file=sys.stderr)

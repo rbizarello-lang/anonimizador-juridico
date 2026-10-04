@@ -7,6 +7,7 @@ from itertools import accumulate
 
 from .types import EntitySpan
 from .validators import (
+    CNPJ_PATTERN,
     at_most_one_digit_edit,
     is_valid_cnpj,
     is_valid_cpf,
@@ -18,12 +19,7 @@ _CPF_SEQ = re.compile(r"(?<!\d)(?:\d[.,/\-\s]*){9,12}\d(?!\d)")
 _CNPJ_SEQ = re.compile(r"(?<!\d)(?:\d[.,/\-\s]*){12,15}\d(?!\d)")
 _CPF_LABEL = re.compile(r"(?i)(?:c\.?\s*p\.?\s*f(?:\s*/\s*mf)?|\bcic\b)")
 _CNPJ_LABEL = re.compile(r"(?i)c\.?\s*n\.?\s*p\.?\s*j(?:\s*/\s*mf)?")
-_FORMATTED_CNPJ = re.compile(
-    r"(?<![0-9A-Z])"
-    r"[0-9A-Z]{2}[.,\s]?[0-9A-Z]{3}[.,\s]?[0-9A-Z]{3}"
-    r"[/\s]?[0-9A-Z]{4}[.\-\s]?\s*\d{2}"
-    r"(?![0-9A-Z])"
-)
+_FORMATTED_CNPJ = re.compile(CNPJ_PATTERN)
 # Raízes de órgão público — manter alinhado a fidelity.PUBLIC_CNPJ_ROOTS.
 _PUBLIC_ROOTS = frozenset(
     {"00394460", "00394411", "00394494", "00360305", "33683111", "29979036"}

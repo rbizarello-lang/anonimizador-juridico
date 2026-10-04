@@ -42,8 +42,8 @@ class KeyTests(unittest.TestCase):
 
     def test_person_title_is_ignored(self) -> None:
         self.assertEqual(
-            entity_key("pessoa", "Dr. Tiago Brandalise"),
-            entity_key("pessoa", "TIAGO BRANDALISE"),
+            entity_key("pessoa", "Dr. Tiago Bortolotto"),
+            entity_key("pessoa", "TIAGO BORTOLOTTO"),
         )
 
     def test_token_tail_is_cut(self) -> None:
@@ -57,17 +57,17 @@ class RosterTests(unittest.TestCase):
     def test_variants_with_same_canonical_share_one_entry(self) -> None:
         roster = Roster()
         first = roster.add_mention(
-            Mention(kind="pessoa", text="CLAUDETE SCHNElDER", role="socia",
-                    canonical="Claudete Schneider")
+            Mention(kind="pessoa", text="CLAUDETE Hoffmelster", role="socia",
+                    canonical="Claudete Hoffmeister")
         )
         second = roster.add_mention(
-            Mention(kind="pessoa", text="Claudete Schneider", role="socio",
-                    canonical="Claudete Schneider")
+            Mention(kind="pessoa", text="Claudete Hoffmeister", role="socio",
+                    canonical="Claudete Hoffmeister")
         )
 
         self.assertIs(first, second)
         self.assertEqual(len(roster), 1)
-        self.assertEqual(first.variants, ["CLAUDETE SCHNElDER", "Claudete Schneider"])
+        self.assertEqual(first.variants, ["CLAUDETE Hoffmelster", "Claudete Hoffmeister"])
         self.assertEqual(first.action, TOKENIZE)
 
     def test_domain_joins_the_company_through_the_canonical_name(self) -> None:
@@ -85,7 +85,7 @@ class RosterTests(unittest.TestCase):
     def test_magistrate_is_kept(self) -> None:
         roster = Roster()
         entry = roster.add_mention(
-            Mention(kind="pessoa", text="LUCIANA MARCHETTI", role="Juíza Federal")
+            Mention(kind="pessoa", text="LUCIANA MONTEFUSCO", role="Juíza Federal")
         )
         self.assertEqual(entry.action, KEEP)
         self.assertEqual(roster.to_tokenize(), ())

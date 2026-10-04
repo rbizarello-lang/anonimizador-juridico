@@ -18,7 +18,6 @@ from nicegui import app, run, ui
 
 from anonimizador_juridico import PseudonymMap, StructuredDetector
 
-from .audit import write_audit_report
 from .catalog import (
     CONTEXTUAL_TAGS,
     FIDELITY_PRINCIPLE,
@@ -31,22 +30,27 @@ from .ner_cache import default_ner_cache_dir
 from .branding import apply_taskbar_icon, ensure_icon, install_native_icon_hook, png_path
 from .desktop import APP_PORT, APP_URL, install_windows_shortcuts, bootstrap_instance, wants_browser
 from .extractors import SUPPORTED_SUFFIXES
+from .batch_propagation import BatchRoster
 from .pipeline import (
     FileOutcome,
     JobResult,
+    PreparedFile,
     build_job_result,
     default_export_dir,
     default_private_dir,
+    finish_file,
+    known_ids,
     new_job_id,
-    process_file,
+    prepare_file,
     resolve_lote_dirs,
-    build_audit_notes,
-    write_lote_guides,
+    finalize_lote,
 )
 from .rules import InvalidRuleError, build_recognizers, slug_entity_type, validate_custom_rule
 from .settings import CustomRule, load_settings, save_settings
 from .spreadsheet_targets import merge_unique, parse_target_spreadsheet
 from .target_ids import parse_target_ids
+from .ui_llm import EngineSession, build_engine_section, run_llm_flow
+from .version import version_info
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESOURCES_URL = "/recursos"
@@ -101,6 +105,7 @@ body { color: var(--aj-ink); font-family: var(--aj-sans); font-size: 15px; -webk
 .aj-mark { width: 34px; height: 34px; flex: none; display: block; }
 .aj-brand { font-family: var(--aj-serif); font-weight: 600; font-size: 19px; color: #fff; line-height: 1.1; }
 .aj-brand-sub { font-size: 12.5px; color: #c9d3e6; line-height: 1.25; }
+.aj-version { font-size: 11px; color: #9fb0cf; line-height: 1.2; letter-spacing: .02em; cursor: default; }
 .aj-nav .q-tab { color: #c9d3e6; min-height: 64px; padding: 0 16px; font-weight: 600; font-size: 15px; }
 .aj-nav .q-tab--active { color: #fff; }
 .aj-nav .q-tab__indicator { height: 4px; border-radius: 3px 3px 0 0; background: var(--aj-ochre) !important; }
@@ -335,7 +340,7 @@ _TAG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-_TOKEN_IN_TEXT = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9_]+?)_(\d+)\]")
+_TOKEN_IN_TEXT = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9_]+?)_(\d+(?:·G\d+)?)\]")
 _PAGE_MARK = re.compile(r"&lt;!--\s*pagina-origem:\s*(\d+)\s*--&gt;\n?")
 _OTHER_COMMENT = re.compile(r"&lt;!--.*?--&gt;", re.DOTALL)
 _PREVIEW_CHARS = 3000
@@ -400,6 +405,8 @@ class Session:
         self.private_dir = default_private_dir(PROJECT_ROOT)
         self.running = False
         self.last_job: JobResult | None = None
+        # Motor LLM: so da sessao, nunca gravado; o app abre sempre no motor local.
+        self.engine = EngineSession()
         self.settings = load_settings(self.private_dir)
         self.target_companies_text = "\n".join(self.settings.target_companies)
         self.target_people_text = "\n".join(self.settings.target_people)
@@ -458,6 +465,9 @@ def run_app() -> None:
         "reload": False,
         "show": not native,
         "language": "pt-BR",
+        # Ao fechar, o uvicorn espera as conexoes terminarem; sem limite, uma conexao presa
+        # deixava o processo vivo, sem janela e com a trava de instancia unica (ver compat.py).
+        "timeout_graceful_shutdown": 5,
     }
     if native:
         kwargs["native"] = True
@@ -484,6 +494,10 @@ def _build_page(session: Session) -> None:
             with ui.column().classes("gap-0"):
                 ui.label("Anonimizador Jurídico").classes("aj-brand")
                 ui.label("Pseudonimização local de peças").classes("aj-brand-sub")
+                # Versao do codigo carregado: confere com a AUDITORIA.txt de cada lote.
+                ui.label(version_info().short()).classes("aj-version").tooltip(
+                    version_info().line()
+                )
             ui.space()
             with ui.tabs().props("no-caps inline-label dense").classes("aj-nav") as tabs:
                 lote_tab = ui.tab("lote", label="Lote", icon="folder_copy")
@@ -578,9 +592,15 @@ def _build_lote_tab(
                         run_kicker = ui.label("Fila vazia").classes("aj-label aj-run-kicker")
                         run_count = ui.label("Nenhum arquivo").classes("aj-run-count")
                         run_size = ui.label("Escolha os documentos do lote.").classes("aj-run-sub")
-                        run_button = ui.button("Anonimizar lote", icon="play_arrow").props(
+                        run_button = ui.button("Anonimizar lote · motor local", icon="play_arrow").props(
                             "unelevated no-caps"
                         ).classes("aj-cta")
+
+                        def sync_run_button() -> None:
+                            """O botao diz o motor: local, ou LLM com o canal (e a confirmacao a seguir)."""
+                            run_button.text = session.engine.button_label()
+                            run_button.props(f"icon={session.engine.button_icon()}")
+
                         progress = ui.linear_progress(value=0, show_value=False).props(
                             "instant-feedback"
                         ).classes("aj-progress w-full")
@@ -623,6 +643,7 @@ def _build_lote_tab(
                             ui.label(
                                 "Roda neste computador. Na dúvida, o trecho original fica."
                             ).classes("aj-card-note")
+                            build_engine_section(session, on_change=sync_run_button)
                 with ui.row().classes("aj-principle no-wrap items-start"):
                     ui.icon("verified_user")
                     ui.label(
@@ -796,6 +817,19 @@ def _build_lote_tab(
         save_settings(session.private_dir, session.settings)
         update_case_summary()
         case_saved()
+        if session.engine.active:
+            await run_llm_flow(
+                session,
+                list(session.files),
+                status=status,
+                progress=progress,
+                result_area=result_area,
+                run_kicker=run_kicker,
+                run_button=run_button,
+                render_results=_render_results,
+                token_labels=lambda: _token_labels(session),
+            )
+            return
         try:
             contextual = build_contextual_engine(
                 session.settings,
@@ -831,35 +865,52 @@ def _build_lote_tab(
         total = len(sources)
 
         try:
+            # Fase 1: le e detecta todos os arquivos; o elenco e do lote inteiro.
+            roster = BatchRoster(session.settings.exclusions)
+            prepared: list[PreparedFile] = []
             for index, source in enumerate(sources):
-                status.text = f"Extraindo {source.name} ({index + 1} de {total})"
-                progress.value = index / total
-                outcome = await run.io_bound(
-                    process_file,
+                status.text = f"Lendo e detectando {source.name} ({index + 1} de {total})"
+                progress.value = 0.8 * index / total
+                item = await run.io_bound(
+                    prepare_file,
                     source,
-                    export_dir=export_dir,
                     detector=detector,
-                    mapping=mapping,
+                    known_ids=known_ids(mapping, roster),
                     contextual=contextual,
                     exclusions=session.settings.exclusions,
                     use_cache=True,
                     cache_dir=session.private_dir / "cache_extracao",
                 )
+                prepared.append(item)
+                if item.ok:
+                    roster.add(item.text, item.entities)
+            status.text = "Montando o elenco do lote"
+            progress.value = 0.8
+            await run.io_bound(roster.review, [item.text for item in prepared if item.ok])
+            # Fase 2: mesma entidade, mesmo token, em todos os arquivos.
+            for index, item in enumerate(prepared):
+                status.text = f"Trocando e gravando {item.source.name} ({index + 1} de {total})"
+                progress.value = 0.8 + 0.17 * index / total
+                outcome = await run.io_bound(
+                    finish_file,
+                    item,
+                    export_dir=export_dir,
+                    mapping=mapping,
+                    roster=roster,
+                    contextual=contextual,
+                )
                 outcomes.append(outcome)
 
             status.text = "Gravando mapa privado"
             progress.value = 0.97
-            await run.io_bound(mapping.dump, map_path)
-            write_audit_report(export_dir, build_audit_notes(outcomes, mapping))
-            write_lote_guides(
+            await run.io_bound(
+                finalize_lote,
                 job_id=identifier,
                 export_dir=export_dir,
                 map_path=map_path,
-                markdown_names=[
-                    outcome.markdown_path.name
-                    for outcome in outcomes
-                    if outcome.ok and outcome.markdown_path is not None
-                ],
+                outcomes=outcomes,
+                mapping=mapping,
+                roster=roster,
             )
         except Exception as exc:  # noqa: BLE001
             status.text = "A execução falhou."
@@ -1149,6 +1200,21 @@ def _build_rules_tab(session: Session) -> None:
                     ).props("color=primary")
 
                 with ui.column().classes("aj-card"):
+                    ui.label("Motor LLM: piso local").classes("aj-card-title")
+                    ui.label(
+                        "Com o motor LLM, o motor local (NER e reconhecedores) roda em TODAS as folhas e o "
+                        "resultado é a união do que o LLM e o motor local apontaram: o LLM só acrescenta "
+                        "proteção, nunca tira. Ligado por padrão. Desligado, o motor local só trata as folhas "
+                        "que o LLM não leu ou respondeu vazio, e um nome que o LLM esquecer numa folha lida "
+                        "sai em claro. A AUDITORIA de cada lote diz se o piso estava ligado."
+                    ).classes("aj-card-note")
+                    ui.switch(
+                        "Piso local ligado (recomendado)",
+                        value=session.settings.llm_local_floor,
+                        on_change=lambda e: persist_floor_flag(bool(e.value)),
+                    ).props("color=primary")
+
+                with ui.column().classes("aj-card"):
                     ui.label("Experimentos").classes("aj-card-title")
                     with ui.expansion(
                         "Passada-sombra de caixa (GLiNER)", icon="science"
@@ -1259,6 +1325,10 @@ def _build_rules_tab(session: Session) -> None:
         session.settings.cnpj_lookup_enabled = enabled
         persist()
 
+    def persist_floor_flag(enabled: bool) -> None:
+        session.settings.llm_local_floor = enabled
+        persist()
+
     def persist_shadow_flag(enabled: bool) -> None:
         session.settings.case_shadow_enabled = enabled
         persist()
@@ -1307,10 +1377,21 @@ def _build_help_dialog():
         ).classes("w-full")
         ui.html(
             "<h3>Extração de PDF</h3>"
-            "<p>O Docling é o extrator padrão. OCR só entra se alguma página não tiver texto "
-            "nativo suficiente. Se o Docling falhar, o PyMuPDF assume.</p>"
+            "<p>O texto sai do PDF folha a folha (PyMuPDF): cada folha leva a sua âncora e "
+            "os marcadores do eproc (evento, documento, página) viram títulos. Tabela com "
+            "linhas vira tabela. OCR só em folha sem texto legível: digitalizada, com o texto "
+            "desenhado em vetor ou com fonte quebrada. Folha que não pôde ser lida fica "
+            "marcada no texto, aparece na AUDITORIA e bloqueia o envio.</p>"
         ).classes("w-full")
         ui.html(f"<h3>Leitura externa</h3><p>{html.escape(GEMINI_POLICY)}</p>").classes("w-full")
+        ui.html(
+            "<h3>Versão em uso</h3>"
+            f"<p><code>{html.escape(version_info().line())}</code></p>"
+            "<p>O “código” muda com qualquer alteração do app, mesmo sem commit. A mesma "
+            "linha vai para a AUDITORIA.txt e o LEIA-ME.txt de cada lote: é assim que se "
+            "confere qual versão gerou cada texto. Se a janela mostrar um código antigo, "
+            "feche o app e abra de novo.</p>"
+        ).classes("w-full")
         ui.label(f"Endereço local deste app: {APP_URL}").classes("aj-card-note")
     return dialog
 

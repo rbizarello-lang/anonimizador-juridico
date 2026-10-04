@@ -55,16 +55,16 @@ class ImportedDetectorTests(unittest.TestCase):
         self.assertEqual(self.detector.detect("PIS 111.11111.11-1 no cadastro."), [])
 
     def test_email_tld_glued_to_next_word(self) -> None:
-        text = "contato ocara@tjce.jus.brOcara no cabecalho."
+        text = "contato vara@tjxx.jus.brVara no cabecalho."
         values = self._values(text, "EMAIL_ADDRESS")
-        self.assertTrue(any(item.endswith("@tjce.jus.br") for item in values))
-        self.assertFalse(any("Ocara" in item for item in values))
+        self.assertTrue(any(item.endswith("@tjxx.jus.br") for item in values))
+        self.assertFalse(any("Vara" in item for item in values))
 
     def test_rg_span_keeps_label_and_drops_ssp_when_lookahead(self) -> None:
-        text = "Identidade Civil R.G nº 5.860.113-6 SSP/PR"
+        text = "Identidade Civil R.G nº 2.246.861-0 SSP/PR"
         values = self._values(text, "BR_RG")
         self.assertTrue(values)
-        self.assertTrue(any("5.860.113-6" in item for item in values))
+        self.assertTrue(any("2.246.861-0" in item for item in values))
         self.assertFalse(any("SSP" in item for item in values))
 
 

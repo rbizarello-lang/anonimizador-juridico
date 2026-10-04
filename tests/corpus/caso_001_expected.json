@@ -16,10 +16,10 @@
     "BR_CPF": ["529.982.247-25", "52998224725"],
     "BR_PHONE": ["+55 (11) 98765-4321", "(11) 98765-4321"],
     "EMAIL_ADDRESS": ["helena.teste@example.org"],
-    "BR_OAB": ["OAB/SP 123.456"],
-    "BR_RG": ["RG 12.345.678-2"],
-    "BR_MATRICULA_IMOVEL": ["matricula nº 45.678"],
-    "BR_CEP": ["CEP 01310-200"]
+    "BR_OAB": ["SP 123.456"],
+    "BR_RG": ["12.345.678-2"],
+    "BR_MATRICULA_IMOVEL": ["45.678"],
+    "BR_CEP": ["01310-200"]
   },
   "must_preserve": [
     "Evento 184",

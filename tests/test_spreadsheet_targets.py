@@ -126,7 +126,7 @@ class SpreadsheetTargetTests(unittest.TestCase):
                 "Nome;Tipo;CPF;CNPJ\n"
                 "Empresa Alfa LTDA;PJ;;12.345.678/0001-95\n"
                 "Joao Silva;PF;123.456.789-09;\n"
-                "Uniao;PJ;;00.000.000/0001-91\n",
+                "Uniao;PJ;;12.769.164/0001-67\n",
                 encoding="utf-8",
             )
             parsed = parse_target_spreadsheet(path)

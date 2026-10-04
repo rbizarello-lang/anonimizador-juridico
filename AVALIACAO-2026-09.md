@@ -74,8 +74,8 @@ um detector que acerta tudo. Resultado:
 | Entidade (fictícia) | Tipo | Vazou? | Regra que descartou o acerto |
 |---|---|---|---|
 | FAZENDA SANTA RITA AGROPECUARIA LTDA | empresa (executada) | **sim** | "Fazenda" é marcador de órgão público; janela de precedente |
-| PAULO ROBERTO SOUZA | sócio | **sim** | linha contém "PGFN"; nome só de partículas comuns |
-| MARIA OLIVEIRA SANTOS | sócia | **sim** | nome só de partículas comuns |
+| OLAVO RICARDO TEIXEIRA | sócio | **sim** | linha contém "PGFN"; nome só de partículas comuns |
+| MARLENE OLIVEIRA SAMPAIO | sócia | **sim** | nome só de partículas comuns |
 | Rua das Acácias, 120 | endereço | não | — |
 | UNIÃO COMERCIAL DE GRÃOS LTDA | empresa (sucessora) | **sim** | começa com "União" (KEEP_TERMS por prefixo) |
 | CARLOS PEREIRA LIMA | terceiro | **sim** | nome só de partículas comuns |
@@ -114,7 +114,7 @@ vez". O problema é estrutural: regras sem contexto, acumuladas, afinadas num ú
 (PARTE_1), avaliadas só pelo que foi trocado a mais — nunca pelo que deixou de ser trocado.
 "Fidelidade > recall" virou, na prática, "na dúvida, descarta". A cada ciclo a peça ficou mais
 íntegra e o vazamento mais silencioso. O próprio código registra o sobreajuste: constantes como
-`BROGGI`, `CRITÉRIUM`, `vidros`, `esquadrias`, `ETDA/LIDA` e o comentário de CNPJ "neste lote".
+`BERNARDELLI`, `CRISALIDA`, `vidros`, `esquadrias`, `ETDA/LIDA` e o comentário de CNPJ "neste lote".
 
 ---
 
@@ -231,9 +231,9 @@ exato do original).
 |---|---|
 | Poucos exemplos (few-shot) + instrução | Ensina o que é parte, sócio, advogado, juiz, órgão, sem treinar modelo. |
 | Saída com esquema (controlled generation no Gemini) | JSON confiável; o modelo só pode responder `pessoa`/`empresa`/`endereco` com `papel` e `nome_canonico`. |
-| Ancoragem com alinhamento aproximado | Nome com erro de OCR ("SCHNElDER") é ancorado; o trecho real vira variante para a busca. |
+| Ancoragem com alinhamento aproximado | Nome com erro de OCR ("Hoffmelster") é ancorado; o trecho real vira variante para a busca. |
 | Trechos + chamadas paralelas + passes múltiplos | Processo de milhares de folhas em minutos. |
-| Provedores: Gemini API, **Vertex AI (com região)**, OpenAI, **Ollama (local)** | O mesmo código roda na nuvem institucional ou 100% local (peça curta, ou máquina com GPU). |
+| Provedores: Gemini API e **Vertex AI (com região)** (o app só cadastra esses dois) | O mesmo código roda na API paga ou na nuvem institucional. |
 | Modo lote (Vertex/Gemini Batch) | ~50% mais barato para reprocessar acervos sem pressa. |
 | Visualização HTML | Base para a tela de revisão do elenco (o HTML contém o original: só em `privados`). |
 
@@ -262,8 +262,8 @@ reversível, a auditoria nem a decisão de política por papel.
 Alternativas consideradas: SDK `google-genai` direto (menos dependência, mas recria-se
 chunking, ancoragem e visualização); `LangExtractRecognizer` do Presidio (genérico demais);
 Google Cloud Sensitive Data Protection/DLP (bom para IDs, fraco para nome em peça jurídica e
-não classifica papel); LLM local via Ollama (mesmo código, mas em CPU é lento demais para
-3.000 folhas).
+não classifica papel); LLM local (em CPU é lento demais para
+3.000 folhas; o canal Ollama foi retirado do app).
 
 ---
 
@@ -368,7 +368,7 @@ comportamento.
 
 | Arquivo | O que é |
 |---|---|
-| `src/anonimizador_app/llm_discovery.py` | Adaptador LangExtract: prompt jurídico PT-BR, 4 exemplos fictícios (capa, petição, decisão com juíza e precedente, contrato social com OCR e domínio), trechos alinhados a página, invólucro fail-closed, cache por trecho, Gemini API / Vertex AI (São Paulo) / Ollama. Recusa chave ausente e explica por que não usar a gratuita. |
+| `src/anonimizador_app/llm_discovery.py` | Adaptador LangExtract: prompt jurídico PT-BR, 4 exemplos fictícios (capa, petição, decisão com juíza e precedente, contrato social com OCR e domínio), trechos alinhados a página, invólucro fail-closed, cache por trecho, Gemini API / Vertex AI (São Paulo). Recusa chave ausente e explica por que não usar a gratuita. |
 | `src/anonimizador_app/roster.py` | Elenco: uma entrada por entidade, papel normalizado, tabela de papéis, decisões do usuário preservadas (`elenco.json`). |
 | `src/anonimizador_app/propagation.py` | Busca de todas as ocorrências indiferente a caixa, acento, apóstrofo e quebra de linha; sufixo societário; proteção contra homônimo; termos protegidos por igualdade. |
 | `src/anonimizador_app/fast_extract.py` | PyMuPDF por página, âncoras, marcadores do PDF como títulos, OCR seletivo existente; DOCX com tabelas no lugar certo. |
@@ -443,7 +443,7 @@ comportamento.
 | Homônimo (o sócio Souza × o ministro Souza). | Sobrenome solto só onde o LLM ancorou; nome composto propaga. |
 | Filtro de segurança, erro de API, indisponibilidade. | Filtros relaxados para texto jurídico; nova tentativa; trecho isolado; página não lida bloqueia a exportação; cache. |
 | Governança de dados. | Vertex AI institucional, região São Paulo, IDs mascarados antes do envio, nada de nível gratuito, mapa e elenco locais. |
-| Dependência de fornecedor. | O LangExtract fala com Gemini, OpenAI e Ollama pelo mesmo código; elenco, propagação e troca não dependem do LLM. |
+| Dependência de fornecedor. | O LangExtract fala com vários provedores pelo mesmo código (o app cadastra só Gemini API e Vertex AI); elenco, propagação e troca não dependem do LLM. |
 | Custo. | Flash-Lite como padrão; cache por trecho; reexportação paga só o novo. |
 
 ---
@@ -471,9 +471,6 @@ python tools\anonimizar_llm.py autos.pdf --provedor vertex --projeto MEU-PROJETO
 
 # Depois de revisar o elenco (trocar "acao" para "manter" ou "tokenizar"):
 python tools\anonimizar_llm.py autos.pdf --elenco saidas\privados\lote_...\elenco.json
-
-# 100% local (peça curta):
-python tools\anonimizar_llm.py peca.pdf --provedor ollama --modelo gemma3:12b
 ```
 
 Opções úteis: `--modelo gemini-3.5-flash`, `--paralelo 32`, `--trecho 4000`,

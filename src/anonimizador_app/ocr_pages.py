@@ -1,4 +1,14 @@
-"""OCR so em pagina digitalizada (carimbo eproc + imagem), sem reler peca nativa."""
+"""OCR so em pagina sem texto legivel, sem reler peca nativa.
+
+Tres casos (medidos no lote eproc de 25/09/2026):
+
+- escaneada: carimbo eproc + imagem cobrindo a folha (contrato digitalizado);
+- vetorial: carimbo eproc + texto desenhado como curvas (sem camada de texto e
+  sem imagem; centenas de caminhos na pagina);
+- fonte quebrada: ha camada de texto, mas a fonte troca digitos e letras por
+  simbolos (``ˬ˭/ˬˮ/ˮˬˮ˲`` no lugar de ``01/02/2026``). O texto nativo nao e
+  legivel, entao o OCR nao o degrada: substitui.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +20,24 @@ from pathlib import Path
 MIN_NATIVE_CHARS = 15
 STAMP_MAX_CHARS = 300
 SCAN_AREA_RATIO = 0.20
+# Folha so com carimbo tem ate ~6 caminhos; texto vetorizado tem centenas (>= 314 no lote).
+VECTOR_MIN_PATHS = 50
+# Proporcao de caracteres improvaveis na camada de texto (0,6% no pior nativo; >= 8,5% nos recibos).
+BROKEN_GLYPH_RATIO = 0.02
+# Tinta da folha em cinza: so carimbo <= 0,61%; conteudo mais esparso medido 1,27%.
+BLANK_INK_RATIO = 0.009
+
+OCR_SCAN = "escaneada"
+OCR_VECTOR = "vetorial"
+OCR_BROKEN_FONT = "fonte-quebrada"
+
 _OCR_SCALE = 2.0
+# Margem da caixa de texto do detector (padrao 1,6 juntava linhas vizinhas).
+OCR_UNCLIP_RATIO = 1.3
+_INK_SCALE = 0.5
+_DARK = bytes(1 if value < 160 else 0 for value in range(256))
+# Letras modificadoras, latim estendido-B, uso privado e caractere de substituicao.
+_BROKEN_GLYPHS = re.compile(r"[ƀ-ɏʰ-˿-�]")
 _PAGE_BLOCK = re.compile(
     r"(<!--\s*pagina-origem:\s*(\d+)\s*-->)(.*?)(?=<!--\s*pagina-origem:|\Z)",
     re.DOTALL,
@@ -38,6 +65,75 @@ def page_needs_ocr(
     if scan_ratio < min_ratio:
         return False
     return native_chars < stamp_max
+
+
+def ocr_reason(
+    native_chars: int,
+    scan_ratio: float,
+    vector_paths: int = 0,
+    broken_ratio: float = 0.0,
+) -> str | None:
+    """Por que a pagina precisa de OCR; ``None`` = texto nativo legivel ou folha so com carimbo."""
+
+    if native_chars < STAMP_MAX_CHARS:
+        if scan_ratio >= SCAN_AREA_RATIO:
+            return OCR_SCAN
+        if vector_paths >= VECTOR_MIN_PATHS:
+            return OCR_VECTOR
+        return None
+    if broken_ratio > BROKEN_GLYPH_RATIO:
+        return OCR_BROKEN_FONT
+    return None
+
+
+def broken_glyph_ratio(text: str) -> float:
+    compact = "".join(text.split())
+    if not compact:
+        return 0.0
+    return len(_BROKEN_GLYPHS.findall(compact)) / len(compact)
+
+
+def page_vector_paths(page: object) -> int:
+    try:
+        return len(page.get_cdrawings())
+    except Exception:
+        return 0
+
+
+def page_ocr_reason(page: object, native_text: str) -> str | None:
+    """Mede a pagina so no necessario: desenhos apenas em folha sem texto e sem scan."""
+
+    compact = len("".join(native_text.split()))
+    if compact < STAMP_MAX_CHARS:
+        ratio = page_scan_ratio(page)
+        paths = page_vector_paths(page) if ratio < SCAN_AREA_RATIO else 0
+        return ocr_reason(compact, ratio, paths)
+    return ocr_reason(compact, 0.0, 0, broken_glyph_ratio(native_text))
+
+
+def page_is_blank(page: object) -> bool:
+    """Folha sem tinta alem do carimbo: OCR vazio ali nao e pagina perdida."""
+
+    try:
+        import pymupdf
+
+        pix = page.get_pixmap(
+            matrix=pymupdf.Matrix(_INK_SCALE, _INK_SCALE),
+            colorspace=pymupdf.csGRAY,
+            alpha=False,
+        )
+    except Exception:
+        return False
+    samples = pix.samples
+    if not samples:
+        return True
+    return sum(samples.translate(_DARK)) / len(samples) < BLANK_INK_RATIO
+
+
+def recognize_page(page: object) -> str:
+    """OCR de uma pagina com o motor local (RapidOCR, reconhecedor latino)."""
+
+    return _recognize_image(_render_page(page))
 
 
 def page_scan_ratio(page: object) -> float:
@@ -112,7 +208,14 @@ def apply_page_ocr(
                 continue
             if len("".join(text.split())) < MIN_NATIVE_CHARS:
                 continue
-            updated = _splice_page(updated, index, text)
+            spliced = _splice_page(updated, index, text)
+            if spliced is updated:
+                # Sem ancora desta pagina (Docling cortado ou deslocado): o texto
+                # lido nao coube em lugar nenhum. Conta como falha, nao como lida.
+                _LOG.warning("OCR da pagina %s de %s sem ancora", index, Path(path).name)
+                failed += 1
+                continue
+            updated = spliced
             read += 1
     if read:
         updated = f"<!-- ocr-paginas: {read} -->\n" + updated
@@ -163,14 +266,19 @@ def _recognize_image(image: bytes) -> str:
 def _ocr_engine():
     global _engine
     if _engine is None:
-        from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR
+        from rapidocr import ModelType, OCRVersion, RapidOCR
 
-        # Reconhecedor "latin" (acentos do portugues) so existe no PP-OCRv5 mobile.
+        # Fila 3.x E4, medido em folhas nativas do lote de 25/09 renderizadas (tools/medir_ocr.py):
+        # o detector padrao fundia linhas vizinhas de texto justificado numa caixa e o
+        # reconhecedor lia uma so (3,1% das linhas perdidas). Sem dilatacao e com margem menor
+        # na caixa: 0,6%. O reconhecedor PP-OCRv6 small (multilingue, com os acentos do
+        # portugues) empata com o latino v5 mobile e leva metade do tempo.
         _engine = RapidOCR(
             params={
-                "Rec.lang_type": LangRec.LATIN,
-                "Rec.ocr_version": OCRVersion.PPOCRV5,
-                "Rec.model_type": ModelType.MOBILE,
+                "Rec.ocr_version": OCRVersion.PPOCRV6,
+                "Rec.model_type": ModelType.SMALL,
+                "Det.unclip_ratio": OCR_UNCLIP_RATIO,
+                "Det.use_dilation": False,
                 "Global.log_level": "error",
             }
         )

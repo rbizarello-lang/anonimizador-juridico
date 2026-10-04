@@ -37,18 +37,18 @@ class PropagationTests(unittest.TestCase):
 
     def test_every_occurrence_in_any_case_or_line_break(self) -> None:
         text = (
-            "O sócio Paulo Roberto Souza assinou.\n"
-            "PAULO ROBERTO\nSOUZA foi citado. paulo roberto souza pagou."
+            "O sócio Olavo Ricardo Teixeira assinou.\n"
+            "OLAVO RICARDO\nTEIXEIRA foi citado. olavo ricardo teixeira pagou."
         )
         roster = self._roster(
-            Mention(kind="pessoa", text="Paulo Roberto Souza", role="socio")
+            Mention(kind="pessoa", text="Olavo Ricardo Teixeira", role="socio")
         )
         spans = spans_for_roster(text, roster.entries)
 
         self.assertEqual(len(spans), 3)
         self.assertEqual(
             _values(text, spans),
-            ["Paulo Roberto Souza", "PAULO ROBERTO\nSOUZA", "paulo roberto souza"],
+            ["Olavo Ricardo Teixeira", "OLAVO RICARDO\nTEIXEIRA", "olavo ricardo teixeira"],
         )
         self.assertEqual({span.canonical_key for span in spans}, {roster.entries[0].key})
 
@@ -72,21 +72,21 @@ class PropagationTests(unittest.TestCase):
         self.assertNotIn("uniao", propagable_variants(roster.entries[0], protected_forms()))
 
     def test_single_word_variant_only_where_anchored(self) -> None:
-        text = "O sócio SOUZA assinou. O Min. Souza relatou o recurso."
+        text = "O sócio TEIXEIRA assinou. O Min. Teixeira relatou o recurso."
         roster = self._roster(
-            Mention(kind="pessoa", text="SOUZA", role="socio", canonical="Paulo Roberto Souza")
+            Mention(kind="pessoa", text="TEIXEIRA", role="socio", canonical="Olavo Ricardo Teixeira")
         )
         key = roster.entries[0].key
-        start = text.index("SOUZA")
-        spans = spans_for_roster(text, roster.entries, anchored=[(start, start + 5, key)])
+        start = text.index("TEIXEIRA")
+        spans = spans_for_roster(text, roster.entries, anchored=[(start, start + len("TEIXEIRA"), key)])
 
-        self.assertEqual(_values(text, spans), ["SOUZA"])
+        self.assertEqual(_values(text, spans), ["TEIXEIRA"])
         self.assertEqual(spans[0].start, start)
 
     def test_kept_entry_and_protected_terms_never_become_spans(self) -> None:
-        text = "A Juíza LUCIANA MARCHETTI decidiu. Fazenda Nacional. SISBAJUD."
+        text = "A Juíza LUCIANA MONTEFUSCO decidiu. Fazenda Nacional. SISBAJUD."
         roster = self._roster(
-            Mention(kind="pessoa", text="LUCIANA MARCHETTI", role="magistrado"),
+            Mention(kind="pessoa", text="LUCIANA MONTEFUSCO", role="magistrado"),
             Mention(kind="empresa", text="Fazenda Nacional", role="parte"),
         )
         self.assertEqual(roster.entries[0].action, KEEP)

@@ -12,7 +12,7 @@ from .audit import token_counts
 from .gemini_detector import KEEP_TERMS
 from .geography import fold_key
 
-_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)\]")
+_TOKEN = re.compile(r"\[([A-ZÁÉÍÓÚÂÊÔÃÕÇ_]+)_(\d+)(?:·G\d+)?\]")
 
 _TIPO_ENTITY = {
     "PESSOA": {"PERSON", "PESSOA"},
@@ -33,7 +33,9 @@ def normalize_search(text: str) -> str:
 
 
 def find_markdown(lote_dir: Path) -> Path:
-    files = sorted(path for path in Path(lote_dir).glob("*.md") if path.is_file())
+    files = sorted(
+        path for path in Path(lote_dir).glob("*.md") if path.is_file() and path.name not in ("INDICE.md", "ELENCO.md")
+    )
     if not files:
         raise FileNotFoundError(f"Nenhum Markdown em {lote_dir}")
     if len(files) == 1:

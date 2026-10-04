@@ -8,11 +8,16 @@ from dataclasses import dataclass
 from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.validators import normalize_cnpj, only_digits
 
-from .gemini_detector import is_kept_term, is_legal_nature, is_too_generic
+from .gemini_detector import is_kept_term, is_legal_nature, is_registry_office, is_too_generic
 
 _TARGET_RECOGNIZER = "ListaDeAlvos"
+# Propagacao do lote (deteccao 2.1): a entidade ja foi julgada no elenco (cargo colado
+# ao nome em qualquer arquivo tira a entidade da propagacao); a ocorrencia propagada nao
+# repete as regras amplas de contexto (juiz/PFN por perto, parte de precedente, nome banal).
+_PROPAGATION_RECOGNIZER = "PropagacaoLote"
+_ENTITY_LEVEL_RECOGNIZERS = frozenset({_TARGET_RECOGNIZER, _PROPAGATION_RECOGNIZER})
 _ANCHORED_PERSON_RECOGNIZERS = frozenset(
-    {"ListaDeAlvos", "HeaderHeuristic", "FormFields"}
+    {"ListaDeAlvos", "HeaderHeuristic", "FormFields", _PROPAGATION_RECOGNIZER}
 )
 _CONTEXTUAL_TYPES = frozenset({"PERSON", "ORGANIZATION", "LOCATION"})
 CAPA_CHARS = 4500
@@ -208,6 +213,8 @@ class FidelityDropStats:
     higiene_rotulo: int = 0
     higiene_fusao: int = 0
     higiene_tamanho: int = 0
+    # Endereco cortado no limite: celula/coluna, parentese nao fechado, numero cortado ao meio.
+    higiene_limite: int = 0
 
 
 def drop_protected_spans(
@@ -226,8 +233,14 @@ def drop_protected_spans(
         if is_kept_term(value, extra_keep):
             continue
         if (
-            span.entity_type == "PERSON"
+            span.entity_type in {"ORGANIZATION", "LOCATION"}
             and span.recognizer != _TARGET_RECOGNIZER
+            and is_registry_office(value)
+        ):
+            continue  # nome de cartorio/oficio/tabeliao: ente do registro publico, fica em claro
+        if (
+            span.entity_type == "PERSON"
+            and span.recognizer not in _ENTITY_LEVEL_RECOGNIZERS
             and (
                 is_magistrate_or_citation(text, span.start, span.end)
                 or is_pfn_officer(text, span.start, span.end)
@@ -242,7 +255,7 @@ def drop_protected_spans(
             continue
         if (
             span.entity_type == "ORGANIZATION"
-            and span.recognizer != _TARGET_RECOGNIZER
+            and span.recognizer not in _ENTITY_LEVEL_RECOGNIZERS
             and is_precedent_party(text, span.start, span.end)
         ):
             if stats is not None:
@@ -259,6 +272,10 @@ def drop_protected_spans(
         if span.entity_type in {"BR_CPF", "BR_PHONE"} and is_blocked_numeric_context(
             text, span.start, span.end
         ):
+            if stats is not None:
+                stats.nire_protocolo += 1
+            continue
+        if span.entity_type == "BR_PHONE" and is_code_fragment(text, span.start, span.end):
             if stats is not None:
                 stats.nire_protocolo += 1
             continue
@@ -338,6 +355,22 @@ def is_blocked_numeric_context(text: str, start: int, end: int) -> bool:
         return False
     compact = _fold_compact(raw)
     return bool(_ID_CONTEXT_MARKERS.search(raw) or _ID_CONTEXT_COMPACT.search(compact))
+
+
+_CODE_BEFORE = re.compile(r"\d[.,/-]?\Z")
+_CODE_AFTER = re.compile(r"[.,/-]?\d")
+
+
+def is_code_fragment(text: str, start: int, end: int) -> bool:
+    """Numero sem DV cujos digitos continuam, por [.,/-], em outro digito: e pedaco de
+    codigo mais longo (protocolo CNIB "dddddd.dddd.dddddddd-IA-nnn"), nao telefone."""
+
+    value = text[start:end]
+    before = text[max(0, start - 2) : start]
+    return bool(
+        (value[:1].isdigit() and _CODE_BEFORE.search(before))
+        or (value[-1:].isdigit() and _CODE_AFTER.match(text, end))
+    )
 
 
 def is_unlabeled_compact_phone(text: str, start: int, end: int) -> bool:

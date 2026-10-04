@@ -1,4 +1,8 @@
-"""Cache da extração (Docling+OCR): um SHA por arquivo + versão do extrator."""
+"""Cache da extração: um SHA por arquivo + versão do extrator.
+
+Padrão (26/09/2026): PyMuPDF por página + OCR seletivo (``fast_extract``).
+O Docling fica como caminho legado (``prefer_docling=True``), com cache próprio.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,9 @@ from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
+from .coverage import parse_coverage
 from .extractors import ExtractedDocument, extract_document
+from .fast_extract import FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
 
 CACHE_SUBDIR = "cache_extracao"
 _OCR_PAGES = re.compile(r"<!--\s*ocr-paginas:\s*(\d+)", re.IGNORECASE)
@@ -31,11 +37,15 @@ def _pkg_version(*names: str) -> str:
     return "desconhecida"
 
 
-def extractor_version() -> str:
-    """Identifica o circuito de extração. Mudança aqui invalida o cache."""
+def docling_extractor_version() -> str:
+    """Identifica o circuito legado (Docling). Mudança aqui invalida o cache dele."""
 
     docling = _pkg_version("docling")
     return f"docling|docling={docling}|ocr-seletivo"
+
+
+def default_extractor_version(*, prefer_docling: bool = False) -> str:
+    return docling_extractor_version() if prefer_docling else FAST_EXTRACTOR_VERSION
 
 
 def cache_key(file_bytes: bytes, version: str) -> str:
@@ -67,19 +77,20 @@ def load_or_extract(
     cache_dir: Path | None,
     use_cache: bool = True,
     version_string: str | None = None,
-    prefer_docling: bool = True,
+    prefer_docling: bool = False,
     extract_fn: Callable[[Path], ExtractedDocument] | None = None,
 ) -> CachedExtraction:
     """Devolve o Markdown extraído, lendo o cache se a versão bater.
 
-    ``extract_fn`` troca o extrator (ex.: ``fast_extract.extract_fast``); nesse
-    caso ``version_string`` deve identificar o extrator, para não misturar
-    caches.
+    Sem ``extract_fn``, usa o extrator padrão (PyMuPDF por página) ou, com
+    ``prefer_docling=True``, o Docling legado. Com ``extract_fn`` próprio,
+    ``version_string`` deve identificar o extrator, para não misturar caches.
     """
 
     source = Path(path)
-    version = version_string or extractor_version()
-    digest = cache_key(source.read_bytes(), version)
+    version = version_string or default_extractor_version(prefer_docling=prefer_docling)
+    file_bytes = source.read_bytes()
+    digest = cache_key(file_bytes, version)
     md_path = json_path = None
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
@@ -102,10 +113,15 @@ def load_or_extract(
                 path=md_path,
             )
 
-    if extract_fn is not None:
+    if extract_fn is not None and extract_fn is not extract_fast:
         extracted = extract_fn(source)
+    elif prefer_docling:
+        extracted = extract_document(source, prefer_docling=True)
     else:
-        extracted = extract_document(source, prefer_docling=prefer_docling)
+        extracted = extract_fast(
+            source,
+            previous=_reusable_markdown(file_bytes, cache_dir, version) if use_cache else None,
+        )
     generated_at = datetime.now().isoformat(timespec="seconds")
     if cache_dir is not None and md_path is not None and json_path is not None:
         meta = {
@@ -118,6 +134,16 @@ def load_or_extract(
             "versao": version,
             "ocr_used": extracted.ocr_used,
         }
+        coverage = parse_coverage(extracted.markdown)
+        if coverage is not None:
+            meta["cobertura"] = {
+                "nativas": coverage.native,
+                "escaneadas": coverage.scanned,
+                "vetoriais": coverage.vector,
+                "fonte_quebrada": coverage.broken_font,
+                "em_branco": coverage.blank,
+                "nao_lidas": list(coverage.unread),
+            }
         md_path.write_text(extracted.markdown, encoding="utf-8")
         json_path.write_text(
             json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
@@ -130,6 +156,21 @@ def load_or_extract(
         digest=digest,
         path=md_path,
     )
+
+
+def _reusable_markdown(file_bytes: bytes, cache_dir: Path | None, version: str) -> str | None:
+    """Extracao de uma versao anterior compativel (``FAST_OCR_REUSABLE_FROM``) do mesmo arquivo.
+
+    So a extracao rapida atual reaproveita: as folhas lidas por OCR vem dela e as nativas sao
+    refeitas. Sem cache dessa versao, ``None`` e tudo roda como sempre."""
+
+    if cache_dir is None or version != FAST_EXTRACTOR_VERSION:
+        return None
+    for older in FAST_OCR_REUSABLE_FROM:
+        candidate = Path(cache_dir) / f"{cache_key(file_bytes, older)}.md"
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return None
 
 
 def _ocr_page_count(markdown: str) -> int:

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
 import unittest
 from pathlib import Path
 
 from anonimizador_app.desktop import (
+    STALE_AFTER_SECONDS,
+    _older_copies,
+    _our_app_pids,
     _parse_pid_lines,
+    _process_age,
     format_occupant,
     hidden_run_kwargs,
+    holder_is_stale,
     is_our_command_line,
     is_stray_http_server,
     is_worker_process,
@@ -120,6 +129,42 @@ class DesktopGuardTests(unittest.TestCase):
             ),
             "start",
         )
+
+    def test_stuck_copy_is_replaced_instead_of_waiting_forever(self) -> None:
+        # 26/09/2026: a copia fechada ficou viva sem porta, com a trava; cada clique esperava 2 min
+        # e desistia com "ainda esta abrindo".
+        stuck = dict(worker=False, has_window=False, port_busy=False, owns_mutex=False, force=False)
+        self.assertEqual(launch_plan(**stuck, stale=True), "reclaim")
+        self.assertEqual(launch_plan(**stuck, stale=False), "wait_focus")
+        # Porta servida (ex.: modo navegador, sem janela nativa): esta viva, nunca e derrubada.
+        self.assertEqual(launch_plan(**{**stuck, "port_busy": True}, stale=True), "wait_focus")
+        self.assertTrue(holder_is_stale([12.0, STALE_AFTER_SECONDS + 1]))
+        self.assertFalse(holder_is_stale([12.0, 40.0]))
+        self.assertFalse(holder_is_stale([]))
+
+    @unittest.skipUnless(os.name == "nt", "idade de processo pelo Windows")
+    def test_reclaim_only_takes_down_older_copies(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        own_age = _process_age(os.getpid())
+        self.assertIsNotNone(own_age)
+        self.assertIsNone(_process_age(0))
+        # Copia "mais nova" deste app.py: outro clique, que decide sozinho e nao pode ser derrubado.
+        younger = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)", str(root / "app.py")],
+            **hidden_run_kwargs(),
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while younger.pid not in _our_app_pids(root) and time.monotonic() < deadline:
+                time.sleep(0.2)
+            self.assertIn(younger.pid, _our_app_pids(root))
+            age = _process_age(younger.pid)
+            self.assertIsNotNone(age)
+            self.assertLess(age, _process_age(os.getpid()))
+            self.assertNotIn(younger.pid, _older_copies(root))
+        finally:
+            younger.kill()
+            younger.wait(timeout=10)
 
     def test_worker_detection_and_hidden_subprocess_flags(self) -> None:
         self.assertFalse(is_worker_process())
