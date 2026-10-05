@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -174,12 +176,17 @@ class DesktopGuardTests(unittest.TestCase):
         self.assertTrue(flags["startupinfo"].dwFlags & 0x00000001)
 
     def test_icon_file_has_multiple_sizes(self) -> None:
-        root = Path(r"C:\Users\User\Documents\Anonimizador_Juridico")
-        ico = ensure_icon(root)
-        self.assertIsNotNone(ico)
-        assert ico is not None
-        self.assertGreater(ico.stat().st_size, 20_000)
-        self.assertEqual(ico_image_count(ico), 7)
+        # A arte do proprio repositorio, gerada numa pasta temporaria (sem depender da maquina).
+        art = Path(__file__).resolve().parents[1] / "recursos" / "anonimizador.png"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            (root / "recursos").mkdir()
+            shutil.copyfile(art, root / "recursos" / "anonimizador.png")
+            ico = ensure_icon(root)
+            self.assertIsNotNone(ico)
+            assert ico is not None
+            self.assertGreater(ico.stat().st_size, 20_000)
+            self.assertEqual(ico_image_count(ico), 7)
 
 
 class TargetListSessionTests(unittest.TestCase):
