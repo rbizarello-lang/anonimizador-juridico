@@ -94,6 +94,7 @@ from .propagation import FoldedText, fold_with_index, spans_for_roster
 from .roster import KEEP, TOKENIZE, Mention, Roster
 from .rules import build_recognizers
 from .settings import AppSettings
+from .version import ENGINE_LOCAL
 from .span_hygiene import sanitize_spans
 
 LLM_CACHE_SUBDIR = "cache_llm"
@@ -172,6 +173,13 @@ class LlmJobResult:
     local_floor: bool = False
 
 
+def run_local_job(files: Sequence[str | Path], **kwargs) -> LlmJobResult:
+    """Pipeline unico sem LLM: so o motor local acha os nomes, e o resto (elenco, troca, AUDITORIA, ELENCO)
+    e o mesmo do motor LLM. Com isso a deteccao e a unica diferenca entre os dois modos (H5)."""
+
+    return _run_llm_job(files, discoverer=None, **kwargs)
+
+
 def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
     """Tres fases: descobre em todos os arquivos, confere, e so entao troca (ver ``_run_llm_job``).
 
@@ -198,7 +206,7 @@ def _run_llm_job(
     *,
     export_root: Path,
     private_root: Path,
-    discoverer: Discoverer,
+    discoverer: Discoverer | None,
     settings: AppSettings | None = None,
     roster_path: Path | None = None,
     verification_rounds: int = 1,
@@ -224,13 +232,19 @@ def _run_llm_job(
 
     ``local_floor``: piso local (I-N4). ``None`` = o que as configuracoes dizem (``llm_local_floor``, ligado
     por padrao). Ligado, o motor local roda em TODAS as folhas e o resultado e a uniao com o LLM.
+
+    ``discoverer=None``: pipeline unico sem LLM (``run_local_job``). Nada e enviado; o motor local roda em
+    todas as folhas e e a unica fonte de nomes; nao ha folha suspeita, verificacao nem papel do LLM.
     """
 
     sources = _dedupe_paths(files)
     if not sources:
         raise ValueError("Nenhum arquivo foi informado.")
 
-    engine_id = engine or getattr(getattr(discoverer, "config", None), "channel", "") or "llm"
+    local_only = discoverer is None
+    engine_id = engine or (
+        ENGINE_LOCAL if local_only else getattr(getattr(discoverer, "config", None), "channel", "") or "llm"
+    )
     identifier = job_id or _unique_job_id(Path(export_root), Path(private_root))
     export_dir, map_path, split_warning = resolve_lote_dirs(
         Path(export_root), Path(private_root), identifier
@@ -240,7 +254,7 @@ def _run_llm_job(
 
     active = settings or AppSettings()
     reset_ner_status()
-    floor = bool(active.llm_local_floor if local_floor is None else local_floor)
+    floor = local_only or bool(active.llm_local_floor if local_floor is None else local_floor)
     exclusions = tuple(active.exclusions)
     detector = StructuredDetector(recognizers=build_recognizers(active))
     mapping = PseudonymMap(token_labels=active.token_labels())
@@ -296,9 +310,9 @@ def _run_llm_job(
             0.5 + 0.1 * index / max(1, len(states)),
         )
         _apply_local_fallback(state, engine=local_engine, exclusions=exclusions, floor=floor)
-    _review_local_names(states, roster=roster, exclusions=exclusions)
+    batch = _review_local_names(states, roster=roster, exclusions=exclusions)
 
-    for index, state in enumerate(states):
+    for index, state in enumerate(states if not local_only else ()):
         _report(
             on_progress,
             f"Conferindo {state.source.name} ({index + 1} de {len(states)})",
@@ -314,6 +328,7 @@ def _run_llm_job(
                 mapping=mapping,
                 exclusions=exclusions,
                 rounds=verification_rounds,
+                batch=batch,
             ),
         )
 
@@ -331,7 +346,7 @@ def _run_llm_job(
         state = next(item for item in states if item.source == source)
         # Troca final com o elenco completo do lote (so acrescenta tokens).
         entities, result, _offsets, refused = _tokenize(
-            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
+            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
         )
         refused_brands.update(refused)
         state.report.unread_pages = [
@@ -379,11 +394,12 @@ def _run_llm_job(
             entity_counts=dict(Counter(entity.entity_type for entity in entities)),
             page_count=state.cached.document.page_count,
             extractor=state.cached.document.extractor,
-            gemini_used=_is_remote(discoverer),
+            gemini_used=not local_only,
             extraction_cached=state.cached.cached,
             extraction_note=state.cached.audit_line() or "",
             fidelity_drops=state.stats,
             unread_pages=extraction_unread_pages(state.cached.document.markdown),
+            residual_hits=_residual_hits(local_engine.peek(), result.text),
         )
         outcomes.append(outcome)
         written.append((outcome, state))
@@ -412,26 +428,35 @@ def _run_llm_job(
     )
     write_outcomes_index(export_dir, outcomes)
     legend_path = (
-        _append_llm_roles(export_dir, roster, tokens, occurrences, groups) if write_legend else None
+        _append_llm_roles(export_dir, roster, tokens, occurrences, groups)
+        if write_legend and not local_only
+        else None
     )
-    write_llm_private_audit(map_path.parent, refused_brands)
+    write_llm_private_audit(map_path.parent, refused_brands, batch=batch, mapping=mapping, local_only=local_only)
     notes.insert(0, ("elenco (sem nomes)", roster_summary(roster)))
     notes.insert(1, ("marca de uma palavra (so contagens)", brand_guard_lines(refused_brands)))
+    if batch is not None:
+        notes.insert(2, ("elenco do lote: marca de uma palavra (so tokens e contagens)", batch.brand_report(mapping)))
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
     }
     fallback_notes = _fallback_lines(fallback_by_file, held)
-    floor_notes = _floor_lines(floor, reports)
+    floor_notes = _local_only_lines(reports) if local_only else _floor_lines(floor, reports)
     guide_notes = [*floor_notes, *fallback_notes]
     secrets = _secrets_of(discoverer)
     network = getattr(discoverer, "network_check", None)
-    network_notes = (
-        network.audit_lines()
-        if network is not None
-        else ["Nenhuma chamada ao provedor nesta rodada (tudo veio do cache local ou nada foi enviado)."]
-    )
-    notes.insert(0, ("motor", [f"Motor LLM: {engine_id}", *engine_notes, *network_notes, *guide_notes]))
+    if local_only:
+        network_notes = ["Nenhuma chamada a provedor: nada saiu desta maquina."]
+        engine_line = "Motor: local (pipeline unico, sem LLM)"
+    else:
+        network_notes = (
+            network.audit_lines()
+            if network is not None
+            else ["Nenhuma chamada ao provedor nesta rodada (tudo veio do cache local ou nada foi enviado)."]
+        )
+        engine_line = f"Motor LLM: {engine_id}"
+    notes.insert(0, ("motor", [engine_line, *engine_notes, *network_notes, *guide_notes]))
     # Defesa em profundidade: nem a chave nem nada com cara de chave entra na AUDITORIA.
     notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]
     write_audit_report(export_dir, notes, engine=engine_id)
@@ -447,7 +472,7 @@ def _run_llm_job(
         engine=engine_id,
         notes=guide_notes,
     )
-    _append_roster_guide(map_path.parent / "LEIA-ME.txt")
+    _append_roster_guide(map_path.parent / "LEIA-ME.txt", local_only=local_only)
     job = build_job_result(
         job_id=identifier,
         export_dir=export_dir,
@@ -455,7 +480,7 @@ def _run_llm_job(
         outcomes=tuple(outcomes),
         record_count=len(mapping.records),
         contextual_used=True,
-        gemini_used=_is_remote(discoverer),
+        gemini_used=not local_only,
         extra_warning=split_warning,
     )
     if fallback_by_file:
@@ -464,7 +489,17 @@ def _run_llm_job(
         )
         job = replace(job, export_warning=(job.export_warning + " " + warning).strip())
     floor_failed = [name for name, item in reports.items() if item.floor_error]
-    if floor and floor_failed:
+    if local_only and floor_failed and job.export_allowed:
+        # Sem LLM, o motor local e a unica fonte de nomes: se ele nao rodou, o texto so tem os IDs trocados.
+        job = replace(
+            job,
+            export_allowed=False,
+            export_block_reason=(
+                "O motor local nao rodou em: " + ", ".join(floor_failed) + ". Sem ele os nomes ficariam em "
+                "claro; confira a instalacao (AUDITORIA) e rode de novo antes de enviar."
+            ),
+        )
+    elif floor and floor_failed:
         warning = (
             "O piso local estava ligado, mas o motor local nao rodou em: "
             + ", ".join(floor_failed)
@@ -556,7 +591,7 @@ def _discover_file(
     detector: StructuredDetector,
     mapping: PseudonymMap,
     roster: Roster,
-    discoverer: Discoverer,
+    discoverer: Discoverer | None,
     exclusions: Sequence[str],
     use_cache: bool,
     cache_dir: Path | None,
@@ -575,6 +610,19 @@ def _discover_file(
         extract_fn=extract_fn,
         extractor_version=extractor_version,
     )
+    if discoverer is None:
+        # Pipeline unico sem LLM: nada sai desta maquina; o motor local e a unica fonte de nomes.
+        return _FileState(
+            source=source,
+            cached=cached,
+            text=text,
+            ids=ids,
+            stats=stats,
+            folded=fold_with_index(text),
+            anchored=[],
+            report=LlmFileReport(discovery=DiscoveryReport()),
+            failed_pages=[set()],
+        )
     discovery = discoverer.discover(masked.text)
     failed = _pages_of(masked.text, discovery.report.failed)
     empty = _pages_of(masked.text, discovery.report.empty)
@@ -673,11 +721,12 @@ def _verify_file(
     mapping: PseudonymMap,
     exclusions: Sequence[str],
     rounds: int,
+    batch: BatchRoster | None = None,
 ) -> None:
     """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco."""
 
     _entities, result, offsets, _refused = _tokenize(
-        state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
+        state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
     )
     for _round in range(max(0, rounds)):
         before = _tokenizable_state(roster)
@@ -692,7 +741,7 @@ def _verify_file(
         state.report.new_in_verification += changed + len(extra)
         state.anchored.extend(extra)
         _entities, result, offsets, _refused = _tokenize(
-            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping
+            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
         )
 
 
@@ -707,6 +756,11 @@ class _LazyEngine:
         if self._engine is None and self._factory is not None:
             factory, self._factory = self._factory, None
             self._engine = factory()
+        return self._engine
+
+    def peek(self) -> ContextualEngine | None:
+        """O motor, se ja foi criado; nunca o cria."""
+
         return self._engine
 
 
@@ -775,7 +829,7 @@ def _review_local_names(
     *,
     roster: Roster,
     exclusions: Sequence[str],
-) -> None:
+) -> BatchRoster | None:
     """Fase 2, do lote: os nomes do motor local passam pelo mesmo juizo do motor local
     (``BatchRoster.review``) antes de entrar no elenco. Nome visto em contexto de juiz ou procurador nao
     entra; instituicao do SISBAJUD fica em claro; rua com nome de pessoa entra como endereco. O que o LLM
@@ -789,10 +843,10 @@ def _review_local_names(
 
     ran = [state for state in states if state.local_ran]
     if not ran:
-        return
+        return None
     batch = BatchRoster(exclusions)
     for state in ran:
-        batch.add(state.text, state.local_names)
+        batch.add(state.text, [*state.ids, *state.local_names])
     batch.review(state.text for state in ran)
     judged = {entity.key: entity for entity in batch.entities()}
 
@@ -832,6 +886,7 @@ def _review_local_names(
         treated = real_failure | (state.suspect_pages & state.local_pages)
         report.fallback_pages = sorted(treated)
         report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
+    return batch
 
 
 def _suspect_zone(state: _FileState) -> Callable[[int], bool]:
@@ -846,6 +901,31 @@ def _suspect_zone(state: _FileState) -> Callable[[int], bool]:
         return index >= 0 and position < zones[index][1]
 
     return in_zone
+
+
+def _residual_hits(engine: ContextualEngine | None, text: str) -> tuple[str, ...]:
+    """Revisao residual no texto ja trocado, como no modo local: so avisa, nunca troca."""
+
+    if engine is None:
+        return ()
+    try:
+        return tuple(engine.scan_residual(text))
+    except Exception:  # noqa: BLE001 - aviso opcional; nao derruba o lote
+        return ()
+
+
+def _local_only_lines(reports: dict[str, LlmFileReport]) -> list[str]:
+    """AUDITORIA e LEIA-ME do pipeline unico sem LLM: o motor local foi a unica fonte de nomes."""
+
+    kept = sum(item.local_kept for item in reports.values())
+    failed = [name for name, item in reports.items() if item.floor_error]
+    lines = [
+        "Motor local: unica fonte de nomes (sem LLM), em todas as folhas, com o juizo do lote; ocorrencias "
+        f"deixadas fora do elenco por contexto de juiz/procurador ou de instituicao do SISBAJUD: {kept}."
+    ]
+    if failed:
+        lines.append("ALERTA: o motor local nao rodou em " + ", ".join(failed) + " (so os IDs foram trocados).")
+    return lines
 
 
 def _floor_lines(floor: bool, reports: dict[str, LlmFileReport]) -> list[str]:
@@ -914,7 +994,7 @@ def _guard(source: Path, errors: dict[Path, FileOutcome], step: Callable):
     return None
 
 
-def _secrets_of(discoverer: Discoverer) -> tuple[str, ...]:
+def _secrets_of(discoverer: Discoverer | None) -> tuple[str, ...]:
     """O valor da chave do descobridor, so para limpar o que vai para a AUDITORIA."""
 
     key = getattr(getattr(discoverer, "config", None), "api_key", None)
@@ -922,13 +1002,15 @@ def _secrets_of(discoverer: Discoverer) -> tuple[str, ...]:
     return (reveal(),) if callable(reveal) else ()
 
 
-def _is_remote(discoverer: Discoverer) -> bool:
-    """Os dois canais (Gemini API paga e Vertex AI) mandam o texto ao provedor."""
-
-    return True
-
-
-def _append_roster_guide(path: Path) -> None:
+def _append_roster_guide(path: Path, *, local_only: bool = False) -> None:
+    if local_only:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n"
+                "elenco.json: quem e quem neste lote (com os originais), como o motor local\n"
+                "os achou, e a acao (tokenizar/manter). Nada foi enviado a provedor nenhum.\n"
+            )
+        return
     with path.open("a", encoding="utf-8") as handle:
         handle.write(
             "\n"
@@ -952,6 +1034,7 @@ def _tokenize(
     exclusions: Sequence[str],
     folded: FoldedText,
     mapping: PseudonymMap,
+    batch: BatchRoster | None = None,
 ) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap, list[tuple[str, str]]]:
     spans = spans_for_roster(
         text,
@@ -961,9 +1044,33 @@ def _tokenize(
         folded=folded,
     )
     spans, refused = drop_geo_brand_spans(text, spans)
+    if batch is not None:
+        # O que o elenco do lote do motor local acrescenta, igual ao modo local: IDs ja vistos no lote e
+        # a marca de uma palavra aprovada (H5). A marca leva a chave da empresa NO ELENCO deste pipeline,
+        # para ter o mesmo token do nome completo (como no motor local).
+        # Entrada marcada ``manter`` no elenco vence tambem aqui (a marca da empresa mantida fica em claro).
+        keys = _roster_keys(batch, roster)
+        for span in batch.lote_spans(text, [*ids, *spans], folded=folded):
+            key = keys.get(span.canonical_key, span.canonical_key)
+            entry = roster.get(key)
+            if entry is not None and entry.action == KEEP:
+                continue
+            spans.append(replace(span, canonical_key=key))
     entities = resolve_overlaps([*ids, *spans])
     result, offsets = pseudonymize_with_offsets(text, entities, mapping)
     return entities, result, offsets, refused
+
+
+def _roster_keys(batch: BatchRoster, roster: Roster) -> dict[str, str]:
+    """Chave de cada entidade do elenco do lote -> chave da mesma entidade no ``Roster`` deste pipeline."""
+
+    keys: dict[str, str] = {}
+    for entity in batch.entities():
+        kind = "endereco" if entity.is_street else entity.kind
+        entry = roster.lookup(kind, entity.representative)
+        if entry is not None:
+            keys[entity.key] = entry.key
+    return keys
 
 
 _SINGLE_WORD = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
@@ -1019,12 +1126,19 @@ def brand_guard_lines(refused: Counter[tuple[str, str]]) -> list[str]:
     ]
 
 
-def write_llm_private_audit(private_dir: Path, refused: Counter[tuple[str, str]]) -> Path:
-    """``AUDITORIA_PRIVADA.txt`` do lote LLM: as palavras recusadas, para o Operador conferir.
-    Fica ao lado do ``mapa.json``, nunca na pasta dos textos."""
+def write_llm_private_audit(
+    private_dir: Path,
+    refused: Counter[tuple[str, str]],
+    *,
+    batch: BatchRoster | None = None,
+    mapping: PseudonymMap | None = None,
+    local_only: bool = False,
+) -> Path:
+    """``AUDITORIA_PRIVADA.txt`` do lote: as palavras recusadas e a marca de uma palavra aprovada pelo elenco
+    do lote, para o Operador conferir. Fica ao lado do ``mapa.json``, nunca na pasta dos textos."""
 
     lines = [
-        "AUDITORIA PRIVADA DESTE LOTE (motor LLM)",
+        "AUDITORIA PRIVADA DESTE LOTE (" + ("motor local, pipeline unico" if local_only else "motor LLM") + ")",
         "Contem palavras reais do caso. NAO ENVIAR: fica com o mapa, fora da pasta dos textos.",
         "",
         "## Mencao de uma palavra de empresa recusada (municipio, estado ou contexto de foro/endereco)",
@@ -1037,6 +1151,12 @@ def write_llm_private_audit(private_dir: Path, refused: Counter[tuple[str, str]]
     else:
         lines.append("- nenhuma")
     lines.append("")
+    if batch is not None and mapping is not None:
+        lines += [
+            "## Marca de uma palavra (confira se cada palavra aprovada e mesmo nome proprio da empresa)",
+            *(f"- {line}" for line in batch.brand_report(mapping, private=True)),
+            "",
+        ]
     path = Path(private_dir) / PRIVATE_AUDIT_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1132,10 +1252,18 @@ def _pages_label(pages: Sequence[int]) -> str:
 def _file_notes(
     outcome: FileOutcome,
     report: LlmFileReport,
-    discoverer: Discoverer,
+    discoverer: Discoverer | None,
     text: str,
     floor: bool = False,
 ) -> list[str]:
+    if discoverer is None:
+        return [
+            f"Extrator: {outcome.extractor} ({outcome.page_count} pagina(s))",
+            "Motor local em todas as folhas (sem LLM): entidades que ele acrescentou ao elenco: "
+            f"{report.floor_entities}; deixadas fora pelo juizo do lote: {report.local_kept}",
+            *(["ALERTA: o motor local nao rodou: " + report.floor_error] if report.floor_error else []),
+            *audit_markdown(text),
+        ]
     discovery = report.discovery
     notes = [
         f"Extrator: {outcome.extractor} ({outcome.page_count} pagina(s))",
