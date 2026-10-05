@@ -190,6 +190,21 @@ motor local: nada sai deste computador. O motor LLM e opcional (secao abaixo) e
 a linha de versao diz qual motor gerou cada lote ("motor local" ou "motor LLM:
 gemini-pago"). O mapa reversivel permanece so nesta maquina.
 
+## Pipeline unico (aceite pendente)
+
+O motor local e o motor LLM estao passando a usar o mesmo pipeline, para que a
+deteccao seja a unica diferenca entre eles (`GOVERNANCA.md`, H5). A tela ainda usa o
+motor local de antes. Para conferir, no lote de 25/09, que o pipeline unico gera o
+mesmo texto:
+
+```
+python tools\comparar_pipelines.py <pasta com os PDFs do lote>
+```
+
+A ferramenta roda os dois caminhos com o mesmo motor local e o mesmo cache e diz
+"iguais" ou grava as diferencas em `saidas\privados\comparacao_...\DIFERENCAS.txt`
+(pode ter nome em claro: nao enviar).
+
 ## Motor LLM (opcional)
 
 **Como escolher o motor.** O app abre **sempre no motor local**; a escolha nao

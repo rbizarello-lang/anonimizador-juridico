@@ -468,6 +468,25 @@ class BatchRoster:
         merged = sorted([*unified, *_gaps(found, unified)], key=lambda span: (span.start, span.end))
         return self._retype(merged)
 
+    def lote_spans(
+        self,
+        text: str,
+        taken: Sequence[EntitySpan],
+        *,
+        source_name: str = "",
+        folded: FoldedText | None = None,
+    ) -> list[EntitySpan]:
+        """O que este elenco acrescenta a uma troca montada por outro elenco (pipeline unico, H5): os IDs ja
+        vistos no lote, em qualquer grafia (``_id_spans``), e a marca de uma palavra aprovada (E13). So fora
+        do que ``taken`` ja cobre, com as mesmas travas de ``apply``."""
+
+        source = folded or fold_with_index(text)
+        found = drop_protected_spans(text, self._id_spans(text), self._extra_keep, source_name=source_name)
+        if self._brands:
+            found.extend(self._brand_spans(text, [*found, *taken], source))
+        found = sanitize_spans(text, found)
+        return _gaps(found, taken)
+
     def _brand_spans(self, text: str, taken: Sequence[EntitySpan], folded: FoldedText | None) -> list[EntitySpan]:
         """A marca sozinha, escrita como nome proprio, tem token proprio (nao se funde a empresa nenhuma)."""
 

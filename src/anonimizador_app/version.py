@@ -22,6 +22,8 @@
   corroboram vinculo explicito (nao criam grupo sozinhas).
   2.8.2 = H4: com o motor LLM, os nomes do piso local passam pelo juizo do lote do motor local
   (procurador e juiz, banco do SISBAJUD e rua com nome de pessoa) antes de entrarem no elenco.
+  2.8.3 = H5: pipeline unico; com o motor LLM, o elenco do lote do motor local tambem acrescenta os IDs ja
+  vistos no lote e a marca de uma palavra (com o token da empresa), e a revisao residual avisa como no local.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -39,7 +41,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.8.2"
+DETECTION_VERSION = "2.8.3"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
