@@ -456,6 +456,8 @@ def _run_llm_job(
             else ["Nenhuma chamada ao provedor nesta rodada (tudo veio do cache local ou nada foi enviado)."]
         )
         engine_line = f"Motor LLM: {engine_id}"
+        # H6: chamadas, tokens (entrada, saida, raciocinio) e respostas cortadas; so contagens.
+        network_notes = [*network_notes, *getattr(discoverer, "usage_lines", lambda: [])()]
     notes.insert(0, ("motor", [engine_line, *engine_notes, *network_notes, *guide_notes]))
     # Defesa em profundidade: nem a chave nem nada com cara de chave entra na AUDITORIA.
     notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]

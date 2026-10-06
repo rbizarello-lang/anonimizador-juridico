@@ -32,6 +32,7 @@ from .credentials import ApiKey, Vault, VertexSetup, load_key, load_vertex_setup
 from .llm_discovery import (
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
+    THINKING_LEVELS,
     LangExtractDiscoverer,
     LlmConfig,
     LlmConfigError,
@@ -324,6 +325,7 @@ def build_discoverer(
     max_workers: int | None = None,
     chunk_chars: int | None = None,
     permit: RunPermit | None = None,
+    thinking: str | None = None,
 ) -> LangExtractDiscoverer:
     """Descobridor com rede, so com o portao liberado. Sem ``permit`` ativo (a confirmacao da rodada),
     ele le o cache mas nao chama o provedor."""
@@ -336,6 +338,10 @@ def build_discoverer(
         overrides["max_workers"] = max(1, max_workers)
     if chunk_chars is not None:
         overrides["chunk_chars"] = max(500, chunk_chars)
+    if thinking is not None:
+        if thinking not in THINKING_LEVELS:
+            raise LlmConfigError(f"Nivel de raciocinio desconhecido: {thinking!r} ({', '.join(THINKING_LEVELS)}).")
+        overrides["thinking"] = thinking
     if overrides:
         config = replace(config, **overrides)
     return LangExtractDiscoverer(config, cache_dir=cache_dir, permit=permit)

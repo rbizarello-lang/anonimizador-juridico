@@ -262,6 +262,13 @@ application-default login`. Cadastro: pela tela (projeto, arquivo, regiao) ou po
 (`southamerica-east1` por padrao) aparece na confirmacao e na AUDITORIA; o app nao
 a forca.
 
+**Custo e raciocinio.** A AUDITORIA de cada lote LLM traz o uso do provedor: chamadas, erros,
+tokens de entrada, saida e raciocinio (cobrado como saida) e respostas cortadas pelo limite.
+`--raciocinio minimo|baixo|padrao` (padrao `baixo`) limita quanto o modelo pensa; modelo que pensa
+muito no nivel padrao pode devolver a resposta cortada ("fora do formato JSON"). `--verificacao 0`
+desliga a segunda leitura (metade das chamadas). Refazer um lote reaproveita do cache os trechos ja
+lidos.
+
 **Piso local (ligado por padrao).** Com o motor LLM, o motor local (NER mais reconhecedores) roda em **todas** as
 folhas e o resultado e a **uniao** do que o LLM e o motor local apontaram: o LLM so acrescenta protecao, nunca
 tira (omissao parcial do LLM e mencao sem ancora no texto nao deixam nome em claro). Interruptor na aba de regras

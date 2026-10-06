@@ -75,6 +75,8 @@ from anonimizador_app.credentials import (  # noqa: E402
 from anonimizador_app.llm_discovery import (  # noqa: E402
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
+    DEFAULT_THINKING,
+    THINKING_LEVELS,
     LlmConfigError,
 )
 from anonimizador_app.llm_engine import (  # noqa: E402
@@ -146,6 +148,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--paralelo", type=int, default=4, help="Chamadas simultaneas ao LLM (padrao 4).")
     parser.add_argument("--trecho", type=int, default=4000, help="Caracteres por chamada.")
+    parser.add_argument(
+        "--raciocinio",
+        choices=sorted(THINKING_LEVELS),
+        default=DEFAULT_THINKING,
+        help=(
+            f"Quanto o modelo raciocina (cobrado como saida). Padrao: {DEFAULT_THINKING}. 'padrao' deixa o nivel "
+            "do modelo; num modelo que pensa muito, a resposta pode voltar cortada."
+        ),
+    )
     parser.add_argument(
         "--verificacao",
         type=int,
@@ -257,7 +268,11 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         return 2
     discoverer = build_discoverer(
-        decision, cache_dir=cache_dir, max_workers=max(1, args.paralelo), chunk_chars=args.trecho
+        decision,
+        cache_dir=cache_dir,
+        max_workers=max(1, args.paralelo),
+        chunk_chars=args.trecho,
+        thinking=args.raciocinio,
     )
     settings = load_settings(config_source)
     sources = [Path(item).expanduser() for item in args.arquivos]
@@ -406,6 +421,8 @@ def run_and_report(
     print(f"Textos: {job.export_dir}")
     print(f"Mapa e elenco (privados): {job.map_path.parent}")
     print(f"Tempo: {elapsed:.1f}s")
+    for line in getattr(discoverer, "usage_lines", lambda: [])():
+        print(line)
     for name, report in result.reports.items():
         found = report.discovery
         print(
