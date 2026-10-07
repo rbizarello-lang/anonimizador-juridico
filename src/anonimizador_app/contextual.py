@@ -8,7 +8,7 @@ from .eproc_codes import EprocCodesEngine
 from .form_fields import FormFieldsEngine
 from .gemini_detector import ContextualEngine
 from .header_heuristic import HeaderHeuristicEngine
-from .local_ner import CombinedEngine, LocalNerEngine
+from .local_ner import LENER_MODEL, CombinedEngine, LocalNerEngine, load_lener_predict
 from .settings import AppSettings
 from .table_labels import TableLabelsEngine
 from .target_list import TargetListEngine
@@ -66,6 +66,18 @@ def build_contextual_engine(
                 cache_dir=ner_cache_dir,
             )
         )
+        if settings.extra_ner == "lener":
+            # Segundo detector (H8), pelo mesmo caminho do GLiNER: o cache tem identidade propria.
+            engines.append(
+                LocalNerEngine(
+                    extra_keep=settings.exclusions,
+                    shadow_case=settings.case_shadow_enabled,
+                    use_cache=use_ner_cache,
+                    cache_dir=ner_cache_dir,
+                    predict=load_lener_predict(),
+                    model_label=f"lener:{LENER_MODEL}",
+                )
+            )
     if not engines:
         return None
     if len(engines) == 1:
