@@ -100,6 +100,45 @@ class GabaritoTests(unittest.TestCase):
         self.assertTrue(row["revisar"])
         self.assertIn("so um motor", row["motivo_revisao"])
 
+    def test_prefixed_canonical_keys_merge_with_plain_ones(self) -> None:
+        # Mapas reais: o pipeline com elenco grava "pessoa:<nucleo>" / "empresa:<nucleo sem LTDA>" e a lista
+        # de alvos "alvo:pessoa:<nucleo>"; o motor local antigo grava so o nome dobrado.
+        mapa_llm = {"schema_version": 2, "records": [
+            _record("[EMPRESA_1]", "ORGANIZATION", "empresa:alfaville metais", "ALFAVILLE METAIS LTDA"),
+            _record("[PESSOA_1]", "PERSON", "pessoa:olavo ricardo teixeira", "OLAVO RICARDO TEIXEIRA"),
+        ]}
+        mapa_local = {"schema_version": 2, "records": [
+            _record("[EMPRESA_1]", "ORGANIZATION", "alfaville metais ltda", "Alfaville Metais Ltda"),
+            _record("[PESSOA_1]", "PERSON", "alvo:pessoa:olavo ricardo teixeira", "OLAVO RICARDO TEIXEIRA"),
+        ]}
+        (self.lote_local / "mapa.json").write_text(json.dumps(mapa_local, ensure_ascii=False), encoding="utf-8")
+        (self.lote_llm / "mapa.json").write_text(json.dumps(mapa_llm, ensure_ascii=False), encoding="utf-8")
+        payload = montar.build([self.lote_local, self.lote_llm], self.private, None, self.texts)
+        names = [row for row in payload["entidades"] if row.get("motores")]
+        self.assertEqual(len(names), 2)
+        for row in names:
+            self.assertEqual(row["motores"], ["gemini-pago", "local"])
+        # O papel do elenco (chave com prefixo) continua chegando na entidade.
+        olavo = next(row for row in names if row["tipo"] == "pessoa")
+        self.assertEqual(olavo["acao"], "tokenizar")
+
+    def test_same_spelling_under_different_canonicals_is_one_entity_but_a_lone_surname_is_not(self) -> None:
+        mapa_llm = {"schema_version": 2, "records": [
+            _record("[PESSOA_1]", "PERSON", "pessoa:marlene oliveira sampaio", "MARLENE OLIVEIRA SAMPAIO"),
+            _record("[PESSOA_2]", "PERSON", "pessoa:olavo ricardo teixeira", "OLAVO RICARDO TEIXEIRA", "Teixeira"),
+        ]}
+        mapa_local = {"schema_version": 2, "records": [
+            _record("[PESSOA_1]", "PERSON", "marlene sampaio", "Marlene Sampaio", "MARLENE OLIVEIRA SAMPAIO"),
+            _record("[PESSOA_2]", "PERSON", "beatriz teixeira", "Teixeira"),
+        ]}
+        (self.lote_local / "mapa.json").write_text(json.dumps(mapa_local, ensure_ascii=False), encoding="utf-8")
+        (self.lote_llm / "mapa.json").write_text(json.dumps(mapa_llm, ensure_ascii=False), encoding="utf-8")
+        payload = montar.build([self.lote_local, self.lote_llm], self.private, None, self.texts)
+        people = [row for row in payload["entidades"] if row.get("tipo") == "pessoa" and row.get("motores")]
+        self.assertEqual(len(people), 3)
+        marlene = next(row for row in people if "MARLENE OLIVEIRA SAMPAIO" in row["padroes"])
+        self.assertEqual(marlene["motores"], ["gemini-pago", "local"])
+
     def test_public_roles_are_kept(self) -> None:
         self.assertEqual(self.rows["raimundo nonato furtado"]["acao"], "manter")
         self.assertEqual(self.rows["raimundo nonato furtado"]["categoria"], "AGENTE-PUBLICO")

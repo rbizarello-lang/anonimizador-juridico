@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from anonimizador_app.batch_propagation import _financial_position, _public_role, _street_position  # noqa: E402
 from anonimizador_app.gemini_detector import is_kept_term  # noqa: E402
 from anonimizador_app.propagation import fold_with_index  # noqa: E402
-from anonimizador_app.roster import KEEP, TOKENIZE, RosterEntry, normalize_role  # noqa: E402
+from anonimizador_app.roster import KEEP, TOKENIZE, RosterEntry, entity_core, normalize_role  # noqa: E402
 from anonimizador_juridico.pseudonymizer import fold_lexical  # noqa: E402
 
 NAME_TYPES = {"PERSON": "pessoa", "ORGANIZATION": "empresa", "LOCATION": "endereco"}
@@ -98,6 +98,16 @@ class Entity:
         return max(self.originals, key=lambda item: (len(item.split()), len(item))) if self.originals else self.core
 
 
+# Prefixo da chave canonica: o pipeline com elenco grava "pessoa:<nucleo>" e a lista de alvos
+# "alvo:pessoa:<nucleo>"; mapas antigos gravam so o nome dobrado. Sem tirar o prefixo, a mesma entidade
+# vira uma linha por motor e cada uma sai "so um motor achou".
+_CANONICAL_PREFIX = re.compile(r"^(?:alvo:)?(?:pessoa|empresa|endereco|particula):")
+
+
+def _entity_core(kind: str, canonical: str) -> str:
+    return entity_core(kind, _CANONICAL_PREFIX.sub("", canonical))
+
+
 def _engine_label(lote_dir: Path) -> str:
     """Rotulo do motor do lote, lido do LEIA-ME privado ("motor local" / "motor LLM: canal"), sem nomes."""
 
@@ -131,7 +141,7 @@ def load_lote(lote_dir: Path, entities: dict[tuple[str, str], Entity], ids: dict
                 if original not in item["exemplos"]:
                     item["exemplos"].append(original)
             continue
-        core = fold_lexical(canonical or (originals[0] if originals else ""))
+        core = _entity_core(kind, canonical or (originals[0] if originals else ""))
         if not core:
             continue
         entity = entities.setdefault((kind, core), Entity(kind=kind, core=core))
@@ -146,10 +156,50 @@ def load_lote(lote_dir: Path, entities: dict[tuple[str, str], Entity], ids: dict
                 entry = RosterEntry.from_dict(item)
             except ValueError:
                 continue
-            key = (entry.kind, fold_lexical(entry.name))
+            key = (entry.kind, _entity_core(entry.kind, entry.name))
             if key in entities:
                 entities[key].llm_roles.update(role for role in entry.roles if role != "desconhecido")
     return engine
+
+
+def merge_shared_spellings(entities: dict[tuple[str, str], Entity]) -> None:
+    """Junta, no mesmo tipo, entidades que dividem uma grafia de duas palavras ou mais.
+
+    Cada motor escolhe seu proprio valor canonico (um usa a forma longa, outro a curta; um guarda o
+    numero do endereco, outro nao), entao a mesma entidade pode chegar com chaves diferentes. A grafia
+    tirada do texto e o que os motores realmente marcaram: se coincide, e a mesma entidade. Grafia de uma
+    palavra so (um sobrenome) nao junta, porque duas pessoas da mesma familia a dividem.
+    """
+
+    keys = list(entities)
+    parent = {key: key for key in keys}
+
+    def find(key: tuple[str, str]) -> tuple[str, str]:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    owner: dict[tuple[str, str], tuple[str, str]] = {}
+    for key in keys:
+        entity = entities[key]
+        for original in entity.originals:
+            folded = fold_lexical(original)
+            if len(folded.split()) < 2:
+                continue
+            seen = owner.setdefault((entity.kind, folded), key)
+            if seen != key:
+                parent[find(key)] = find(seen)
+    for key in keys:
+        root = find(key)
+        if root == key:
+            continue
+        target, source = entities[root], entities.pop(key)
+        target.engines |= source.engines
+        target.llm_roles |= source.llm_roles
+        for original in source.originals:
+            if original not in target.originals:
+                target.originals.append(original)
 
 
 def load_texts(private_root: Path, pdf_dir: Path | None, text_dir: Path | None) -> list[tuple[str, str]]:
@@ -319,6 +369,7 @@ def build(lotes: list[Path], private_root: Path, pdf_dir: Path | None, text_dir:
     entities: dict[tuple[str, str], Entity] = {}
     ids: dict[tuple[str, str], dict] = {}
     engines = [load_lote(lote, entities, ids) for lote in lotes]
+    merge_shared_spellings(entities)
     texts = load_texts(private_root, pdf_dir, text_dir)
     annotate(entities, texts)
     rows = [classify(entity, len(set(engines))) for entity in entities.values()]
