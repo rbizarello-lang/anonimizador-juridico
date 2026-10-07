@@ -47,6 +47,12 @@ from .roster import Mention
 
 PROMPT_VERSION = "2026-10-01.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
+
+# Raciocinio do modelo (H6). O LangExtract nao repassa ``thinking_config`` ao Gemini: sem isto o modelo pensa no
+# nivel padrao dele, cobrado como saida; num modelo que pensa muito, o raciocinio esgota o ``max_output_tokens``
+# e a resposta volta cortada ("fora do formato JSON"), que foi o que derrubou o lote do 3.8 em 05/10.
+THINKING_LEVELS = {"minimo": "MINIMAL", "baixo": "LOW", "padrao": None}
+DEFAULT_THINKING = "baixo"
 DEFAULT_LOCATION = "southamerica-east1"
 _EMPTY_OUTPUT = '{"extractions": []}'
 _PAGE_ANCHOR = re.compile(r"<!--\s*pagina-origem:\s*(\d+)\s*-->")
@@ -208,6 +214,7 @@ class LlmConfig:
     chunk_chars: int = 4000
     max_output_tokens: int = 8192
     retries: int = 1
+    thinking: str = DEFAULT_THINKING
 
     def describe(self) -> str:
         if self.channel:
@@ -418,6 +425,11 @@ class LangExtractDiscoverer:
         self.permit = permit
         # I4: o que o portao conferiu no ponto da rede na ultima vez que o modelo foi criado.
         self.network_check: NetworkCheck | None = None
+        # H6: tokens e respostas cortadas da rodada, para a AUDITORIA.
+        self.usage = UsageMeter()
+
+    def usage_lines(self) -> list[str]:
+        return self.usage.lines(self.config)
 
     def describe(self) -> str:
         if self._model_factory is not None:
@@ -623,6 +635,7 @@ class LangExtractDiscoverer:
         except GateError as exc:
             raise LlmConfigError(str(exc)) from None
         quiet_sdk_logging()
+        install_meter(model, self.usage, cfg.thinking)
         self.network_check = check
         return model
 
@@ -685,6 +698,128 @@ def _service_account_credentials(path: str) -> Any:
 
 def _hidden_repr(self: Any) -> str:
     return f"{type(self).__mro__[1].__name__}(model_id={getattr(self, 'model_id', '?')!r}, <credenciais ocultas>)"
+
+
+class UsageMeter:
+    """Uso do provedor numa rodada (H6): chamadas, tokens e respostas cortadas, para a AUDITORIA explicar a
+    conta. So contagens: nada de texto nem de chave. Seguro entre as chamadas paralelas."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.calls = 0
+        self.failed = 0
+        self.prompt_tokens = 0
+        self.output_tokens = 0
+        self.thinking_tokens = 0
+        self.cached_tokens = 0
+        self.truncated = 0
+        self.blocked = 0
+        self.thinking_rejected = False
+
+    def record(self, response: Any) -> None:
+        usage = getattr(response, "usage_metadata", None)
+        reasons = {
+            str(getattr(getattr(candidate, "finish_reason", None), "name", getattr(candidate, "finish_reason", "")))
+            for candidate in (getattr(response, "candidates", None) or ())
+        }
+        with self._lock:
+            self.calls += 1
+            if usage is not None:
+                self.prompt_tokens += int(getattr(usage, "prompt_token_count", 0) or 0)
+                self.output_tokens += int(getattr(usage, "candidates_token_count", 0) or 0)
+                self.thinking_tokens += int(getattr(usage, "thoughts_token_count", 0) or 0)
+                self.cached_tokens += int(getattr(usage, "cached_content_token_count", 0) or 0)
+            if any("MAX_TOKENS" in reason for reason in reasons):
+                self.truncated += 1
+            if any(reason in {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"} for reason in reasons):
+                self.blocked += 1
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self.calls += 1
+            self.failed += 1
+
+    def lines(self, config: "LlmConfig") -> list[str]:
+        if not self.calls:
+            return ["Uso do provedor: nenhuma chamada nesta rodada (tudo veio do cache local)."]
+        thinking = config.thinking if not self.thinking_rejected else f"{config.thinking} (recusado pelo modelo: padrao)"
+        lines = [
+            f"Uso do provedor ({config.model_id}, raciocinio: {thinking}): {self.calls} chamada(s), "
+            f"{self.failed} com erro; tokens: entrada {self.prompt_tokens} (do cache do provedor "
+            f"{self.cached_tokens}), saida {self.output_tokens}, raciocinio {self.thinking_tokens} "
+            "(cobrado como saida).",
+        ]
+        if self.truncated:
+            lines.append(
+                f"ALERTA: {self.truncated} resposta(s) cortada(s) pelo limite de saida ({config.max_output_tokens} "
+                "tokens): viram trecho sem leitura. Baixe o raciocinio (--raciocinio minimo) ou o --trecho."
+            )
+        if self.blocked:
+            lines.append(f"ALERTA: {self.blocked} resposta(s) bloqueada(s) pelo filtro de seguranca do provedor.")
+        return lines
+
+
+class _MeteredModels:
+    """``client.models`` com o medidor e o nivel de raciocinio; o resto passa direto ao SDK."""
+
+    def __init__(self, models: Any, meter: UsageMeter, thinking: str | None) -> None:
+        self._models = models
+        self._meter = meter
+        self._thinking = thinking
+
+    def generate_content(self, *, model: str, contents: Any, config: Any = None, **kwargs: Any) -> Any:
+        call_config = dict(config or {})
+        if self._thinking and not self._meter.thinking_rejected:
+            call_config.setdefault("thinking_config", {"thinking_level": self._thinking})
+        try:
+            response = self._models.generate_content(model=model, contents=contents, config=call_config, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - registrado e repassado ao LangExtract
+            if "thinking_config" in call_config and _rejects_thinking(exc):
+                # Modelo que nao aceita o nivel de raciocinio: segue no padrao dele em vez de perder o trecho.
+                self._meter.thinking_rejected = True
+                call_config.pop("thinking_config", None)
+                try:
+                    response = self._models.generate_content(
+                        model=model, contents=contents, config=call_config, **kwargs
+                    )
+                except Exception:
+                    self._meter.record_failure()
+                    raise
+            else:
+                self._meter.record_failure()
+                raise
+        self._meter.record(response)
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._models, name)
+
+
+class _MeteredClient:
+    """O cliente do SDK com ``models`` medido. As conferencias do portao (endereco, gravacao em disco) leem o
+    cliente original e rodam ANTES de ele ser envolvido."""
+
+    def __init__(self, client: Any, meter: UsageMeter, thinking: str | None) -> None:
+        self._inner = client
+        self.models = _MeteredModels(client.models, meter, thinking)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _rejects_thinking(exc: Exception) -> bool:
+    text = str(exc).casefold()
+    return ("thinking" in text or "thought" in text) and ("400" in text or "invalid" in text or "not supported" in text)
+
+
+def install_meter(model: Any, meter: UsageMeter, thinking: str) -> None:
+    """Envolve o cliente do modelo do LangExtract com o medidor (H6). Sem cliente (SDK mudou): nao mede, avisa."""
+
+    client = getattr(model, "_client", None)
+    if client is None or not hasattr(client, "models"):
+        _LOG.warning("LLM: cliente do SDK sem 'models'; uso de tokens nao sera medido nesta rodada.")
+        return
+    model._client = _MeteredClient(client, meter, THINKING_LEVELS.get(thinking))
 
 
 def hide_credentials(model: Any) -> None:
