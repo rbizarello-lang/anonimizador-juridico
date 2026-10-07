@@ -100,14 +100,20 @@ def gliner_detector(model_id: str, revision: str | None, threshold: float) -> De
 
 
 def lener_detector(model_id: str, threshold: float) -> Detector:
-    from transformers import pipeline
+    from transformers import AutoTokenizer, pipeline
 
     # Offline vem de HF_HUB_OFFLINE (padrao do app): com ela ligada o pipeline ja repassa local_files_only ao
     # AutoConfig, e passar de novo em model_kwargs da TypeError ("multiple values").
+    # O tokenizador do LeNER nao declara model_max_length: sem o teto de 512 do BERT, um trecho longo passa
+    # inteiro e o modelo quebra (RuntimeError de tamanho de tensor). Com o teto, ``stride`` divide o trecho
+    # em janelas sobrepostas e o pipeline junta as entidades.
+    tokenizer = AutoTokenizer.from_pretrained(model_id, model_max_length=512)
     tagger = pipeline(
         "token-classification",
         model=model_id,
+        tokenizer=tokenizer,
         aggregation_strategy="simple",
+        stride=64,
     )
 
     def detect(text: str) -> list[Span]:
@@ -331,9 +337,12 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
         except Exception as exc:  # noqa: BLE001 - modelo ausente nao derruba os outros
             print(f"{name}: nao carregou ({type(exc).__name__}); baixe com tools/instalar_modelo_ner.py --extra", file=sys.stderr)
             continue
-        results.append(evaluate(name, detect, targets, texts))
-        if args.sombra:
-            results.append(evaluate(f"{name}+sombra", with_shadow(detect), targets, texts))
+        runs = [(name, detect)] + ([(f"{name}+sombra", with_shadow(detect))] if args.sombra else [])
+        for label, runner in runs:
+            try:
+                results.append(evaluate(label, runner, targets, texts))
+            except Exception as exc:  # noqa: BLE001 - um motor que quebra no meio nao apaga os outros
+                print(f"{label}: falhou ao rodar ({type(exc).__name__})", file=sys.stderr)
     if not results:
         return 1
     print(f"Gabarito: {len([t for t in targets if t.acao == 'tokenizar'])} entidade(s) a tokenizar, "
