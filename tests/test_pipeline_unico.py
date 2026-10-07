@@ -52,6 +52,8 @@ PARTE_2 = """# PARTE 2
 
 <!-- pagina-origem: 1 -->
 
+O executado Olavo Teixeira apresentou defesa. Olavo Teixeira alega ilegitimidade.
+
 Ordem SISBAJUD às instituições:
 00341 - BANCO PALMEIRAS DO SUL S A
 Bloqueio na conta de Olavo Ricardo Teixeira, CPF 52998224725, e da Alfaville.
@@ -62,6 +64,7 @@ A sócia BEATRIZ HELENA CAVALCANTI, CPF 111.444.777-35, foi citada. CNPJ 1122233
 NER_NAMES = [
     ("ORGANIZATION", "ALFAVILLE METAIS LTDA"),
     ("PERSON", "OLAVO RICARDO TEIXEIRA"),
+    ("PERSON", "Olavo Teixeira"),  # forma curta: o lote agrupa com o nome completo (E13)
     ("PERSON", "RAIMUNDO NONATO FURTADO"),
     ("PERSON", "MARLENE OLIVEIRA SAMPAIO"),
     ("PERSON", "Olavo Bilac"),
@@ -162,6 +165,22 @@ class ParityTests(_Lote):
         self.assertNotIn("52998224725", parte_2)
         for kept in ("R$ 1.234.567,89", "12/03/2024", "Conforme o evento 12,", "SISBAJUD"):
             self.assertIn(kept, parte_1 + parte_2)
+
+
+class GroupingTests(_Lote):
+    def test_a_short_form_shares_the_token_of_the_full_name_in_both_pipelines(self) -> None:
+        import json
+
+        engine = _engine()
+        current = self._current(engine)
+        unified = self._unified(engine).job
+        for job in (current, unified):
+            records = json.loads(job.map_path.read_text(encoding="utf-8"))["records"]
+            people = [r for r in records if r["entity_type"] == "PERSON" and "teixeira" in r["canonical"].casefold()]
+            self.assertEqual(len(people), 1, [r["canonical"] for r in people])
+            self.assertIn("Olavo Teixeira", people[0]["originals"])
+        texts = [o.markdown_path.read_text(encoding="utf-8") for o in unified.outcomes]
+        self.assertNotIn("Olavo Teixeira", "".join(texts))
 
 
 class KeptEntryTests(_Lote):
