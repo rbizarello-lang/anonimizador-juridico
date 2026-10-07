@@ -9,6 +9,7 @@ Motores (``--motor``, repetivel; padrao: gliner-atual):
     gliner-large   urchade/gliner_large-v2.1 (baixar antes: tools/instalar_modelo_ner.py --extra gliner-large)
     lener          BERT treinado no LeNER-Br (pierreguillou/ner-bert-base-cased-pt-lenerbr; --extra lener)
     app-local      o motor local inteiro do app (regras + lista de alvos + GLiNER), como linha de base
+    app-local+lener  o mesmo, com o LeNER somado ao GLiNER (uniao, mesmos filtros): o fator em avaliacao
 
 ``--sombra``: cada motor roda tambem na copia em Title Case dos trechos em CAIXA ALTA (passada-sombra de
 caixa do GOVERNANCA): mesmo modelo, mesmo limiar, um fator so.
@@ -122,12 +123,15 @@ def lener_detector(model_id: str, threshold: float) -> Detector:
     return detect
 
 
-def app_local_detector(private_root: Path) -> Detector:
+def app_local_detector(private_root: Path, extra_ner: str = "") -> Detector:
+    from dataclasses import replace
+
     from anonimizador_app.contextual import build_contextual_engine
     from anonimizador_app.ner_cache import default_ner_cache_dir
     from anonimizador_app.settings import load_settings
 
-    engine = build_contextual_engine(load_settings(private_root), use_ner_cache=True, ner_cache_dir=default_ner_cache_dir(private_root))
+    settings = replace(load_settings(private_root), extra_ner=extra_ner)
+    engine = build_contextual_engine(settings, use_ner_cache=True, ner_cache_dir=default_ner_cache_dir(private_root))
     if engine is None:
         raise RuntimeError("motor local indisponivel")
 
@@ -142,6 +146,8 @@ ENGINES: dict[str, Callable[[float, Path], Detector]] = {
     "gliner-large": lambda threshold, _root: gliner_detector(GLINER_LARGE_MODEL, None, threshold),
     "lener": lambda threshold, _root: lener_detector(LENER_MODEL, threshold),
     "app-local": lambda _threshold, root: app_local_detector(root),
+    # O motor local inteiro com o LeNER somado ao GLiNER (H8): o fator a medir.
+    "app-local+lener": lambda _threshold, root: app_local_detector(root, extra_ner="lener"),
 }
 
 
