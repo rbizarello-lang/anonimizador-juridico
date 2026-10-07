@@ -9,6 +9,18 @@ PR #5 (aberto, CI verde). Nenhum dado real de caso neste documento.
 
 ---
 
+## 0. Atualização de 07/10/2026
+
+- **Decisão do Operador:** API suspensa por ora; esgotar as ferramentas locais offline; testar o Gemma 4
+  na versão que a máquina permitir (E4B, Q4, em CPU, só como árbitro residual). Registrado como H7 no
+  `GOVERNANCA.md`.
+- **Primeiro teste pago (H6):** R$ ~30 no `gemini-3.8-flash`, que cortou a resposta em metade dos trechos;
+  o app ganhou medidor de custo e controle do raciocínio (PR #6).
+- **Ferramentas novas:** `tools\montar_gabarito.py` (gabarito pré-classificado pela união dos mapas) e
+  `tools\comparar_motores.py` (detectores em CPU contra o gabarito). Seção nova no README.
+- **Ordem agora:** mesclar PR #6 → passo A → gabarito (a outra aba gera, você revisa) → comparação dos
+  detectores → Gemma 4 só se sobrar vazamento. A seção 4 abaixo fica superada nos itens C a G.
+
 ## 1. Resumo em um minuto
 
 - O app troca identificadores de peças jurídicas por tokens (`[PESSOA_1]`, `[CPF_2]`…) e guarda o

@@ -190,6 +190,24 @@ motor local: nada sai deste computador. O motor LLM e opcional (secao abaixo) e
 a linha de versao diz qual motor gerou cada lote ("motor local" ou "motor LLM:
 gemini-pago"). O mapa reversivel permanece so nesta maquina.
 
+## Gabarito e comparacao de detectores (H7)
+
+A API esta suspensa por decisao do Operador (07/10/2026): o caminho local e medido primeiro.
+
+1. **Gabarito do processo**, a partir da uniao dos mapas de varios lotes (um por motor), pre-classificado
+   para revisao:
+   ```
+   python tools\montar_gabarito.py saidas\privados\lote_A saidas\privados\lote_B --pdfs <pasta dos PDFs>
+   ```
+   Grava `saidas\privados\gabaritos\gabarito_<pasta>.json` e `.REVISAO.md` (com nomes: nao enviar). Leia o
+   REVISAO, corrija `acao` (tokenizar/manter) no JSON e apague o que nao for entidade.
+2. **Detectores em CPU contra o gabarito** (baixe antes: `tools\instalar_modelo_ner.py --baixar --extra gliner-large lener`):
+   ```
+   python tools\comparar_motores.py saidas\privados\gabaritos\gabarito_<pasta>.json --pdfs <pasta dos PDFs> --motor gliner-atual --motor gliner-large --motor lener --motor app-local --sombra
+   ```
+   Na tela, so numeros: recall do que deve ser trocado, o que marcou de quem deve ficar em claro, o que
+   marcou fora do gabarito e termos protegidos atingidos. O detalhe por entidade fica em JSON privado.
+
 ## Pipeline unico (aceite pendente)
 
 O motor local e o motor LLM estao passando a usar o mesmo pipeline, para que a
