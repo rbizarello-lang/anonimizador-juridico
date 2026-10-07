@@ -102,12 +102,12 @@ def gliner_detector(model_id: str, revision: str | None, threshold: float) -> De
 def lener_detector(model_id: str, threshold: float) -> Detector:
     from transformers import pipeline
 
-    offline = hub_offline()
+    # Offline vem de HF_HUB_OFFLINE (padrao do app): com ela ligada o pipeline ja repassa local_files_only ao
+    # AutoConfig, e passar de novo em model_kwargs da TypeError ("multiple values").
     tagger = pipeline(
         "token-classification",
         model=model_id,
         aggregation_strategy="simple",
-        model_kwargs={"local_files_only": offline},
     )
 
     def detect(text: str) -> list[Span]:
