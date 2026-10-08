@@ -39,6 +39,11 @@ EXTRAS = {
     "gliner-large": "urchade/gliner_large-v2.1",
     "lener": "pierreguillou/ner-bert-base-cased-pt-lenerbr",
 }
+# O GLiNER carrega o tokenizador do modelo-base (``model_name`` do gliner_config.json), que fica em outro
+# repositorio. Sem ele no cache, o modelo nao abre offline (OSError). O do GLiNER atual ja vem acima.
+EXTRA_TOKENIZERS = {
+    "gliner-large": "microsoft/deberta-v3-large",
+}
 
 
 def main(argv: list[str]) -> int:
@@ -53,6 +58,8 @@ def main(argv: list[str]) -> int:
     print(f"tokenizador: {GLINER_TOKENIZER_MODEL} @ {GLINER_TOKENIZER_REVISION} ({', '.join(_TOKENIZER_FILES)})")
     for name in extras:
         print(f"extra:       {name} = {EXTRAS[name]} (sem revisao fixada; candidato em avaliacao)")
+        if name in EXTRA_TOKENIZERS:
+            print(f"             + tokenizador {EXTRA_TOKENIZERS[name]} ({', '.join(_TOKENIZER_FILES)})")
     if "--baixar" not in argv:
         print("Nada foi baixado. Rode de novo com --baixar para baixar (pede rede).")
         return 0
@@ -64,6 +71,8 @@ def main(argv: list[str]) -> int:
     )
     for name in extras:
         snapshot_download(EXTRAS[name])
+        if name in EXTRA_TOKENIZERS:
+            snapshot_download(EXTRA_TOKENIZERS[name], allow_patterns=_TOKENIZER_FILES)
     if "lener" in extras:
         print("O detector 'lener' precisa de: pip install transformers")
     print("Modelo(s) instalado(s) no cache local. O app continua offline.")
