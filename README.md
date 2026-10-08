@@ -207,6 +207,9 @@ A API esta suspensa por decisao do Operador (07/10/2026): o caminho local e medi
    ```
    Na tela, so numeros: recall do que deve ser trocado, o que marcou de quem deve ficar em claro, o que
    marcou fora do gabarito e termos protegidos atingidos. O detalhe por entidade fica em JSON privado.
+3. **LeNER dentro do app** (H8, em avaliacao): `--motor app-local+lener` mede o motor local inteiro com o
+   BERT do LeNER-Br somado ao GLiNER, pelos mesmos filtros. Para usar no app, `"extra_ner": "lener"` no
+   `config.json` (desligado por padrao) e `pip install transformers`.
 
 ## Pipeline unico (aceite pendente)
 

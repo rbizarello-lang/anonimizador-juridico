@@ -852,12 +852,17 @@ def _review_local_names(
     batch.review(state.text for state in ran)
     judged = {entity.key: entity for entity in batch.entities()}
 
+    # Agrupamento do lote (H8): a entidade do BatchRoster, nao a grafia, e a unidade do elenco. Toda grafia
+    # (erro de OCR, forma curta, "executada X") entra como variante da MESMA entrada, com o nome mais completo
+    # como canonico: um token so, e spans_for_roster acha as formas curtas, como no motor local.
+    used: set[str] = set()
     for state in ran:
         report = state.report
         in_zone = _suspect_zone(state)
         for span in state.local_names:
             value = state.text[span.start : span.end]
             kind = _NAME_KINDS[span.entity_type]
+            canonical = value
             entity = judged.get(batch.key_for(span.entity_type, value))
             if entity is not None:
                 if entity.public_agent or entity.financial:
@@ -865,16 +870,20 @@ def _review_local_names(
                     continue
                 if entity.is_street:
                     kind = "endereco"
-            entry = roster.lookup(kind, value)
+                canonical = entity.representative
+            entry = roster.lookup(kind, value) or roster.lookup(kind, canonical)
             if entry is not None and entry.action == KEEP:
                 continue
             created = entry is None
-            if created:
-                entry = roster.add_mention(
-                    Mention(kind=kind, text=value, canonical=value), source=LOCAL_FALLBACK_SOURCE
-                )
+            entry = roster.add_mention(
+                Mention(kind=kind, text=value, canonical=canonical), source=LOCAL_FALLBACK_SOURCE
+            )
             if entry is None:
                 continue
+            if entity is not None and entity.key not in used:
+                used.add(entity.key)
+                for variant in (*entity.names, *entity.role_phrases):
+                    roster.add_mention(Mention(kind=kind, text=variant, canonical=canonical), source=LOCAL_FALLBACK_SOURCE)
             state.anchored.append((span.start, span.end, entry.key))
             if in_zone(span.start):
                 report.fallback_entities += 1
