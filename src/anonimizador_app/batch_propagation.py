@@ -513,10 +513,16 @@ class BatchRoster:
         return spans
 
     def _retype(self, spans: list[EntitySpan]) -> list[EntitySpan]:
-        """Rua com nome de pessoa vira endereco; banco do SISBAJUD fica em claro."""
+        """Rua com nome de pessoa vira endereco; banco do SISBAJUD e agente publico ficam em claro.
+
+        O juizo e da entidade, nao da ocorrencia: a deteccao direta (NER) do juiz ou procurador que o
+        lote viu com o cargo colado ao nome sai da troca junto com a propagacao (H9-a), como o banco do
+        SISBAJUD ja saia (E7). A fidelidade por ocorrencia (``drop_protected_spans``) segue antes."""
 
         flagged = {
-            entity.key: entity for entity in self._ensure() if entity.is_street or entity.financial
+            entity.key: entity
+            for entity in self._ensure()
+            if entity.is_street or entity.financial or entity.public_agent
         }
         if not flagged:
             return spans
