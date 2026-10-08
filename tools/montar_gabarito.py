@@ -20,6 +20,11 @@ le (``entidades`` com categoria, rotulo e padroes; ``ids`` com valor), com campo
 ``acao``, ``certeza``, ``ocorrencias``, ``motores`` e ``revisar``; e ``<nome>.REVISAO.md``, a lista para ler,
 com os itens a revisar primeiro. O Operador corrige ``acao`` (tokenizar/manter) e apaga o que nao for
 entidade; depois o arquivo e o padrao para medir qualquer motor.
+
+Depois da revisao, ``--reclassificar <gabarito.json>`` recalcula so a ``categoria`` de cada entidade a partir
+de ``tipo`` + ``papel`` + ``acao`` atuais (acao=manter vira ``MANTER-<tipo>-<papel>``, salvo as categorias que
+ja sao de claro: AGENTE-PUBLICO, ORGAO-PUBLICO, INSTITUICAO-FINANCEIRA, AUTOR-CITADO), sem tocar em mais
+nada, e guarda o original em ``<nome>.antes-reclassificar.json`` ao lado.
 """
 
 from __future__ import annotations
@@ -310,7 +315,10 @@ def classify(entity: Entity, total_engines: int) -> dict:
         role = votes.most_common(1)[0][0] if votes else ("parte_ou_terceiro" if entity.kind == "pessoa" else "empresa_privada")
     if entity.occurrences == 0:
         reasons.append("nenhuma ocorrencia no texto extraido (grafia so no mapa?)")
-    if len(entity.engines) == 1 and total_engines > 1:
+    # Com so dois motores, "so um achou" e o caso normal de divergencia e marcava quase tudo para revisar;
+    # vira motivo so com 3+ motores ou quando a entidade mal aparece no texto. Fora disso, fica em ``sinais``.
+    lone_engine = len(entity.engines) == 1 and total_engines > 1
+    if lone_engine and (total_engines >= 3 or entity.occurrences <= 1):
         reasons.append("so um motor achou: ganho dele ou falso positivo")
     if len(entity.name.split()) == 1 and entity.kind == "pessoa":
         reasons.append("nome de uma palavra")
@@ -326,7 +334,8 @@ def classify(entity: Entity, total_engines: int) -> dict:
         "certeza": certainty,
         "ocorrencias": entity.occurrences,
         "motores": sorted(entity.engines),
-        "sinais": {"cargo_publico": entity.public, "sisbajud": entity.financial, "logradouro": entity.street, **dict(entity.cues)},
+        "sinais": {"cargo_publico": entity.public, "sisbajud": entity.financial, "logradouro": entity.street,
+                   "so_um_motor": lone_engine, **dict(entity.cues)},
         "revisar": bool(reasons),
         "motivo_revisao": "; ".join(reasons),
     }
@@ -423,22 +432,71 @@ def review_markdown(payload: dict) -> str:
     for row in payload["entidades"]:
         names = " / ".join(row["padroes"][:3]) + (" …" if len(row["padroes"]) > 3 else "")
         flag = row["motivo_revisao"] if row["revisar"] else ""
+        engines = ", ".join(row["motores"]) or "-"
+        if row.get("sinais", {}).get("so_um_motor"):
+            engines += " (so este)"
         lines.append(
             f"| {row['rotulo']} | {row['tipo']} | {names} | {row['papel']} | **{row['acao']}** | {row['certeza']} | "
-            f"{row['ocorrencias']} | {', '.join(row['motores']) or '-'} | {flag} |"
+            f"{row['ocorrencias']} | {engines} | {flag} |"
         )
     lines += ["", f"IDs (sempre tokenizar): {len(payload['ids'])}", ""]
     return "\n".join(lines)
 
 
+def reclassify_category(row: dict) -> str:
+    """Categoria coerente com ``tipo`` + ``papel`` + ``acao`` depois que o Operador mudou a ``acao``."""
+
+    categoria = str(row.get("categoria") or "")
+    tipo, papel, acao = str(row.get("tipo") or ""), str(row.get("papel") or ""), str(row.get("acao") or TOKENIZE)
+    if acao == KEEP:
+        if categoria in KEEP_ROLES.values():
+            return categoria
+        return f"MANTER-{tipo}-{papel}"
+    if categoria.startswith("MANTER-") or categoria in KEEP_ROLES.values():
+        return f"{tipo.upper()}-{papel}"
+    return categoria
+
+
+def reclassify(gabarito_path: Path) -> Counter[str]:
+    """Recalcula ``categoria`` no gabarito revisado, com backup ``.antes-reclassificar.json`` ao lado."""
+
+    payload = json.loads(gabarito_path.read_text(encoding="utf-8"))
+    changed: Counter[str] = Counter()
+    for row in payload.get("entidades", []):
+        new = reclassify_category(row)
+        if new != row.get("categoria"):
+            changed[f"{row.get('categoria')} -> {new}"] += 1
+            row["categoria"] = new
+    backup = gabarito_path.with_name(gabarito_path.stem + ".antes-reclassificar.json")
+    backup.write_text(gabarito_path.read_text(encoding="utf-8"), encoding="utf-8")
+    gabarito_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return changed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("lotes", nargs="+", help="pastas privadas dos lotes (com mapa.json), um por motor")
+    parser.add_argument("lotes", nargs="*", help="pastas privadas dos lotes (com mapa.json), um por motor")
+    parser.add_argument("--reclassificar", metavar="GABARITO.json",
+                        help="so recalcula 'categoria' de um gabarito ja revisado (backup .antes-reclassificar.json ao lado)")
     parser.add_argument("--pdfs", help="pasta dos PDFs do processo (acha o texto extraido no cache privado)")
     parser.add_argument("--textos", help="em vez de --pdfs: pasta com os textos extraidos (.md)")
     parser.add_argument("--privados", help="raiz privada (padrao: saidas/privados)")
     parser.add_argument("--nome", help="nome do gabarito (padrao: gabarito_<pasta dos PDFs>)")
     args = parser.parse_args(argv)
+
+    if args.reclassificar:
+        gabarito_path = Path(args.reclassificar).expanduser()
+        if not gabarito_path.is_file():
+            print(f"Gabarito nao encontrado: {gabarito_path}", file=sys.stderr)
+            return 2
+        changed = reclassify(gabarito_path)
+        print(f"Gabarito: {gabarito_path} (backup .antes-reclassificar.json ao lado)")
+        print(f"Categorias recalculadas: {sum(changed.values())}")
+        for change, count in sorted(changed.items()):
+            print(f"  {change}: {count}")
+        return 0
+    if not args.lotes:
+        parser.error("informe as pastas dos lotes ou --reclassificar <gabarito.json>")
 
     from anonimizador_app.pipeline import default_private_dir
 
