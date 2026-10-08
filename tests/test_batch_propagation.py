@@ -100,6 +100,24 @@ class RosterApplyTests(unittest.TestCase):
         roster.review([detected_in, elsewhere, other])
         self.assertEqual(roster.apply(other, []), [])
 
+    def test_public_agent_detected_directly_is_not_tokenized(self) -> None:
+        # Lote de IDPJ (H8): 7 de 17 agentes publicos do gabarito sairam sem nenhuma mencao em claro.
+        # O juizo do lote protegia a propagacao, mas a ocorrencia que o NER achou (com ou sem cargo
+        # perto) seguia na troca.
+        signed = "Documento eletronico assinado por FULANA FICTICIA DE TAL, Juiza Federal."
+        bare = "Conforme decidiu FULANA FICTICIA DE TAL no despacho anterior."
+        roster = BatchRoster()
+        detected_signed = [_span(signed, "FULANA FICTICIA DE TAL", "PERSON")]
+        detected_bare = [_span(bare, "FULANA FICTICIA DE TAL", "PERSON")]
+        roster.add(signed, detected_signed)
+        roster.add(bare, detected_bare)
+        roster.review([signed, bare])
+        self.assertTrue(roster.entities()[0].public_agent)
+        self.assertEqual(roster.apply(signed, detected_signed), [])
+        self.assertEqual(roster.apply(bare, detected_bare), [])
+        out = pseudonymize(bare, roster.apply(bare, detected_bare), mapping=PseudonymMap()).text
+        self.assertEqual(out, bare)
+
     def test_party_near_the_word_juiz_still_propagates(self) -> None:
         party = "O socio FULANO BELTRANO DE TAL foi incluido."
         petition = "Excelentissimo Senhor Juiz Federal, a Uniao requer em face de FULANO BELTRANO DE TAL a inclusao."
