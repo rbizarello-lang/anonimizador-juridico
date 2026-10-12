@@ -174,5 +174,97 @@ class OllamaProviderTests(unittest.TestCase):
         self.assertEqual(discoverer.config.chunk_chars, 2000)
 
 
+DOC = (
+    "# EXECUCAO FISCAL\n\n<!-- pagina-origem: 1 -->\n\n"
+    "EXECUTADO: ACME COMÉRCIO DE GRÃOS LTDA, CNPJ 11.222.333/0001-81.\n"
+    "Sócio: JOÃO DA SILVA SAURO, CPF 529.982.247-25.\n\n"
+    "<!-- pagina-origem: 2 -->\n\nO sócio João da Silva Sauro reside na Rua das Palmeiras, 45.\n"
+)
+
+
+@unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
+class OllamaNetworkBlockTests(unittest.TestCase):
+    def test_round_against_the_fake_server_inside_the_block_has_zero_attempts(self) -> None:
+        from anonimizador_app.netblock import block_network
+
+        with FakeOllama() as server:
+            discoverer = LangExtractDiscoverer(local_config(), loopback_port=server.port)
+            with block_network(allow_loopback=True) as attempts:
+                found = discoverer.discover(TEXT)
+        self.assertEqual(attempts, [])
+        self.assertEqual(found.report.failed, [])
+        self.assertTrue(found.mentions)
+
+    def test_a_provider_forced_to_an_external_url_is_blocked_and_counted(self) -> None:
+        from anonimizador_app.netblock import block_network
+        from langextract.providers.ollama import OllamaLanguageModel
+
+        def forced():
+            return OllamaLanguageModel(model_id="qwen3:4b", model_url="http://10.255.255.1:11434", timeout=3)
+
+        discoverer = LangExtractDiscoverer(local_config(retries=0), model_factory=forced)
+        with block_network(allow_loopback=True) as attempts:
+            found = discoverer.discover(TEXT)
+        self.assertTrue(attempts, "a tentativa externa tinha de ser barrada e contada")
+        self.assertTrue(all("10.255.255.1" in item for item in attempts), attempts)
+        self.assertEqual(found.mentions, [])
+        self.assertTrue(found.report.failed)
+
+    def test_run_llm_job_needs_no_permit_and_writes_the_audit_lines(self) -> None:
+        from anonimizador_app.llm_engine import audit_lines
+        from anonimizador_app.pipeline_llm import run_llm_job
+
+        decision = check_engine(EngineChoice(channel="ollama-local"), env={}, missing_fn=lambda _c: [])
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama() as server:
+            base = Path(tmp)
+            source = base / "autos.md"
+            source.write_text(DOC, encoding="utf-8")
+            discoverer = build_discoverer(decision, cache_dir=None)
+            discoverer._loopback_port = server.port
+            self.assertIsNone(discoverer.permit)
+            result = run_llm_job(
+                [source],
+                export_root=base / "exportaveis",
+                private_root=base / "privados",
+                discoverer=discoverer,
+                use_cache=False,
+                local_floor=False,
+                engine=decision.channel,
+                engine_notes=audit_lines(decision),
+            )
+            outcome = result.job.outcomes[0]
+            self.assertTrue(outcome.ok, outcome.error)
+            text = outcome.markdown_path.read_text(encoding="utf-8")
+            audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertTrue(server.requests)
+        self.assertNotIn("ACME COMÉRCIO DE GRÃOS LTDA", text)
+        self.assertNotIn("João da Silva Sauro".casefold(), text.casefold())
+        # Os IDs (CNPJ/CPF) foram mascarados ANTES de qualquer chamada, mesmo no loopback.
+        for request in server.requests:
+            asked = request["body"]["prompt"].rsplit("Q:", 1)[-1]
+            self.assertNotIn("11.222.333/0001-81", asked)
+            self.assertNotIn("529.982.247-25", asked)
+        self.assertEqual(discoverer.blocked_attempts, 0)
+        self.assertIsNone(discoverer.attempts_live)
+        for expected in (
+            "Canal: ollama-local",
+            "Modelo: qwen3:4b",
+            "num_ctx): 4096",
+            "LLM local (Ollama, loopback), nada enviado",
+            "Tentativas de rede fora de loopback bloqueadas: 0",
+            "LLM local: ",
+        ):
+            self.assertIn(expected, audit)
+        self.assertNotIn("foi enviado ao provedor", audit)
+        self.assertNotIn("Confirmacao desta rodada", audit)
+
+    def test_only_the_local_provider_runs_inside_the_block(self) -> None:
+        from anonimizador_app.pipeline_llm import _is_local_llm
+
+        self.assertTrue(_is_local_llm(LangExtractDiscoverer(local_config())))
+        self.assertFalse(_is_local_llm(LangExtractDiscoverer(LlmConfig(provider="gemini", channel="gemini-pago"))))
+        self.assertFalse(_is_local_llm(object()))
+
+
 if __name__ == "__main__":
     unittest.main()

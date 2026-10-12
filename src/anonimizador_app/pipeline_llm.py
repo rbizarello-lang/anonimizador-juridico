@@ -71,6 +71,7 @@ from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges, split_chunks
 from .local_ner import reset_ner_status
+from .netblock import block_network
 from .llm_gate import FilePlan, GateError, SendPlan, safe_error, scrub_secrets
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
@@ -195,10 +196,34 @@ def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs
         except GateError as exc:
             raise LlmConfigError(str(exc)) from None
     try:
+        if _is_local_llm(discoverer):
+            return _run_local_llm_job(files, discoverer=discoverer, **kwargs)
         return _run_llm_job(files, discoverer=discoverer, **kwargs)
     finally:
         if permit is not None:
             permit.finish()
+
+
+def _is_local_llm(discoverer: object) -> bool:
+    """Canal local (H8): o Ollama em loopback. Nada sai da maquina; nao tem confirmacao de rodada."""
+
+    return getattr(getattr(discoverer, "config", None), "provider", "") == "ollama"
+
+
+def _run_local_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
+    """Rodada do canal local DENTRO do bloqueio de rede (H8): so o loopback abre socket; qualquer outra
+    tentativa (conexao, resolucao de nome, datagrama) e barrada e contada. A lista viva vai para o
+    descobridor, que a AUDITORIA le ao ser escrita; ao fim fica o total em ``blocked_attempts``.
+
+    O bloqueio troca as funcoes de ``socket`` do processo inteiro (todas as threads) enquanto dura."""
+
+    with block_network(allow_loopback=True) as attempts:
+        discoverer.attempts_live = attempts  # type: ignore[attr-defined]
+        try:
+            return _run_llm_job(files, discoverer=discoverer, **kwargs)
+        finally:
+            discoverer.blocked_attempts = len(attempts)  # type: ignore[attr-defined]
+            discoverer.attempts_live = None  # type: ignore[attr-defined]
 
 
 def _run_llm_job(
@@ -458,6 +483,13 @@ def _run_llm_job(
         engine_line = f"Motor LLM: {engine_id}"
         # H6: chamadas, tokens (entrada, saida, raciocinio) e respostas cortadas; so contagens.
         network_notes = [*network_notes, *getattr(discoverer, "usage_lines", lambda: [])()]
+        if _is_local_llm(discoverer):
+            # H8: o canal local roda com a rede bloqueada fora do loopback; tem de dar 0.
+            blocked = getattr(discoverer, "blocked_count", lambda: None)()
+            network_notes.append(
+                "LLM local (Ollama, loopback), nada enviado. Tentativas de rede fora de loopback "
+                f"bloqueadas: {blocked if blocked is not None else 'rodada sem bloqueio de rede'}"
+            )
     notes.insert(0, ("motor", [engine_line, *engine_notes, *network_notes, *guide_notes]))
     # Defesa em profundidade: nem a chave nem nada com cara de chave entra na AUDITORIA.
     notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]
