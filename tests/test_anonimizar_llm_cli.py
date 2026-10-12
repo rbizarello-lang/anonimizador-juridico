@@ -327,5 +327,90 @@ class LocalFloorCliTests(_Workspace):
         self.assertIn("Piso local: DESLIGADO", (folder / "AUDITORIA.txt").read_text(encoding="utf-8"))
 
 
+class LocalLlmCliTests(_Workspace):
+    """H8: --canal ollama-local roda sem --confirmo-envio e sem aviso de envio; nada sai da maquina."""
+
+    def _doc(self) -> Path:
+        from test_ollama_local import DOC
+
+        self.source.write_text(DOC, encoding="utf-8")
+        return self.source
+
+    def test_verify_says_it_is_local_and_needs_no_key(self) -> None:
+        code, out, _err = _run(["--verificar", "--canal", "ollama-local", *self.roots], vault=FakeVault())
+        self.assertEqual(code, 0)
+        self.assertIn("LLM local", out)
+        self.assertIn("LIBERADO", out)
+        self.assertNotIn("Chave:", out)
+
+    def test_it_runs_without_the_send_flag_and_without_the_warning(self) -> None:
+        from anonimizador_app.llm_engine import build_discoverer as real_build
+        from fake_ollama import FakeOllama
+
+        self._doc()
+        with FakeOllama() as server:
+            def build(decision, **kwargs):
+                discoverer = real_build(decision, **kwargs)
+                discoverer._loopback_port = server.port
+                return discoverer
+
+            with patch.object(cli, "build_discoverer", build):
+                code, out, err = _run(
+                    [str(self.source), "--canal", "ollama-local", "--sem-piso-local", *self.roots],
+                    vault=FakeVault(),
+                )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("--confirmo-envio", err)
+        self.assertNotIn("AVISO (versao", err)
+        self.assertNotIn("sigilo", (out + err).casefold())
+        self.assertIn("LLM LOCAL (Ollama, loopback), NADA ENVIADO", out)
+        self.assertIn("Motor: LLM ollama-local", out)
+        self.assertIn("Tentativas de rede fora de loopback bloqueadas: 0", out)
+        self.assertTrue(server.requests)
+        folder = next((self.base / "exp").iterdir())
+        audit = (folder / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("motor LLM: ollama-local", audit)
+        self.assertIn("LLM local (Ollama, loopback), nada enviado", audit)
+        self.assertIn("Tentativas de rede fora de loopback bloqueadas: 0", audit)
+        self.assertNotIn("Confirmacao desta rodada", audit)
+
+    def test_a_blocked_attempt_during_the_round_is_reported_and_exits_one(self) -> None:
+        from anonimizador_app.llm_engine import build_discoverer as real_build
+        from fake_ollama import FakeOllama
+
+        self._doc()
+        real_run = cli.run_llm_job
+
+        def run(*args, **kwargs):
+            result = real_run(*args, **kwargs)
+            kwargs["discoverer"].blocked_attempts = 2
+            return result
+
+        with FakeOllama() as server:
+            def build(decision, **kwargs):
+                discoverer = real_build(decision, **kwargs)
+                discoverer._loopback_port = server.port
+                return discoverer
+
+            with patch.object(cli, "build_discoverer", build), patch.object(cli, "run_llm_job", run):
+                code, out, err = _run(
+                    [str(self.source), "--canal", "ollama-local", "--sem-piso-local", *self.roots],
+                    vault=FakeVault(),
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("ALERTA: 2 tentativa(s)", err)
+
+    def test_remote_channels_still_need_the_flag(self) -> None:
+        code, _out, err = _run(
+            [str(self.source), "--canal", "gemini-pago", *self.roots], env={ENV_VAR: FAKE}, vault=FakeVault()
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("--confirmo-envio", err)
+
+    def test_default_chunk_is_2000_for_the_local_channel_and_4000_otherwise(self) -> None:
+        self.assertIsNone(cli.build_parser().parse_args(["x.md"]).trecho)
+        self.assertEqual(cli.build_parser().parse_args(["x.md", "--trecho", "1500"]).trecho, 1500)
+
+
 if __name__ == "__main__":
     unittest.main()

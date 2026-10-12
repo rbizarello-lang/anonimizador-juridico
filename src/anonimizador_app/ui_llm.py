@@ -32,10 +32,11 @@ from .llm_engine import (
     build_discoverer,
     check_engine,
     confirmation_lines,
+    is_local_channel,
     warning_paragraphs,
 )
 from .llm_gate import RunPermit, SendPlan, safe_error
-from .llm_discovery import LlmConfigError
+from .llm_discovery import DEFAULT_MODEL, LlmConfigError
 from .pipeline import JobResult
 from .pipeline_llm import LLM_CACHE_SUBDIR, LlmJobResult, plan_send, run_llm_job
 from .roster import KEEP, TOKENIZE
@@ -68,15 +69,25 @@ class EngineSession:
         self.choice = EngineChoice()
         self.decision = None
 
-    def button_label(self) -> str:
-        """Texto do botao de executar: diz o motor. Com LLM, as reticencias avisam que vem uma
-        confirmacao (canal, arquivos, caracteres) antes de qualquer envio."""
+    @property
+    def local_llm(self) -> bool:
+        """LLM local (Ollama em loopback, H8): ativo, mas nada sai da maquina e nao ha confirmacao de envio."""
 
+        return self.active and is_local_channel(self.decision.channel)
+
+    def button_label(self) -> str:
+        """Texto do botao de executar: diz o motor. Com LLM remoto, as reticencias avisam que vem uma
+        confirmacao (canal, arquivos, caracteres) antes de qualquer envio; o LLM local nao tem."""
+
+        if self.local_llm:
+            return f"Anonimizar lote com LLM local · {self.decision.channel}"
         if self.active:
             return f"Anonimizar lote com LLM · {self.decision.channel}…"
         return "Anonimizar lote · motor local"
 
     def button_icon(self) -> str:
+        if self.local_llm:
+            return "memory"
         return "cloud_upload" if self.active else "play_arrow"
 
 
@@ -89,7 +100,13 @@ def build_engine_section(session, *, on_change: Callable[[], None] = lambda: Non
     status = ui.label("").classes("aj-card-note")
 
     def refresh() -> None:
-        if engine.active:
+        if engine.local_llm:
+            status.text = (
+                f"LLM local escolhido: {engine.decision.channel}. Nada é enviado: o modelo roda nesta "
+                "máquina (Ollama, só loopback) e a rodada conta as tentativas de rede na AUDITORIA."
+            )
+            toggle.value = LLM
+        elif engine.active:
             status.text = (
                 f"LLM escolhido: {engine.decision.channel}. Nada é enviado até você confirmar cada "
                 "rodada (canal, arquivos e total de caracteres); a confirmação expira ao fim da rodada."
@@ -125,7 +142,7 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
         draft["choice"] = replace(draft["choice"], **changes)
 
     def on_channel(value: str) -> None:
-        set_choice(channel=value)
+        set_choice(channel=value, model_id=DEFAULT_MODEL)
         redraw()
 
     def on_field(**changes) -> None:
@@ -143,9 +160,10 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                 'flat round aria-label="Fechar"'
             )
         ui.label(
-            "O motor local segue sendo o padrão e o app sempre abre nele. Os dois canais ficam "
+            "O motor local segue sendo o padrão e o app sempre abre nele. Os canais remotos ficam "
             "cadastráveis aqui; a escolha vale apenas para esta sessão e NÃO autoriza envio: a cada "
-            "rodada o app pede a sua confirmação."
+            "rodada o app pede a sua confirmação. O LLM local (Ollama) não envia nada e não pede "
+            "confirmação."
         ).classes("aj-card-note")
         ui.select(
             {key: spec.label for key, spec in CHANNELS.items()},
@@ -170,7 +188,13 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
         decision = decide()
         reasons_box.clear()
         with reasons_box:
-            if decision.allowed:
+            if decision.allowed and is_local_channel(decision.channel):
+                with ui.row().classes("aj-callout info items-start"):
+                    ui.icon("check_circle")
+                    ui.label(
+                        "Configuração em ordem. LLM local: nada é enviado, o texto vai só ao Ollama desta máquina."
+                    )
+            elif decision.allowed:
                 with ui.row().classes("aj-callout info items-start"):
                     ui.icon("check_circle")
                     ui.label(
@@ -220,6 +244,19 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                     "Credencial: gcloud auth application-default login (ou o arquivo de conta de serviço "
                     "indicado em GOOGLE_APPLICATION_CREDENTIALS). A região aparece na confirmação de cada "
                     "rodada e na AUDITORIA; o app não a força."
+                ).classes("aj-card-note")
+
+        if spec is not None and spec.is_local:
+            with project_box:
+                ui.label("Modelo do Ollama").classes("aj-label")
+                ui.input(
+                    "Modelo já baixado no Ollama (padrão qwen3:4b; nunca ':cloud')",
+                    value=choice.model_id if choice.model_id != DEFAULT_MODEL else "",
+                    on_change=lambda event: on_field(model_id=(event.value or "").strip()),
+                ).classes("w-full")
+                ui.label(
+                    "O Ollama precisa estar rodando em 127.0.0.1:11434. Se OLLAMA_HOST ou uma variável de "
+                    "proxy apontar para fora da máquina, o app recusa o canal."
                 ).classes("aj-card-note")
 
         key_box.clear()
@@ -333,8 +370,9 @@ async def run_llm_flow(
         return
     engine.decision = decision
 
+    local = is_local_channel(decision.channel)
     session.running = True
-    run_kicker.text = "Preparando o envio (LLM)"
+    run_kicker.text = "Preparando (LLM local)" if local else "Preparando o envio (LLM)"
     run_button.disable()
     progress.visible = True
     progress.value = 0
@@ -368,29 +406,34 @@ async def run_llm_flow(
         return
     ticker.cancel()
 
-    confirmed = await confirm_send(decision, plan)
-    if not confirmed:
-        status.text = "Envio cancelado. Nada foi enviado."
-        result_area.clear()
-        with result_area:
-            with ui.row().classes("aj-callout info items-start"):
-                ui.icon("info")
-                ui.label("Envio cancelado: nada foi enviado ao provedor. Use o motor local ou confirme a rodada.")
-        session.running = False
-        run_kicker.text = "Pronto para executar"
-        run_button.enable()
-        progress.visible = False
-        return
+    permit: RunPermit | None = None
+    if local:
+        # H8: LLM local. Nada sai da maquina: sem confirmacao de envio e sem RunPermit; so um aviso curto.
+        ui.notify("LLM local: nada é enviado. O texto vai só ao Ollama desta máquina.", type="info")
+    else:
+        confirmed = await confirm_send(decision, plan)
+        if not confirmed:
+            status.text = "Envio cancelado. Nada foi enviado."
+            result_area.clear()
+            with result_area:
+                with ui.row().classes("aj-callout info items-start"):
+                    ui.icon("info")
+                    ui.label("Envio cancelado: nada foi enviado ao provedor. Use o motor local ou confirme a rodada.")
+            session.running = False
+            run_kicker.text = "Pronto para executar"
+            run_button.enable()
+            progress.visible = False
+            return
 
-    config = decision.config
-    permit = RunPermit.for_plan(
-        decision.channel,
-        plan,
-        region=config.location if config is not None and config.provider == "vertex" else "",
-        project=config.project if config is not None else "",
-    )
-    discoverer.permit = permit
-    engine.last_permit = permit
+        config = decision.config
+        permit = RunPermit.for_plan(
+            decision.channel,
+            plan,
+            region=config.location if config is not None and config.provider == "vertex" else "",
+            project=config.project if config is not None else "",
+        )
+        discoverer.permit = permit
+        engine.last_permit = permit
     run_kicker.text = "Executando (LLM)"
     result_area.clear()
     with result_area:
@@ -418,7 +461,8 @@ async def run_llm_flow(
               f"A execução falhou: {safe_error(exc, keep_message=isinstance(exc, LlmConfigError))}")
         return
     finally:
-        permit.finish()  # a confirmacao expira com a rodada, haja o que houver
+        if permit is not None:
+            permit.finish()  # a confirmacao expira com a rodada, haja o que houver
     ticker.cancel()
 
     engine.last, engine.last_files = result, list(sources)

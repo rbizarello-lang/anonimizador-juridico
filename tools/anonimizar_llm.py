@@ -39,6 +39,13 @@ argumento ou rodada sem --confirmo-envio; 3 = alguma folha foi tratada pelo moto
 aceitar). O texto da folha que o LLM nao leu nunca sai em claro: o motor local o trata ou o arquivo fica
 retido na pasta privada.
 
+LLM local (H8): --canal ollama-local usa o Ollama desta maquina (127.0.0.1:11434). Nada sai da maquina:
+nao pede --confirmo-envio, nao imprime o aviso de sigilo e roda com a rede bloqueada fora do loopback
+(a AUDITORIA conta as tentativas; tem de dar 0). Modelo padrao qwen3:4b (--modelo; nunca ':cloud').
+
+  python tools/anonimizar_llm.py autos.pdf --canal ollama-local
+  python tools/anonimizar_llm.py autos.pdf --canal ollama-local --modelo qwen3:8b
+
 A chave nunca vai para argumento de linha de comando, arquivo do projeto, log ou AUDITORIA.
 """
 
@@ -89,6 +96,7 @@ from anonimizador_app.llm_engine import (  # noqa: E402
     build_offline_discoverer,
     check_engine,
     confirmation_lines,
+    is_local_channel,
     warning_text,
 )
 from anonimizador_app.llm_gate import RunPermit  # noqa: E402
@@ -107,13 +115,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--canal",
         choices=tuple(CHANNELS),
-        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo. Sem canal, nada roda.",
+        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo; ollama-local = LLM local "
+        "(Ollama em 127.0.0.1, nada sai da maquina). Sem canal, nada roda.",
     )
     parser.add_argument(
         "--confirmo-envio",
         action="store_true",
         help="Confirmo, para ESTA rodada, o envio ao provedor dos arquivos e do total de caracteres "
-        "listados (impressos antes). Sem esta opcao nada e enviado. Nao vale para a proxima rodada.",
+        "listados (impressos antes). Sem esta opcao nada e enviado. Nao vale para a proxima rodada. "
+        "Nao e exigida no canal ollama-local (nada sai da maquina).",
     )
     parser.add_argument(
         "--guardar-chave",
@@ -147,7 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--regiao", default=DEFAULT_LOCATION, help=f"Regiao do Vertex AI (padrao {DEFAULT_LOCATION})."
     )
     parser.add_argument("--paralelo", type=int, default=4, help="Chamadas simultaneas ao LLM (padrao 4).")
-    parser.add_argument("--trecho", type=int, default=4000, help="Caracteres por chamada.")
+    parser.add_argument(
+        "--trecho",
+        type=int,
+        default=None,
+        help="Caracteres por chamada (padrao 4000; 2000 no canal ollama-local).",
+    )
     parser.add_argument(
         "--raciocinio",
         choices=sorted(THINKING_LEVELS),
@@ -239,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     config_source = Path(args.config).expanduser() if args.config else private_root
     cache_dir = None if args.sem_cache else private_root / LLM_CACHE_SUBDIR
     channel = args.canal or ""
+    local = is_local_channel(channel)
 
     if args.sem_rede:
         return run_offline(args, channel, config_source, export_root, private_root, cache_dir)
@@ -251,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         credential_path=args.credencial,
     )
     decision = check_engine(choice, private_root=config_source)
-    if channel in CHANNELS:
+    if channel in CHANNELS and not local:
         print(f"AVISO (versao {WARNING_VERSION}, canal {channel}), so informacao:", file=sys.stderr)
         print(warning_text(channel), file=sys.stderr)
         print(billing_note(channel), file=sys.stderr)
@@ -274,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         chunk_chars=args.trecho,
         thinking=args.raciocinio,
     )
+    local = is_local_channel(decision.channel)
     settings = load_settings(config_source)
     sources = [Path(item).expanduser() for item in args.arquivos]
     try:
@@ -289,12 +306,23 @@ def main(argv: list[str] | None = None) -> int:
     except LlmConfigError as exc:
         print(f"Configuracao: {exc}", file=sys.stderr)
         return 2
-    print("O QUE ESTA RODADA VAI ENVIAR AO PROVEDOR:")
+    print("LLM LOCAL (Ollama, loopback), NADA ENVIADO; arquivos desta rodada:" if local else "O QUE ESTA RODADA VAI ENVIAR AO PROVEDOR:")
     for line in confirmation_lines(decision, plan):
         print("  " + line)
     if not plan.files:
         print("Nenhum arquivo pode ser enviado.", file=sys.stderr)
         return 2
+    if local:
+        # H8: nada sai da maquina; sem confirmacao de envio e sem RunPermit.
+        return run_and_report(
+            args,
+            discoverer,
+            export_root,
+            private_root,
+            config_source,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, None),
+        )
     if not args.confirmo_envio:
         print(
             "Nada foi enviado. Confira a lista acima e, se decidir enviar, repita o comando com "
@@ -322,7 +350,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def report_gate(decision) -> int:
     print(f"Canal: {decision.channel or '(nenhum)'}")
-    if decision.channel == "vertex-sp":
+    if is_local_channel(decision.channel):
+        print("LLM local: Ollama em 127.0.0.1:11434; sem chave, sem projeto, nada sai da maquina.")
+    elif decision.channel == "vertex-sp":
         setup = load_vertex_setup()
         print(
             f"Vertex AI: {describe_vertex(setup)} "
@@ -423,6 +453,9 @@ def run_and_report(
     print(f"Tempo: {elapsed:.1f}s")
     for line in getattr(discoverer, "usage_lines", lambda: [])():
         print(line)
+    blocked = getattr(discoverer, "blocked_attempts", None) if is_local_channel(engine) else None
+    if blocked is not None:
+        print(f"Tentativas de rede fora de loopback bloqueadas: {blocked}")
     for name, report in result.reports.items():
         found = report.discovery
         print(
@@ -443,6 +476,13 @@ def run_and_report(
         )
     if not job.export_allowed:
         print(f"NAO ENVIE AINDA: {job.export_block_reason}", file=sys.stderr)
+        return 1
+    if blocked:
+        print(
+            f"ALERTA: {blocked} tentativa(s) de rede fora de loopback foram bloqueadas durante a rodada "
+            "local (veja a AUDITORIA); confira antes de usar o resultado.",
+            file=sys.stderr,
+        )
         return 1
     if result.fallback_pages and not args.aceitar_fallback:
         print(
