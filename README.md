@@ -259,8 +259,14 @@ confirmacao (so contagens), o canal, a regiao e o endpoint conferido.
 **Canais.** Os dois sao cadastraveis (tela e linha de comando): `gemini-pago`
 (Gemini API, chave de projeto do Google Cloud **com faturamento**; sem garantia de
 residencia de dados) e `vertex-sp` (Vertex AI, projeto institucional). O canal
-gratuito, o canal vazio e qualquer outro sao recusados; o antigo `ollama-local` foi
-retirado. A rota de teste e de producao e a mesma: o Operador escolhe os arquivos,
+gratuito, o canal vazio e qualquer outro sao recusados. Em teste (H8) ha tambem o
+`ollama-local`: LLM local pelo Ollama em `127.0.0.1:11434`, so loopback, **sem envio**
+(sem aviso de sigilo e sem confirmacao de rodada), com a rede bloqueada fora do loopback
+durante a rodada e a contagem de tentativas na AUDITORIA (tem de dar 0); modelo padrao
+`qwen3:4b`, modelo `:cloud` recusado, `OLLAMA_HOST` fora do loopback e proxy recusados
+(`tools\anonimizar_llm.py --canal ollama-local`; detalhes e limites na GOVERNANCA, H8; o
+`ollama-local` do I7 foi retirado e este e o substituto, com outro desenho). A rota de
+teste e de producao dos canais remotos e a mesma: o Operador escolhe os arquivos,
 testa com a API paga e troca para a institucional quando ela estiver disponivel.
 
 **Chave (gemini-pago).** Nunca em arquivo do projeto, `config.json`, log ou
