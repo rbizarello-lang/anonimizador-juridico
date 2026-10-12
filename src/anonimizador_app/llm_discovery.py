@@ -1,4 +1,4 @@
-"""Descoberta de entidades por LLM com LangExtract (Gemini API paga ou Vertex AI).
+"""Descoberta de entidades por LLM com LangExtract (Gemini API paga, Vertex AI ou Ollama local).
 
 O LLM le trechos do texto — ja com CPF, CNPJ e afins trocados por token nesta
 maquina — e devolve quem aparece e com que papel. Nao reescreve nada: a troca
@@ -15,6 +15,9 @@ Este modulo nao le variavel de ambiente nem cofre: a chave chega pronta em
 ``LlmConfig.api_key`` (``credentials.ApiKey``) e so depois de o portao do
 motor (``llm_engine.check_engine``) liberar. ``offline=True`` usa so o cache
 (reaplica um elenco revisado sem rede).
+
+H8: o canal ``ollama-local`` usa o provedor Ollama do LangExtract contra o loopback (nada sai da maquina):
+nao exige ``RunPermit``, nao le variavel de ambiente (o endereco vai fixo) e nao usa chave.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from typing import Any, Protocol
 from .credentials import ApiKey
 from .llm_gate import (
     HIDDEN,
+    OLLAMA_PORT,
     GateError,
     NetworkCheck,
     RunPermit,
@@ -425,6 +429,7 @@ class LangExtractDiscoverer:
         model_factory: Callable[[], Any] | None = None,
         offline: bool = False,
         permit: RunPermit | None = None,
+        loopback_port: int = OLLAMA_PORT,
     ) -> None:
         self.config = config or LlmConfig()
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
@@ -436,6 +441,26 @@ class LangExtractDiscoverer:
         self.network_check: NetworkCheck | None = None
         # H6: tokens e respostas cortadas da rodada, para a AUDITORIA.
         self.usage = UsageMeter()
+        # H8, canal local: SO TESTE. Porta do Ollama (falso) no loopback; o host nunca muda e nenhuma variavel
+        # de ambiente chega aqui.
+        self._loopback_port = loopback_port
+        # H8: tentativas de rede fora do loopback que o bloqueio da rodada barrou. ``blocked_attempts`` e o
+        # total ao fim da rodada; ``attempts_live`` e a lista viva (para a AUDITORIA escrita antes do fim).
+        self.blocked_attempts: int | None = None
+        self.attempts_live: list[str] | None = None
+
+    @property
+    def is_local(self) -> bool:
+        """Canal local (Ollama em loopback): nada sai da maquina."""
+
+        return self.config.provider == "ollama"
+
+    def blocked_count(self) -> int | None:
+        """Tentativas barradas pelo bloqueio da rodada (``None`` = rodada sem bloqueio)."""
+
+        if self.attempts_live is not None:
+            return len(self.attempts_live)
+        return self.blocked_attempts
 
     def usage_lines(self) -> list[str]:
         return self.usage.lines(self.config)
@@ -498,9 +523,9 @@ class LangExtractDiscoverer:
         found: dict[int, list[dict]],
         report: DiscoveryReport,
     ) -> set[int]:
-        if self._model_factory is None:
+        if self._model_factory is None and not self.is_local:
             # Ponto da rede: so com a confirmacao desta rodada ativa (B2). A escolha do motor, sozinha,
-            # nao autoriza o envio.
+            # nao autoriza o envio. (O canal local, H8, nao envia nada: sem confirmacao.)
             if self.permit is None:
                 raise LlmConfigError(
                     "Envio ao provedor sem a confirmacao desta rodada: confirme canal, arquivos e "
@@ -593,9 +618,13 @@ class LangExtractDiscoverer:
                 provider=cfg.provider,
                 location=cfg.location,
                 project=cfg.project,
+                model_id=cfg.model_id if cfg.provider == "ollama" else "",
+                port=self._loopback_port,
             )
         except GateError as exc:
             raise LlmConfigError(str(exc)) from None
+        if cfg.provider == "ollama":
+            return self._build_ollama_model(check)
         kwargs: dict[str, Any] = {"temperature": 0.0}
         if cfg.provider in {"gemini", "vertex"}:
             kwargs.update(
@@ -647,6 +676,44 @@ class LangExtractDiscoverer:
         install_meter(model, self.usage, cfg.thinking)
         self.network_check = check
         return model
+
+    def _build_ollama_model(self, check: NetworkCheck) -> Any:
+        """Modelo do canal local (H8): provedor Ollama do LangExtract contra o loopback, endereco fixo.
+
+        Nenhuma variavel de ambiente decide o endereco (o LangExtract leria ``OLLAMA_BASE_URL``: por isso
+        ``base_url`` e ``model_url`` vao os dois, iguais). ``think=False``, ``temperature=0``, janela de
+        contexto e ``keep_alive`` seguem em cada pedido. Sem chave. Depois de criado, o endereco que o
+        objeto guarda e conferido, e o cliente HTTP passa a ignorar proxy do ambiente."""
+
+        lx = import_langextract()
+        cfg = self.config
+        kwargs: dict[str, Any] = {
+            "model_url": check.base_url,
+            "base_url": check.base_url,
+            "temperature": 0.0,
+            "think": False,
+            "num_ctx": cfg.num_ctx,
+            "keep_alive": cfg.keep_alive,
+            "timeout": cfg.timeout,
+            "max_output_tokens": cfg.max_output_tokens,
+        }
+        config = lx.factory.ModelConfig(model_id=cfg.model_id, provider="ollama", provider_kwargs=kwargs)
+        try:
+            inner = lx.factory.create_model(
+                config=config,
+                examples=build_examples(),
+                use_schema_constraints=False,
+                fence_output=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - a mensagem crua nao interessa a ninguem aqui
+            raise LlmConfigError(f"Nao foi possivel criar o modelo do Ollama local ({safe_error(exc)}).") from None
+        try:
+            verify_ollama_model(inner, check)
+        except GateError as exc:
+            raise LlmConfigError(str(exc)) from None
+        quiet_sdk_logging()
+        self.network_check = check
+        return _CountingModel(inner, self.usage)
 
     def _cache_path(self, chunk: Chunk) -> Path | None:
         if self.cache_dir is None:
@@ -705,6 +772,64 @@ def _service_account_credentials(path: str) -> Any:
         ) from None
 
 
+class _LoopbackRequests:
+    """O ``requests`` do provedor Ollama sem proxy do ambiente (``trust_env`` desligado) e que so posta no
+    endereco conferido: o ``requests.post`` solto honraria HTTPS_PROXY e leria .netrc."""
+
+    def __init__(self, base_url: str) -> None:
+        import requests
+
+        self._requests = requests
+        self._prefix = base_url.rstrip("/") + "/"
+        self.exceptions = requests.exceptions
+
+    def post(self, url: str, **kwargs: Any) -> Any:
+        if not str(url).startswith(self._prefix):
+            raise self._requests.exceptions.InvalidURL("endereco fora do loopback conferido: pedido recusado")
+        with self._requests.Session() as session:
+            session.trust_env = False
+            return session.post(url, **kwargs)
+
+
+def verify_ollama_model(model: Any, check: NetworkCheck) -> None:
+    """Depois de criar o modelo do Ollama: o endereco que o OBJETO guarda e o conferido (http, loopback,
+    porta do Ollama), nao ha chave, e o cliente HTTP ignora o proxy do ambiente. Levanta ``GateError``."""
+
+    url = getattr(model, "_model_url", None)
+    if not isinstance(url, str) or not url:
+        raise GateError("Nao foi possivel confirmar o endereco do modelo do Ollama: o canal local foi recusado.")
+    if url.rstrip("/") != check.base_url:
+        raise GateError("O modelo do Ollama apontava para um endereco diferente do loopback conferido: recusado.")
+    if getattr(model, "_api_key", None):
+        raise GateError("O modelo do Ollama recebeu chave: o canal local nao usa chave. Recusado.")
+    if not hasattr(model, "_requests"):
+        raise GateError("Nao foi possivel confirmar o cliente HTTP do Ollama (provedor mudou): recusado.")
+    model._requests = _LoopbackRequests(check.base_url)
+
+
+class _CountingModel:
+    """Modelo do Ollama com contagem de chamadas e falhas por pedido (para a AUDITORIA); o resto passa direto."""
+
+    def __init__(self, inner: Any, meter: "UsageMeter") -> None:
+        self._inner = inner
+        self._meter = meter
+
+    def infer(self, batch_prompts: Sequence[str], **kwargs: Any):
+        # O LangExtract repassa ``max_workers`` ao modelo e o provedor o poria nas opcoes do Ollama: tira.
+        kwargs.pop("max_workers", None)
+        for prompt in batch_prompts:
+            try:
+                outputs = list(self._inner.infer([prompt], **kwargs))
+            except Exception:
+                self._meter.record_failure()
+                raise
+            self._meter.record_local_call()
+            yield from outputs
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def _hidden_repr(self: Any) -> str:
     return f"{type(self).__mro__[1].__name__}(model_id={getattr(self, 'model_id', '?')!r}, <credenciais ocultas>)"
 
@@ -748,7 +873,15 @@ class UsageMeter:
             self.calls += 1
             self.failed += 1
 
+    def record_local_call(self) -> None:
+        with self._lock:
+            self.calls += 1
+
     def lines(self, config: "LlmConfig") -> list[str]:
+        if config.provider == "ollama":
+            if not self.calls:
+                return ["LLM local: nenhuma chamada nesta rodada (tudo veio do cache local)."]
+            return [f"LLM local: {self.calls} chamada(s), {self.failed} com erro."]
         if not self.calls:
             return ["Uso do provedor: nenhuma chamada nesta rodada (tudo veio do cache local)."]
         thinking = config.thinking if not self.thinking_rejected else f"{config.thinking} (recusado pelo modelo: padrao)"
