@@ -47,6 +47,10 @@ from .roster import Mention
 
 PROMPT_VERSION = "2026-10-01.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
+# H8: canal local (Ollama em loopback). Modelo padrao e janela de contexto do pedido.
+OLLAMA_DEFAULT_MODEL = "qwen3:4b"
+OLLAMA_DEFAULT_NUM_CTX = 4096
+OLLAMA_CHUNK_CHARS = 2000
 
 # Raciocinio do modelo (H6). O LangExtract nao repassa ``thinking_config`` ao Gemini: sem isto o modelo pensa no
 # nivel padrao dele, cobrado como saida; num modelo que pensa muito, o raciocinio esgota o ``max_output_tokens``
@@ -215,6 +219,11 @@ class LlmConfig:
     max_output_tokens: int = 8192
     retries: int = 1
     thinking: str = DEFAULT_THINKING
+    # Canal local (Ollama): janela de contexto, quanto o modelo fica carregado depois da chamada (segundos) e
+    # o prazo de cada chamada (segundos). Os outros provedores ignoram.
+    num_ctx: int = OLLAMA_DEFAULT_NUM_CTX
+    keep_alive: int = 120
+    timeout: int = 600
 
     def describe(self) -> str:
         if self.channel:

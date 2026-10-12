@@ -11,7 +11,10 @@ decide antes, na tela e na CLI; aqui se confere de novo, onde o texto sai da maq
   fica em aviso;
 - ``check_network_point`` (I4): o canal e um dos cadastrados, o host do endpoint e o oficial da Google
   para ele, e nenhuma variavel do SDK redireciona o trafego; ``verify_client_endpoint`` confere o
-  endereco do cliente ja criado.
+  endereco do cliente ja criado;
+- (H8) canal ``ollama-local``: so o loopback ``127.0.0.1`` na porta 11434 do Ollama; o endereco e
+  comparado com uma lista fixa (nenhum parser de URL decide), variavel que aponte para outro lugar,
+  proxy e modelo ``:cloud`` sao recusados.
 
 Nada aqui abre rede.
 """
@@ -36,6 +39,8 @@ class GateError(RuntimeError):
 CHANNEL_PROVIDERS: dict[str, str] = {
     "gemini-pago": "gemini",
     "vertex-sp": "vertex",
+    # H8: LLM local (Ollama) so em loopback; nada sai da maquina.
+    "ollama-local": "ollama",
 }
 
 
@@ -178,6 +183,71 @@ PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
 CERT_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 
 
+# ---------------------------------------------------------------------------------------------------
+# H8: canal local (Ollama em loopback)
+# ---------------------------------------------------------------------------------------------------
+
+OLLAMA_PORT = 11434
+OLLAMA_HOST_IP = "127.0.0.1"
+# Os unicos enderecos aceitos, comparados como TEXTO (o I7 retirou o canal porque o "so localhost" usava um
+# parser de URL e o cliente HTTP outro). Sem caminho, sem https, sem outra porta.
+OLLAMA_LOOPBACK_URLS = (
+    f"http://127.0.0.1:{OLLAMA_PORT}",
+    f"http://localhost:{OLLAMA_PORT}",
+    f"http://[::1]:{OLLAMA_PORT}",
+)
+# Variaveis do ambiente que dizem onde esta o Ollama (a do servidor e a que o LangExtract le sozinho).
+OLLAMA_ENV = ("OLLAMA_HOST", "OLLAMA_BASE_URL")
+_OLLAMA_HOST_FORM = re.compile(
+    rf"^(?:http://)?(?:127\.0\.0\.1|localhost|\[::1\]|::1)(?::{OLLAMA_PORT})?/?$", re.IGNORECASE
+)
+_OLLAMA_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
+def is_ollama_loopback_url(value: object) -> bool:
+    """``True`` so para um dos tres enderecos fixos (comparacao de texto, uma barra final tolerada)."""
+
+    if not isinstance(value, str):
+        return False
+    return value.strip().rstrip("/").lower() in OLLAMA_LOOPBACK_URLS
+
+
+def ollama_refusals(env: Mapping[str, str] | None = None) -> list[str]:
+    """Recusas do canal local pelo ambiente: variavel que aponta o Ollama para fora do loopback e proxy
+    (o cliente HTTP, ``requests``, honra proxy). Diz so o NOME da variavel, nunca o valor."""
+
+    environment = _environment(env)
+    refusals: list[str] = []
+    for name in OLLAMA_ENV:
+        for variant in (name, name.lower()):
+            value = (environment.get(variant) or "").strip()
+            if value and not _OLLAMA_HOST_FORM.match(value):
+                refusals.append(
+                    f"A variavel {variant} aponta o Ollama para fora desta maquina (o canal local so "
+                    "aceita loopback, porta 11434): remova-a ou ajuste-a antes de usar o canal."
+                )
+    refusals.extend(
+        f"A variavel de proxy {name} esta definida: o cliente HTTP do canal local a honraria e o texto "
+        "poderia sair da maquina. Remova-a (ou esvazie-a) antes de usar o canal."
+        for name in _defined(environment, PROXY_ENV)
+    )
+    return list(dict.fromkeys(refusals))
+
+
+def ollama_model_refusal(model_id: str) -> str:
+    """Modelo recusado no canal local (vazio = aceito). O Ollama roda os modelos ``:cloud`` na nuvem dele."""
+
+    name = (model_id or "").strip()
+    if not _OLLAMA_MODEL.match(name):
+        return "Nome de modelo do Ollama invalido (use, por exemplo, qwen3:4b)."
+    if "cloud" in name.casefold():
+        return (
+            "Modelo com 'cloud' no nome e recusado: o Ollama roda esse modelo na nuvem dele, e o canal "
+            "local nao envia texto para fora desta maquina."
+        )
+    return ""
+
+
 def _environment(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if env is None else env
 
@@ -254,6 +324,12 @@ class NetworkCheck:
     warnings: tuple[str, ...] = ()
 
     def audit_lines(self) -> list[str]:
+        if self.provider == "ollama":
+            return [
+                f"Endpoint conferido no ponto da rede: {self.base_url} (canal {self.channel}); "
+                "LLM local (Ollama, loopback), nada enviado.",
+                *(f"Aviso de rede: {warning}" for warning in self.warnings),
+            ]
         lines = [f"Endpoint conferido no ponto da rede: {self.host} (canal {self.channel})"]
         if self.region:
             lines.append(f"Regiao do Vertex AI usada na chamada: {self.region}")
@@ -268,15 +344,35 @@ def check_network_point(
     location: str = "",
     project: str = "",
     env: Mapping[str, str] | None = None,
+    model_id: str = "",
+    port: int = OLLAMA_PORT,
 ) -> NetworkCheck:
     """Reconfere, onde o texto sai da maquina: o canal e um dos cadastrados (e o provedor e o dele), o
     host e o oficial da Google para esse canal, e nenhuma variavel do SDK redireciona o trafego.
-    Levanta ``GateError``. A regiao do Vertex AI nao e forcada: aparece na confirmacao e na AUDITORIA."""
+    Levanta ``GateError``. A regiao do Vertex AI nao e forcada: aparece na confirmacao e na AUDITORIA.
+
+    Canal ``ollama-local`` (H8): o host e sempre ``127.0.0.1``; ``port`` so muda em teste (parametro
+    explicito do chamador, nunca variavel de ambiente)."""
 
     if channel not in CHANNEL_PROVIDERS:
         raise GateError("Canal nao cadastrado: o texto so sai por gemini-pago ou vertex-sp.")
     if CHANNEL_PROVIDERS[channel] != provider:
         raise GateError(f"O provedor nao e o do canal {channel}: o envio foi recusado.")
+    if provider == "ollama":
+        refusals = ollama_refusals(env)
+        model_problem = ollama_model_refusal(model_id) if model_id else ""
+        if model_problem:
+            refusals.append(model_problem)
+        if refusals:
+            raise GateError(" ".join(refusals))
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise GateError("Porta do Ollama invalida.")
+        return NetworkCheck(
+            channel=channel,
+            provider=provider,
+            host=OLLAMA_HOST_IP,
+            base_url=f"http://{OLLAMA_HOST_IP}:{port}",
+        )
     refusals = env_refusals(env)
     if refusals:
         raise GateError(" ".join(refusals))

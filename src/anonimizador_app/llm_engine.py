@@ -4,8 +4,8 @@ O app abre sempre no motor **local**. O motor LLM nao e uma preferencia que
 se grava: e uma escolha da sessao, e so fica DISPONIVEL se as condicoes de
 configuracao valerem:
 
-1. um dos dois canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``).
-   ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
+1. um dos canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``, ou o local
+   ``ollama-local``, H8). ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
 2. ha chave (``credentials``) ou, no Vertex AI, projeto e credencial local;
 3. os pacotes (``langextract``, ``google-genai``) importam;
 4. o ``config.json`` nao guarda chave.
@@ -14,6 +14,9 @@ O app AVISA (sigilo fiscal, CTN art. 198; residencia dos dados; faturamento), ma
 politica: decidir enviar, e quais arquivos, e do Operador. Por isso a escolha do motor nao autoriza
 envio nenhum: cada RODADA exige uma confirmacao (``llm_gate.RunPermit``) com canal, regiao, lista de
 arquivos e total de caracteres, que expira quando a rodada termina.
+
+O canal ``ollama-local`` (H8) fala so com o Ollama em loopback: nada sai da maquina, entao nao tem aviso de
+envio nem ``RunPermit``; em troca a rodada roda dentro do bloqueio de rede e a AUDITORIA conta as tentativas.
 
 ``check_engine`` so le o ambiente e o disco: nao abre conexao nenhuma.
 """
@@ -32,12 +35,14 @@ from .credentials import ApiKey, Vault, VertexSetup, load_key, load_vertex_setup
 from .llm_discovery import (
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
+    OLLAMA_CHUNK_CHARS,
+    OLLAMA_DEFAULT_MODEL,
     THINKING_LEVELS,
     LangExtractDiscoverer,
     LlmConfig,
     LlmConfigError,
 )
-from .llm_gate import RunPermit, SendPlan, env_refusals, env_warnings
+from .llm_gate import RunPermit, SendPlan, env_refusals, env_warnings, ollama_model_refusal, ollama_refusals
 from .settings import config_path
 from .version import ENGINE_LOCAL
 
@@ -47,15 +52,24 @@ WARNING_VERSION = "2026-10-01.1"
 CHANNEL_GEMINI_PAGO = "gemini-pago"
 CHANNEL_VERTEX_SP = "vertex-sp"
 CHANNEL_GEMINI_GRATUITO = "gemini-gratuito"
+CHANNEL_OLLAMA_LOCAL = "ollama-local"
+
+LOCAL_SENDS_NOTHING = "LLM local (Ollama, loopback), nada enviado"
 
 
 @dataclass(frozen=True, slots=True)
 class Channel:
     id: str
     label: str
-    provider: str  # gemini | vertex
+    provider: str  # gemini | vertex | ollama
     needs_key: bool = False
     needs_project: bool = False
+
+    @property
+    def is_local(self) -> bool:
+        """Canal que nao tira texto da maquina (so o Ollama em loopback)."""
+
+        return self.provider == "ollama"
 
 
 CHANNELS: dict[str, Channel] = {
@@ -70,6 +84,11 @@ CHANNELS: dict[str, Channel] = {
         "Vertex AI, São Paulo (projeto institucional do Google Cloud)",
         "vertex",
         needs_project=True,
+    ),
+    CHANNEL_OLLAMA_LOCAL: Channel(
+        CHANNEL_OLLAMA_LOCAL,
+        "LLM local (Ollama, só esta máquina)",
+        "ollama",
     ),
 }
 
@@ -86,8 +105,23 @@ _KEY_FIELD = re.compile(
 _KEY_VALUE = re.compile(r"AIza[0-9A-Za-z_\-]{25,}")
 
 
+def is_local_channel(channel: str) -> bool:
+    """``True`` para o canal que nao tira texto da maquina (``ollama-local``)."""
+
+    spec = CHANNELS.get((channel or "").strip().lower())
+    return spec is not None and spec.is_local
+
+
 def warning_paragraphs(channel: str) -> tuple[str, ...]:
     """O aviso que o usuario confirma antes de o texto sair da máquina."""
+
+    if is_local_channel(channel):
+        return (
+            "LLM local: o texto vai só ao Ollama desta máquina (127.0.0.1, porta 11434) e nada sai dela. "
+            "O app roda a rodada com a rede bloqueada fora do loopback e conta as tentativas na AUDITORIA. "
+            "O Ollama em si não é controlado pelo app: use modelo baixado (nunca ':cloud') e mantenha a "
+            "configuração dele só em loopback.",
+        )
 
     common = (
         "O texto das peças será enviado ao provedor do modelo. CPF, CNPJ, OAB, conta, placa "
@@ -122,6 +156,8 @@ def warning_text(channel: str) -> str:
 def billing_note(channel: str) -> str:
     """Informacao (nao bloqueio) sobre o faturamento do canal."""
 
+    if is_local_channel(channel):
+        return "Sem faturamento: o modelo roda nesta máquina."
     if channel == CHANNEL_VERTEX_SP:
         return (
             "Faturamento: o projeto deve ser o institucional do Google Cloud, com faturamento ativo "
@@ -167,6 +203,7 @@ class EngineDecision:
 def missing_packages(channel: str = CHANNEL_GEMINI_PAGO) -> list[str]:
     spec = CHANNELS.get(channel)
     needed = ["langextract"]
+    # O canal local nao usa o SDK do Google: so o LangExtract (que traz o cliente HTTP).
     if spec is None or spec.provider in {"gemini", "vertex"}:
         needed.append("google.genai")
     missing: list[str] = []
@@ -291,9 +328,21 @@ def check_engine(
                 "Sem credencial do Google Cloud: aponte o arquivo de conta de servico do projeto "
                 "institucional ou rode gcloud auth application-default login."
             )
-    # I4: variavel do SDK que desvia o trafego para outro endereco recusa ja na configuracao (e de novo no
-    # ponto da rede, em ``llm_gate.check_network_point``).
-    reasons.extend(env_refusals(env))
+    model_id = choice.model_id or DEFAULT_MODEL
+    if spec.is_local:
+        # H8: nao ha chave nem projeto. O modelo padrao do canal e o do Ollama (o do Gemini nao serve), e o
+        # ambiente que desvie o Ollama para fora do loopback (OLLAMA_HOST) ou ponha proxy no meio recusa
+        # ja na configuracao (e de novo no ponto da rede, em ``llm_gate.check_network_point``).
+        if model_id in ("", DEFAULT_MODEL):
+            model_id = OLLAMA_DEFAULT_MODEL
+        problem = ollama_model_refusal(model_id)
+        if problem:
+            reasons.append(problem)
+        reasons.extend(ollama_refusals(env))
+    else:
+        # I4: variavel do SDK que desvia o trafego para outro endereco recusa ja na configuracao (e de novo no
+        # ponto da rede, em ``llm_gate.check_network_point``).
+        reasons.extend(env_refusals(env))
     missing = (missing_fn or missing_packages)(channel)
     if missing:
         reasons.append(
@@ -304,14 +353,16 @@ def check_engine(
 
     if reasons:
         return EngineDecision(False, channel, tuple(reasons), key=None, key_source=key.source if key else "")
+    extra = {"chunk_chars": OLLAMA_CHUNK_CHARS, "max_workers": 1} if spec.is_local else {}
     config = LlmConfig(
         provider=spec.provider,
         channel=channel,
         api_key=key,
-        model_id=choice.model_id or DEFAULT_MODEL,
+        model_id=model_id,
         project=(choice.project.strip() or (vertex.project if vertex else "")),
         location=choice.location or DEFAULT_LOCATION,
         credentials_path=(choice.credential_path.strip() or (vertex.credential_path if vertex else "")),
+        **extra,
     )
     return EngineDecision(
         True, channel, (), key=key, config=config, key_source=key.source if key else ""
@@ -334,7 +385,8 @@ def build_discoverer(
         raise LlmConfigError("Motor LLM bloqueado: " + (decision.blocked_message() or "sem decisao."))
     config = decision.config
     overrides = {}
-    if max_workers is not None:
+    if max_workers is not None and config.provider != "ollama":
+        # Canal local: uma chamada por vez (a maquina e uma so); o numero pedido e ignorado.
         overrides["max_workers"] = max(1, max_workers)
     if chunk_chars is not None:
         overrides["chunk_chars"] = max(500, chunk_chars)
@@ -362,7 +414,11 @@ def build_offline_discoverer(
     spec = CHANNELS.get(channel)
     if spec is None:
         raise LlmConfigError(f"Canal desconhecido: {channel!r}.")
+    if spec.is_local and model_id in ("", DEFAULT_MODEL):
+        model_id = OLLAMA_DEFAULT_MODEL
     config = LlmConfig(provider=spec.provider, channel=channel, model_id=model_id)
+    if spec.is_local:
+        config = replace(config, chunk_chars=OLLAMA_CHUNK_CHARS, max_workers=1)
     if chunk_chars is not None:
         config = replace(config, chunk_chars=max(500, chunk_chars))
     return LangExtractDiscoverer(config, cache_dir=cache_dir, offline=True)
@@ -384,8 +440,19 @@ def confirmation_lines(
     exportavel nao os leva."""
 
     spec = CHANNELS.get(decision.channel)
-    lines = [f"Canal: {decision.channel} ({spec.label if spec else '?'})"]
     config = decision.config
+    if spec is not None and spec.is_local:
+        lines = [f"Canal: {decision.channel} ({spec.label})", LOCAL_SENDS_NOTHING + "."]
+        if config is not None:
+            lines.append(f"Modelo: {config.model_id} (janela de contexto {config.num_ctx} tokens)")
+        lines.append(
+            f"Arquivos desta rodada ({len(plan.files)}): {_thousands(plan.total_chars)} caracteres lidos "
+            "pelo modelo local; nada sai desta máquina."
+        )
+        for name, message in plan.errors:
+            lines.append(f"  - {name}: NÃO será lido ({message})")
+        return lines
+    lines = [f"Canal: {decision.channel} ({spec.label if spec else '?'})"]
     if config is not None and config.provider == "vertex":
         lines.append(f"Região do Vertex AI: {config.location} (projeto {config.project or '?'})")
     if config is not None:
@@ -422,6 +489,13 @@ def audit_lines(
 
     spec = CHANNELS.get(decision.channel)
     lines = [f"Canal: {decision.channel or ENGINE_LOCAL}"]
+    if spec is not None and spec.is_local:
+        if decision.config is not None:
+            lines.append(f"Modelo: {decision.config.model_id}")
+            lines.append(f"Janela de contexto (num_ctx): {decision.config.num_ctx} tokens")
+        lines.append(LOCAL_SENDS_NOTHING + ": o texto foi so ao Ollama em 127.0.0.1; nenhum provedor externo.")
+        lines.append("Sem aviso de envio nem confirmacao de rodada: nada saiu desta maquina.")
+        return lines
     if decision.config is not None:
         lines.append(f"Modelo: {decision.config.model_id}")
         if decision.config.provider == "vertex":

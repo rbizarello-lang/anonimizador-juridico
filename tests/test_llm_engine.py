@@ -211,14 +211,133 @@ class VertexTests(unittest.TestCase):
             (target / "application_default_credentials.json").write_text("{}", encoding="utf-8")
             self.assertTrue(adc_available({"APPDATA": tmp, "USERPROFILE": tmp}))
 
-    def test_ollama_is_not_a_channel_any_more(self) -> None:
-        self.assertNotIn("ollama-local", CHANNELS)
-        refused = check_engine(
-            EngineChoice(channel="ollama-local"),
-            missing_fn=lambda _c: [],
-        )
-        self.assertFalse(refused.allowed)
-        self.assertIn("desconhecido", refused.blocked_message())
+    def test_ollama_local_is_a_registered_local_channel_since_h8(self) -> None:
+        spec = CHANNELS["ollama-local"]
+        self.assertEqual(spec.provider, "ollama")
+        self.assertTrue(spec.is_local)
+        self.assertFalse(spec.needs_key or spec.needs_project)
+        self.assertIn("só esta máquina", spec.label)
+        # Os dois canais remotos seguem remotos, com chave ou projeto.
+        self.assertFalse(CHANNELS["gemini-pago"].is_local)
+        self.assertFalse(CHANNELS["vertex-sp"].is_local)
+
+
+def _local(**kwargs):
+    kwargs.setdefault("env", {})
+    kwargs.setdefault("vault", FakeVault())
+    kwargs.setdefault("missing_fn", lambda _channel: [])
+    return check_engine(EngineChoice(channel="ollama-local", **kwargs.pop("choice", {})), **kwargs)
+
+
+class OllamaLocalChannelTests(unittest.TestCase):
+    def test_it_needs_no_key_and_no_project_and_defaults_the_model(self) -> None:
+        decision = _local()
+        self.assertTrue(decision.allowed, decision.reasons)
+        self.assertEqual(decision.engine_id, "ollama-local")
+        self.assertEqual(decision.config.provider, "ollama")
+        self.assertEqual(decision.config.model_id, "qwen3:4b")
+        self.assertEqual(decision.config.max_workers, 1)
+        self.assertEqual(decision.config.chunk_chars, 2000)
+        self.assertIsNone(decision.key)
+        self.assertEqual(_local(choice={"model_id": "llama3.2:3b"}).config.model_id, "llama3.2:3b")
+
+    def test_it_needs_only_langextract(self) -> None:
+        import importlib.util
+        from unittest.mock import patch
+
+        seen: list[str] = []
+
+        def find(name):
+            seen.append(name)
+            return object()
+
+        with patch.object(importlib.util, "find_spec", find):
+            self.assertEqual(missing_packages("ollama-local"), [])
+        self.assertEqual(seen, ["langextract"])
+        seen.clear()
+        with patch.object(importlib.util, "find_spec", find):
+            missing_packages("gemini-pago")
+        self.assertEqual(seen, ["langextract", "google.genai"])
+
+    def test_missing_langextract_blocks(self) -> None:
+        decision = _local(missing_fn=lambda _c: ["langextract"])
+        self.assertFalse(decision.allowed)
+        self.assertIn("langextract", decision.blocked_message())
+
+    def test_an_ollama_host_outside_loopback_is_refused_without_echoing_the_value(self) -> None:
+        for value in (
+            "http://10.0.0.5:11434",
+            "10.0.0.5",
+            "0.0.0.0:11434",
+            "https://127.0.0.1:11434",
+            "http://127.0.0.1:9999",
+            "http://localhost:11434/api",
+            "http://evil.example.invalid",
+        ):
+            decision = _local(env={"OLLAMA_HOST": value})
+            self.assertFalse(decision.allowed, value)
+            message = decision.blocked_message()
+            self.assertIn("OLLAMA_HOST", message)
+            self.assertNotIn(value, message)
+            self.assertNotIn("10.0.0.5", message)
+        # O LangExtract le OLLAMA_BASE_URL sozinho: tambem recusada se sair do loopback.
+        self.assertFalse(_local(env={"OLLAMA_BASE_URL": "http://10.0.0.5:11434"}).allowed)
+
+    def test_an_ollama_host_in_loopback_is_fine(self) -> None:
+        for value in ("127.0.0.1", "127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434", ""):
+            self.assertTrue(_local(env={"OLLAMA_HOST": value}).allowed, value)
+
+    def test_proxy_is_refused_here_but_stays_a_warning_for_gemini(self) -> None:
+        for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy"):
+            decision = _local(env={name: "http://proxy.example.invalid:3128"})
+            self.assertFalse(decision.allowed, name)
+            self.assertIn(name, decision.blocked_message())
+            self.assertNotIn("proxy.example.invalid", decision.blocked_message())
+        self.assertTrue(_local(env={"HTTPS_PROXY": "  "}).allowed)
+        # Gemini pago: proxy continua so aviso (INALTERADO).
+        decision = _ready(env=_env(HTTPS_PROXY="http://proxy.example.invalid:3128"))
+        self.assertTrue(decision.allowed, decision.reasons)
+
+    def test_cloud_models_are_refused(self) -> None:
+        for model in ("gpt-oss:120b-cloud", "qwen3-coder:480b-cloud", "x:cloud", "CLOUD-model:1b"):
+            decision = _local(choice={"model_id": model})
+            self.assertFalse(decision.allowed, model)
+            self.assertIn("nuvem", decision.blocked_message())
+        self.assertFalse(_local(choice={"model_id": "qwen3 4b; rm"}).allowed)
+
+    def test_google_sdk_variables_do_not_block_the_local_channel(self) -> None:
+        self.assertTrue(_local(env={"GOOGLE_GEMINI_BASE_URL": "https://x.example.invalid"}).allowed)
+
+    def test_the_remote_channels_still_refuse_their_sdk_redirects(self) -> None:
+        decision = _ready(env=_env(GOOGLE_GEMINI_BASE_URL="https://x.example.invalid"))
+        self.assertFalse(decision.allowed)
+
+    def test_confirmation_and_audit_say_nothing_is_sent(self) -> None:
+        decision = _local()
+        text = "\n".join(confirmation_lines(decision, PLAN))
+        self.assertIn("LLM local (Ollama, loopback), nada enviado", text)
+        self.assertNotIn("serão enviados", text)
+        self.assertNotIn("sigilo", text.casefold())
+        audit = "\n".join(audit_lines(decision))
+        self.assertIn("LLM local (Ollama, loopback), nada enviado", audit)
+        self.assertIn("num_ctx", audit)
+        self.assertIn("qwen3:4b", audit)
+        self.assertNotIn("enviado ao provedor", audit)
+        self.assertNotIn("Aviso (versao", audit)
+
+    def test_remote_texts_are_unchanged(self) -> None:
+        decision = _ready()
+        audit = "\n".join(audit_lines(decision))
+        self.assertIn("foi enviado ao provedor", audit)
+        self.assertIn(f"Aviso (versao {WARNING_VERSION}", audit)
+        self.assertIn("serão enviados", "\n".join(confirmation_lines(decision, PLAN)))
+        self.assertEqual(WARNING_VERSION, "2026-10-01.1")
+
+    def test_build_discoverer_forces_one_worker_and_needs_no_permit(self) -> None:
+        discoverer = build_discoverer(_local(), cache_dir=None, max_workers=8, chunk_chars=1500)
+        self.assertEqual(discoverer.config.max_workers, 1)
+        self.assertEqual(discoverer.config.chunk_chars, 1500)
+        self.assertIsNone(discoverer.permit)
 
 
 class WarningTests(unittest.TestCase):

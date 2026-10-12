@@ -87,7 +87,6 @@ class ConfigTests(unittest.TestCase):
 
         from anonimizador_app import llm_discovery
 
-        self.assertNotIn("ollama", inspect.getsource(llm_discovery).casefold())
         discoverer = LangExtractDiscoverer(LlmConfig(provider="ollama", channel="ollama-local"))
         with self.assertRaises(LlmConfigError):
             discoverer._build_model()
