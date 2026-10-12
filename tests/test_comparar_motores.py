@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -130,6 +131,121 @@ class CompareTests(unittest.TestCase):
             code = comparar.main([str(self.gabarito), "--textos", str(self.base / "textos"), "--privados", str(self.base / "priv"), "--motor", "x"], engines={"a": lambda _t, _r: PERFECT})
         self.assertEqual(code, 2)
         self.assertIn("Motor desconhecido", err.getvalue())
+
+
+class _FakeLlm:
+    """Descobridor do canal local simulado: devolve mencoes prontas (uma sem ancora)."""
+
+    def __init__(self, mentions) -> None:
+        self.mentions = mentions
+        self.texts: list[str] = []
+
+    def discover(self, text):
+        from anonimizador_app.llm_discovery import Discovery, DiscoveryReport
+
+        self.texts.append(text)
+        return Discovery(mentions=list(self.mentions), report=DiscoveryReport())
+
+
+def _mention(kind, value, start=None):
+    from anonimizador_app.roster import Mention
+
+    where = TEXTO.find(value) if start is None else start
+    end = where + len(value) if where >= 0 else -1
+    return Mention(kind=kind, text=value, role="", canonical=value, start=where, end=end, source_text=value)
+
+
+class OllamaEngineTests(unittest.TestCase):
+    def test_union_of_the_local_engine_and_the_llm_with_the_kinds_mapped(self) -> None:
+        base = _finder([("PERSON", "OLAVO RICARDO TEIXEIRA")])
+        llm = _FakeLlm([
+            _mention("pessoa", "MARLENE OLIVEIRA SAMPAIO"),
+            _mention("empresa", "ALFAVILLE METAIS LTDA"),
+            _mention("endereco", "execução fiscal"),
+            _mention("pessoa", "NAO ANCORADA", start=-1),
+            _mention("orgao", "UNIÃO (FAZENDA NACIONAL)"),
+        ])
+        detect = comparar.app_local_ollama_detector(Path("."), "qwen3:4b", local=base, discoverer=llm)
+        spans = detect(TEXTO)
+        kinds = {TEXTO[start:end]: kind for start, end, kind in spans}
+        self.assertEqual(kinds["OLAVO RICARDO TEIXEIRA"], "PERSON")
+        self.assertEqual(kinds["MARLENE OLIVEIRA SAMPAIO"], "PERSON")
+        self.assertEqual(kinds["ALFAVILLE METAIS LTDA"], "ORGANIZATION")
+        self.assertEqual(kinds["execução fiscal"], "LOCATION")
+        self.assertNotIn("NAO ANCORADA", kinds)
+        self.assertNotIn("UNIÃO (FAZENDA NACIONAL)", kinds)  # tipo desconhecido fica de fora
+        self.assertEqual(spans, sorted(set(spans)))
+        self.assertEqual(llm.texts, [TEXTO])
+
+    def test_the_llm_part_runs_inside_the_loopback_only_network_block(self) -> None:
+        import socket
+
+        class Probing(_FakeLlm):
+            def discover(self, text):
+                try:
+                    socket.getaddrinfo("example.invalid", 80)
+                except OSError:
+                    pass
+                return super().discover(text)
+
+        err = io.StringIO()
+        detect = comparar.app_local_ollama_detector(Path("."), local=lambda _t: [], discoverer=Probing([]))
+        with contextlib.redirect_stderr(err):
+            detect(TEXTO)
+        self.assertIn("1 tentativa(s) de rede fora de loopback", err.getvalue())
+
+    def test_the_real_builder_uses_the_local_channel_cache_and_the_app_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            discoverer = comparar.build_ollama_discoverer(Path(tmp), "llama3.2:3b", env={})
+            self.assertEqual(discoverer.cache_dir, Path(tmp) / "cache_llm_local")
+            self.assertEqual(discoverer.config.channel, "ollama-local")
+            self.assertEqual(discoverer.config.model_id, "llama3.2:3b")
+            for env, model in (({"OLLAMA_HOST": "http://10.0.0.5:11434"}, "qwen3:4b"),
+                               ({"HTTPS_PROXY": "http://p.example.invalid:3128"}, "qwen3:4b"),
+                               ({}, "gpt-oss:120b-cloud")):
+                with self.assertRaises(comparar.LlmConfigError, msg=(env, model)):
+                    comparar.build_ollama_discoverer(Path(tmp), model, env=env)
+
+    def test_cli_runs_the_new_engine_with_the_model_flag_and_prints_no_names(self) -> None:
+        import tempfile as _tf
+
+        seen = {}
+        real = comparar.app_local_ollama_detector
+
+        def fake(private_root, model_id="qwen3:4b", **_kw):
+            seen["model"] = model_id
+            return real(
+                private_root,
+                model_id,
+                local=_finder([("PERSON", "OLAVO RICARDO TEIXEIRA")]),
+                discoverer=_FakeLlm([_mention("empresa", "ALFAVILLE METAIS LTDA"), _mention("empresa", "Alfaville Metais Ltda")]),
+            )
+
+        base = Path(_tf.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(base, ignore_errors=True))
+        (base / "textos").mkdir()
+        (base / "textos" / "PARTE_1.md").write_text(TEXTO, encoding="utf-8")
+        gabarito = base / "g.json"
+        gabarito.write_text(json.dumps(GABARITO, ensure_ascii=False), encoding="utf-8")
+        out = io.StringIO()
+        with mock.patch.object(comparar, "app_local_ollama_detector", fake), \
+                mock.patch.object(comparar, "app_local_detector", lambda _r: _finder([])), \
+                contextlib.redirect_stdout(out):
+            code = comparar.main([
+                str(gabarito), "--textos", str(base / "textos"), "--privados", str(base / "priv"),
+                "--motor", "app-local", "--motor", "app-local+ollama", "--modelo-ollama", "qwen3:8b",
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["model"], "qwen3:8b")
+        text = out.getvalue()
+        self.assertIn("app-local+ollama", text)
+        for name in ("OLAVO", "ALFAVILLE", "Alfaville"):
+            self.assertNotIn(name, text)
+        comparar.OLLAMA_MODEL = "qwen3:4b"
+
+    def test_the_new_engine_is_registered_next_to_the_old_ones(self) -> None:
+        for name in ("gliner-atual", "gliner-large", "lener", "app-local", "app-local+ollama"):
+            self.assertIn(name, comparar.ENGINES)
 
 
 if __name__ == "__main__":

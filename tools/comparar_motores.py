@@ -2,13 +2,15 @@
 
 Uso:
     python tools/comparar_motores.py <gabarito.json> --pdfs <pasta dos PDFs> [--motor NOME ...] [--sombra]
-        [--limiar 0.75] [--privados DIR] [--textos DIR]
+        [--limiar 0.75] [--privados DIR] [--textos DIR] [--modelo-ollama qwen3:4b]
 
 Motores (``--motor``, repetivel; padrao: gliner-atual):
     gliner-atual   o GLiNER do app, na revisao fixada (urchade/gliner_multi-v2.1)
     gliner-large   urchade/gliner_large-v2.1 (baixar antes: tools/instalar_modelo_ner.py --extra gliner-large)
     lener          BERT treinado no LeNER-Br (pierreguillou/ner-bert-base-cased-pt-lenerbr; --extra lener)
     app-local      o motor local inteiro do app (regras + lista de alvos + GLiNER), como linha de base
+    app-local+ollama  o app-local E o canal LLM local (Ollama em 127.0.0.1, modelo de --modelo-ollama,
+                   padrao qwen3:4b), a uniao dos dois; nada sai da maquina (rede bloqueada fora do loopback)
 
 ``--sombra``: cada motor roda tambem na copia em Title Case dos trechos em CAIXA ALTA (passada-sombra de
 caixa do GOVERNANCA): mesmo modelo, mesmo limiar, um fator so.
@@ -18,6 +20,9 @@ detector cobriu (recall por ocorrencia), quantas entidades ele achou ao menos um
 inteiro. Contra as de ``acao = manter`` (juiz, procurador, orgao, banco do SISBAJUD): quantas ocorrencias o
 detector cru marcou (o juizo do lote do app ainda filtra parte disso). E o que o detector marcou fora do
 gabarito: possivel falso positivo ou lacuna do gabarito, com os termos protegidos (Uniao, PGFN...) a parte.
+
+Para decidir a adocao do canal ollama-local (GOVERNANCA, H8), compare no lote:
+    python tools/comparar_motores.py <gabarito.json> --pdfs <pasta> --motor app-local --motor app-local+ollama
 
 Saida: tabela na tela (so numeros) e ``saidas/privados/gabaritos/comparacao_motores_<data>.json`` com o
 detalhe por entidade (quais ficaram sem cobertura em cada motor). O JSON tem nomes: NAO ENVIAR.
@@ -40,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from anonimizador_app.gemini_detector import is_kept_term  # noqa: E402
+from anonimizador_app.llm_discovery import OLLAMA_DEFAULT_MODEL, LlmConfigError  # noqa: E402
 from anonimizador_app.local_ner import GLINER_LABELS, GLINER_MODEL, GLINER_REVISION, hub_offline, shadow_case_copy  # noqa: E402
 from anonimizador_app.propagation import fold_with_index  # noqa: E402
 from anonimizador_juridico.pseudonymizer import fold_lexical  # noqa: E402
@@ -143,11 +149,58 @@ def app_local_detector(private_root: Path) -> Detector:
     return detect
 
 
+# Mencao do LLM (``kind``) -> tipo do detector.
+LLM_KINDS = {"pessoa": "PERSON", "empresa": "ORGANIZATION", "endereco": "LOCATION"}
+OLLAMA_CACHE_SUBDIR = "cache_llm_local"
+# Modelo do Ollama do motor ``app-local+ollama``; o ``main`` o troca por --modelo-ollama.
+OLLAMA_MODEL = OLLAMA_DEFAULT_MODEL
+
+
+def build_ollama_discoverer(private_root: Path, model_id: str, *, env=None):
+    """Descobridor do canal ``ollama-local`` (cache em ``<privados>/cache_llm_local``). Recusa pelo mesmo
+    portao do app (OLLAMA_HOST fora do loopback, proxy, modelo :cloud...); ``LlmConfigError`` com o motivo."""
+
+    from anonimizador_app.llm_engine import EngineChoice, build_discoverer, check_engine
+
+    decision = check_engine(EngineChoice(channel="ollama-local", model_id=model_id), env=env)
+    if not decision.allowed:
+        raise LlmConfigError(decision.blocked_message())
+    return build_discoverer(decision, cache_dir=private_root / OLLAMA_CACHE_SUBDIR)
+
+
+def app_local_ollama_detector(
+    private_root: Path, model_id: str = OLLAMA_DEFAULT_MODEL, *, local: Detector | None = None, discoverer=None
+) -> Detector:
+    """O motor local do app MAIS o LLM local (Ollama), sobre o mesmo texto: a uniao dos spans. As mencoes do
+    LLM viram PERSON (pessoa), ORGANIZATION (empresa) e LOCATION (endereco); so as ancoradas (start >= 0).
+    A chamada ao Ollama roda com a rede bloqueada fora do loopback; tentativa barrada vai para o stderr."""
+
+    from anonimizador_app.netblock import block_network
+
+    base = local or app_local_detector(private_root)
+    llm = discoverer or build_ollama_discoverer(private_root, model_id)
+
+    def detect(text: str) -> list[Span]:
+        spans = set(base(text))
+        with block_network(allow_loopback=True) as attempts:
+            found = llm.discover(text)
+        if attempts:
+            print(f"ALERTA: {len(attempts)} tentativa(s) de rede fora de loopback barradas no LLM local.", file=sys.stderr)
+        for mention in found.mentions:
+            kind = LLM_KINDS.get(mention.kind)
+            if kind and mention.start >= 0 and mention.end > mention.start:
+                spans.add((mention.start, mention.end, kind))
+        return sorted(spans)
+
+    return detect
+
+
 ENGINES: dict[str, Callable[[float, Path], Detector]] = {
     "gliner-atual": lambda threshold, _root: gliner_detector(GLINER_MODEL, GLINER_REVISION, threshold),
     "gliner-large": lambda threshold, _root: gliner_detector(GLINER_LARGE_MODEL, None, threshold),
     "lener": lambda threshold, _root: lener_detector(LENER_MODEL, threshold),
     "app-local": lambda _threshold, root: app_local_detector(root),
+    "app-local+ollama": lambda _threshold, root: app_local_ollama_detector(root, OLLAMA_MODEL),
 }
 
 
@@ -307,7 +360,14 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
     parser.add_argument("--motor", action="append", help="motores a comparar (repetivel)")
     parser.add_argument("--sombra", action="store_true", help="tambem a passada-sombra de caixa")
     parser.add_argument("--limiar", type=float, default=0.75)
+    parser.add_argument(
+        "--modelo-ollama",
+        default=OLLAMA_DEFAULT_MODEL,
+        help=f"modelo do Ollama do motor app-local+ollama (padrao {OLLAMA_DEFAULT_MODEL}; nunca ':cloud')",
+    )
     args = parser.parse_args(argv)
+    global OLLAMA_MODEL
+    OLLAMA_MODEL = args.modelo_ollama
     registry = engines or ENGINES
 
     from anonimizador_app.pipeline import default_private_dir
@@ -335,7 +395,9 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
         try:
             detect = registry[name](args.limiar, private_root)
         except Exception as exc:  # noqa: BLE001 - modelo ausente nao derruba os outros
-            print(f"{name}: nao carregou ({type(exc).__name__}); baixe com tools/instalar_modelo_ner.py --extra", file=sys.stderr)
+            # Motivo so quando e do portao do app (texto proprio, sem valor de variavel): LlmConfigError.
+            reason = f": {exc}" if isinstance(exc, LlmConfigError) else ""
+            print(f"{name}: nao carregou ({type(exc).__name__}{reason}); baixe com tools/instalar_modelo_ner.py --extra", file=sys.stderr)
             continue
         runs = [(name, detect)] + ([(f"{name}+sombra", with_shadow(detect))] if args.sombra else [])
         for label, runner in runs:
