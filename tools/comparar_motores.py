@@ -11,6 +11,7 @@ Motores (``--motor``, repetivel; padrao: gliner-atual):
     app-local      o motor local inteiro do app (regras + lista de alvos + GLiNER), como linha de base
     app-local+ollama  o app-local E o canal LLM local (Ollama em 127.0.0.1, modelo de --modelo-ollama,
                    padrao qwen3:4b), a uniao dos dois; nada sai da maquina (rede bloqueada fora do loopback)
+    app-local+lener  o mesmo, com o LeNER somado ao GLiNER (uniao, mesmos filtros): o fator em avaliacao
 
 ``--sombra``: cada motor roda tambem na copia em Title Case dos trechos em CAIXA ALTA (passada-sombra de
 caixa do GOVERNANCA): mesmo modelo, mesmo limiar, um fator so.
@@ -21,7 +22,7 @@ inteiro. Contra as de ``acao = manter`` (juiz, procurador, orgao, banco do SISBA
 detector cru marcou (o juizo do lote do app ainda filtra parte disso). E o que o detector marcou fora do
 gabarito: possivel falso positivo ou lacuna do gabarito, com os termos protegidos (Uniao, PGFN...) a parte.
 
-Para decidir a adocao do canal ollama-local (GOVERNANCA, H8), compare no lote:
+Para decidir a adocao do canal ollama-local (GOVERNANCA, H9-b), compare no lote:
     python tools/comparar_motores.py <gabarito.json> --pdfs <pasta> --motor app-local --motor app-local+ollama
 
 Saida: tabela na tela (so numeros) e ``saidas/privados/gabaritos/comparacao_motores_<data>.json`` com o
@@ -134,12 +135,15 @@ def lener_detector(model_id: str, threshold: float) -> Detector:
     return detect
 
 
-def app_local_detector(private_root: Path) -> Detector:
+def app_local_detector(private_root: Path, extra_ner: str = "") -> Detector:
+    from dataclasses import replace
+
     from anonimizador_app.contextual import build_contextual_engine
     from anonimizador_app.ner_cache import default_ner_cache_dir
     from anonimizador_app.settings import load_settings
 
-    engine = build_contextual_engine(load_settings(private_root), use_ner_cache=True, ner_cache_dir=default_ner_cache_dir(private_root))
+    settings = replace(load_settings(private_root), extra_ner=extra_ner)
+    engine = build_contextual_engine(settings, use_ner_cache=True, ner_cache_dir=default_ner_cache_dir(private_root))
     if engine is None:
         raise RuntimeError("motor local indisponivel")
 
@@ -201,6 +205,8 @@ ENGINES: dict[str, Callable[[float, Path], Detector]] = {
     "lener": lambda threshold, _root: lener_detector(LENER_MODEL, threshold),
     "app-local": lambda _threshold, root: app_local_detector(root),
     "app-local+ollama": lambda _threshold, root: app_local_ollama_detector(root, OLLAMA_MODEL),
+    # O motor local inteiro com o LeNER somado ao GLiNER (H8): o fator a medir.
+    "app-local+lener": lambda _threshold, root: app_local_detector(root, extra_ner="lener"),
 }
 
 

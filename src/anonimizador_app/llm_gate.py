@@ -12,7 +12,7 @@ decide antes, na tela e na CLI; aqui se confere de novo, onde o texto sai da maq
 - ``check_network_point`` (I4): o canal e um dos cadastrados, o host do endpoint e o oficial da Google
   para ele, e nenhuma variavel do SDK redireciona o trafego; ``verify_client_endpoint`` confere o
   endereco do cliente ja criado;
-- (H8) canal ``ollama-local``: so o loopback ``127.0.0.1`` na porta 11434 do Ollama; o endereco e
+- (H9-b) canal ``ollama-local``: so o loopback ``127.0.0.1`` na porta 11434 do Ollama; o endereco e
   comparado com uma lista fixa (nenhum parser de URL decide), variavel que aponte para outro lugar,
   proxy e modelo ``:cloud`` sao recusados.
 
@@ -39,7 +39,7 @@ class GateError(RuntimeError):
 CHANNEL_PROVIDERS: dict[str, str] = {
     "gemini-pago": "gemini",
     "vertex-sp": "vertex",
-    # H8: LLM local (Ollama) so em loopback; nada sai da maquina.
+    # H9-b: LLM local (Ollama) so em loopback; nada sai da maquina.
     "ollama-local": "ollama",
 }
 
@@ -184,7 +184,7 @@ CERT_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUND
 
 
 # ---------------------------------------------------------------------------------------------------
-# H8: canal local (Ollama em loopback)
+# H9-b: canal local (Ollama em loopback)
 # ---------------------------------------------------------------------------------------------------
 
 OLLAMA_PORT = 11434
@@ -351,7 +351,7 @@ def check_network_point(
     host e o oficial da Google para esse canal, e nenhuma variavel do SDK redireciona o trafego.
     Levanta ``GateError``. A regiao do Vertex AI nao e forcada: aparece na confirmacao e na AUDITORIA.
 
-    Canal ``ollama-local`` (H8): o host e sempre ``127.0.0.1``; ``port`` so muda em teste (parametro
+    Canal ``ollama-local`` (H9-b): o host e sempre ``127.0.0.1``; ``port`` so muda em teste (parametro
     explicito do chamador, nunca variavel de ambiente)."""
 
     if channel not in CHANNEL_PROVIDERS:

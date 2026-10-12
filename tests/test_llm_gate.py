@@ -32,7 +32,7 @@ FAKE_URL = "https://desvio.example.invalid/segredo-na-url"
 
 class HostTests(unittest.TestCase):
     def test_the_registered_channels_and_their_providers(self) -> None:
-        # Os dois canais remotos nao mudaram; o terceiro (H8) e o local, so loopback.
+        # Os dois canais remotos nao mudaram; o terceiro (H9-b) e o local, so loopback.
         self.assertEqual(
             CHANNEL_PROVIDERS,
             {"gemini-pago": "gemini", "vertex-sp": "vertex", "ollama-local": "ollama"},
@@ -218,7 +218,7 @@ class NetworkPointTests(unittest.TestCase):
         self.assertNotIn("segredo", str(caught.exception))
 
     def test_an_unregistered_channel_never_builds_a_model(self) -> None:
-        # (ollama-local e canal desde o H8, mas o provedor gemini deste descobridor nao casa com ele)
+        # (ollama-local e canal desde o H9-b, mas o provedor gemini deste descobridor nao casa com ele)
         for channel in ("ollama-local", "gemini-gratuito", "x"):
             with self.assertRaises(LlmConfigError, msg=channel):
                 self._discoverer(channel=channel)._build_model()

@@ -24,7 +24,7 @@ import argparse
 import difflib
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +44,9 @@ class FileComparison:
     changed: int = 0
     regrouped: int = 0
     diff: list[str] = field(default_factory=list)
+    # Tokens (por tipo) que so um dos caminhos tem nas linhas diferentes: a direcao da divergencia.
+    only_current: dict[str, int] = field(default_factory=dict)
+    only_unified: dict[str, int] = field(default_factory=dict)
 
     @property
     def same(self) -> bool:
@@ -81,6 +84,10 @@ def compare_texts(name: str, text_a: str, text_b: str) -> FileComparison:
         1 for line in result.diff if line[:1] in "+-" and not line.startswith(("+++", "---"))
     )
     result.regrouped = _regrouped(lines_a, lines_b)
+    minus = Counter(m.group(1) for line in result.diff if line.startswith("-") and not line.startswith("---") for m in TOKEN.finditer(line))
+    plus = Counter(m.group(1) for line in result.diff if line.startswith("+") and not line.startswith("+++") for m in TOKEN.finditer(line))
+    result.only_current = dict(minus - plus)
+    result.only_unified = dict(plus - minus)
     return result
 
 
@@ -169,6 +176,16 @@ def main(argv: list[str] | None = None) -> int:
     for item in results:
         print(f"{item.name[:48]:48s} {item.lines_a:7d} {item.changed:11d} {item.regrouped:12d}")
         report += [f"## {item.name}: {item.changed} linha(s), {item.regrouped} token(s) reagrupado(s)", *item.diff, ""]
+    only_current: Counter[str] = Counter()
+    only_unified: Counter[str] = Counter()
+    for item in results:
+        only_current.update(item.only_current)
+        only_unified.update(item.only_unified)
+    if only_current or only_unified:
+        fmt = lambda c: ", ".join(f"{k} {v}" for k, v in sorted(c.items(), key=lambda kv: -kv[1])) or "nenhum"
+        print(f"Tokens so no caminho atual (o unico deixou em claro ou trocou de tipo): {fmt(only_current)}")
+        print(f"Tokens so no pipeline unico: {fmt(only_unified)}")
+        report += ["## Resumo", f"so no atual: {fmt(only_current)}", f"so no unico: {fmt(only_unified)}", ""]
     for name in missing:
         print(f"{name[:48]:48s}  sem comparacao: falhou num dos caminhos")
         report.append(f"## {name}: falhou num dos caminhos (ver AUDITORIA de cada lote)")

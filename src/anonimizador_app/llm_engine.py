@@ -5,7 +5,7 @@ se grava: e uma escolha da sessao, e so fica DISPONIVEL se as condicoes de
 configuracao valerem:
 
 1. um dos canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``, ou o local
-   ``ollama-local``, H8). ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
+   ``ollama-local``, H9-b). ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
 2. ha chave (``credentials``) ou, no Vertex AI, projeto e credencial local;
 3. os pacotes (``langextract``, ``google-genai``) importam;
 4. o ``config.json`` nao guarda chave.
@@ -15,7 +15,7 @@ politica: decidir enviar, e quais arquivos, e do Operador. Por isso a escolha do
 envio nenhum: cada RODADA exige uma confirmacao (``llm_gate.RunPermit``) com canal, regiao, lista de
 arquivos e total de caracteres, que expira quando a rodada termina.
 
-O canal ``ollama-local`` (H8) fala so com o Ollama em loopback: nada sai da maquina, entao nao tem aviso de
+O canal ``ollama-local`` (H9-b) fala so com o Ollama em loopback: nada sai da maquina, entao nao tem aviso de
 envio nem ``RunPermit``; em troca a rodada roda dentro do bloqueio de rede e a AUDITORIA conta as tentativas.
 
 ``check_engine`` so le o ambiente e o disco: nao abre conexao nenhuma.
@@ -330,7 +330,7 @@ def check_engine(
             )
     model_id = choice.model_id or DEFAULT_MODEL
     if spec.is_local:
-        # H8: nao ha chave nem projeto. O modelo padrao do canal e o do Ollama (o do Gemini nao serve), e o
+        # H9-b: nao ha chave nem projeto. O modelo padrao do canal e o do Ollama (o do Gemini nao serve), e o
         # ambiente que desvie o Ollama para fora do loopback (OLLAMA_HOST) ou ponha proxy no meio recusa
         # ja na configuracao (e de novo no ponto da rede, em ``llm_gate.check_network_point``).
         if model_id in ("", DEFAULT_MODEL):

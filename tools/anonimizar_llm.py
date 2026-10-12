@@ -39,7 +39,7 @@ argumento ou rodada sem --confirmo-envio; 3 = alguma folha foi tratada pelo moto
 aceitar). O texto da folha que o LLM nao leu nunca sai em claro: o motor local o trata ou o arquivo fica
 retido na pasta privada.
 
-LLM local (H8): --canal ollama-local usa o Ollama desta maquina (127.0.0.1:11434). Nada sai da maquina:
+LLM local (H9-b): --canal ollama-local usa o Ollama desta maquina (127.0.0.1:11434). Nada sai da maquina:
 nao pede --confirmo-envio, nao imprime o aviso de sigilo e roda com a rede bloqueada fora do loopback
 (a AUDITORIA conta as tentativas; tem de dar 0). Modelo padrao qwen3:4b (--modelo; nunca ':cloud').
 

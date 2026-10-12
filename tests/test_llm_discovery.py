@@ -84,7 +84,7 @@ class ConfigTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
     def test_ollama_provider_exists_only_behind_the_local_channel(self) -> None:
-        # H8 (era "nao existe provedor Ollama", do I7): agora so existe pelo canal local, e so em loopback.
+        # H9-b (era "nao existe provedor Ollama", do I7): agora so existe pelo canal local, e so em loopback.
         with self.assertRaises(LlmConfigError):
             LangExtractDiscoverer(LlmConfig(provider="ollama", channel=""))._build_model()
         for channel in ("gemini-pago", "vertex-sp", "outro"):

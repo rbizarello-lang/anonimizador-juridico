@@ -1,4 +1,4 @@
-"""Canal LLM local (Ollama em loopback, H8), contra um servidor Ollama FALSO em 127.0.0.1.
+"""Canal LLM local (Ollama em loopback, H9-b), contra um servidor Ollama FALSO em 127.0.0.1.
 
 Nenhum teste abre rede real: o unico socket e o do servidor falso, no proprio loopback.
 """

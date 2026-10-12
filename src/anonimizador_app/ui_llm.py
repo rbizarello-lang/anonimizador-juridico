@@ -71,7 +71,7 @@ class EngineSession:
 
     @property
     def local_llm(self) -> bool:
-        """LLM local (Ollama em loopback, H8): ativo, mas nada sai da maquina e nao ha confirmacao de envio."""
+        """LLM local (Ollama em loopback, H9-b): ativo, mas nada sai da maquina e nao ha confirmacao de envio."""
 
         return self.active and is_local_channel(self.decision.channel)
 
@@ -408,7 +408,7 @@ async def run_llm_flow(
 
     permit: RunPermit | None = None
     if local:
-        # H8: LLM local. Nada sai da maquina: sem confirmacao de envio e sem RunPermit; so um aviso curto.
+        # H9-b: LLM local. Nada sai da maquina: sem confirmacao de envio e sem RunPermit; so um aviso curto.
         ui.notify("LLM local: nada é enviado. O texto vai só ao Ollama desta máquina.", type="info")
     else:
         confirmed = await confirm_send(decision, plan)

@@ -19,6 +19,7 @@ import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
 
@@ -40,6 +41,11 @@ GLINER_REVISION = "443d26d654e0324125a96bebd8e796c14ff2efe6"
 GLINER_TOKENIZER_MODEL = "microsoft/mdeberta-v3-base"
 GLINER_TOKENIZER_REVISION = "a0484667b22365f84929a935b5e50a51f71f159d"
 GLINER_LABELS = ("pessoa", "empresa privada", "logradouro")
+# Segundo detector, em avaliacao (H8): BERT treinado no LeNER-Br. Sem revisao fixada enquanto for candidato; a
+# aprovada entra aqui como a do GLiNER. Entra no app so com ``extra_ner = "lener"`` nas configuracoes, pelo mesmo
+# LocalNerEngine (mesmos trechos, passada-sombra, filtros e juizo do lote): a uniao com o GLiNER e um fator so.
+LENER_MODEL = "pierreguillou/ner-bert-base-cased-pt-lenerbr"
+LENER_MAX_TOKENS = 512
 SPACY_MODELS = ("pt_core_news_md", "pt_core_news_lg", "pt_core_news_sm")
 DEFAULT_THRESHOLD = 0.75
 _CHUNK_CHARS = 1200
@@ -196,6 +202,7 @@ class LocalNerEngine:
         shadow_case: bool = False,
         use_cache: bool = True,
         cache_dir: Path | None = None,
+        model_label: str = "",
     ) -> None:
         self.extra_keep = tuple(extra_keep)
         self.threshold = threshold
@@ -204,6 +211,9 @@ class LocalNerEngine:
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self._predict = predict
         self._pipeline: PredictFn | None = None
+        # Identidade do detector na chave do cache quando ``predict`` e injetado (ex.: "lener:<modelo>"): o
+        # resultado de um detector nunca e servido como se fosse de outro.
+        self.model_label = model_label
 
     def detect(self, text: str) -> list[EntitySpan]:
         key = self._cache_key(text) if self._cache_enabled() else None
@@ -249,7 +259,7 @@ class LocalNerEngine:
 
     def _cache_model_id(self) -> str:
         if self._predict is not None:
-            return "predict-custom"
+            return self.model_label or "predict-custom"
         self._note_use()
         return resolve_backend().identity
 
@@ -335,6 +345,50 @@ def _force_hub_offline(offline: bool) -> None:
     constants = sys.modules.get("huggingface_hub.constants")
     if constants is not None and hasattr(constants, "HF_HUB_OFFLINE"):
         constants.HF_HUB_OFFLINE = True
+
+
+def load_lener_predict(model_id: str = LENER_MODEL, threshold_tokens: int = LENER_MAX_TOKENS) -> PredictFn:
+    """BERT do LeNER-Br via ``transformers``, carregado na primeira chamada (sem rede, como o GLiNER).
+
+    Devolve dicionarios com ``entity_group``/``word``/``score``, que ``_map_label`` ja le (PESSOA, ORGANIZACAO,
+    LOCAL). O modelo aceita 512 tokens e o tokenizador nao declara o limite: trecho que estoura e partido ao
+    meio, em quebra de linha, ate caber; nada fica sem leitura.
+    """
+
+    state: dict[str, Any] = {}
+
+    def tagger() -> Any:
+        if "pipe" not in state:
+            from transformers import pipeline
+
+            _force_hub_offline(hub_offline())
+            state["pipe"] = pipeline(
+                "token-classification",
+                model=model_id,
+                aggregation_strategy="simple",
+                model_kwargs={"local_files_only": hub_offline()},
+            )
+            _LOG.info("Detector extra: LeNER-Br (%s)", model_id)
+        return state["pipe"]
+
+    def run(piece: str, depth: int = 0) -> list[dict]:
+        if not piece.strip():
+            return []
+        try:
+            return [dict(item) for item in tagger()(piece)]
+        except Exception as exc:  # noqa: BLE001 - so o estouro de tamanho e tratado; o resto sobe
+            message = str(exc).casefold()
+            if depth >= 6 or not any(mark in message for mark in ("512", "sequence length", "max_length", "too long", "índice", "index out of range")):
+                raise
+            cut = piece.rfind("\n", len(piece) // 4, 3 * len(piece) // 4)
+            if cut <= 0:
+                cut = len(piece) // 2
+            return [*run(piece[:cut], depth + 1), *run(piece[cut:], depth + 1)]
+
+    def predict(text: str) -> Sequence[dict]:
+        return run(text)
+
+    return predict
 
 
 def load_local_predict() -> PredictFn:

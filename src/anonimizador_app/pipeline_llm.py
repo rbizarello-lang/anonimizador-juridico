@@ -205,13 +205,13 @@ def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs
 
 
 def _is_local_llm(discoverer: object) -> bool:
-    """Canal local (H8): o Ollama em loopback. Nada sai da maquina; nao tem confirmacao de rodada."""
+    """Canal local (H9-b): o Ollama em loopback. Nada sai da maquina; nao tem confirmacao de rodada."""
 
     return getattr(getattr(discoverer, "config", None), "provider", "") == "ollama"
 
 
 def _run_local_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
-    """Rodada do canal local DENTRO do bloqueio de rede (H8): so o loopback abre socket; qualquer outra
+    """Rodada do canal local DENTRO do bloqueio de rede (H9-b): so o loopback abre socket; qualquer outra
     tentativa (conexao, resolucao de nome, datagrama) e barrada e contada. A lista viva vai para o
     descobridor, que a AUDITORIA le ao ser escrita; ao fim fica o total em ``blocked_attempts``.
 
@@ -484,7 +484,7 @@ def _run_llm_job(
         # H6: chamadas, tokens (entrada, saida, raciocinio) e respostas cortadas; so contagens.
         network_notes = [*network_notes, *getattr(discoverer, "usage_lines", lambda: [])()]
         if _is_local_llm(discoverer):
-            # H8: o canal local roda com a rede bloqueada fora do loopback; tem de dar 0.
+            # H9-b: o canal local roda com a rede bloqueada fora do loopback; tem de dar 0.
             blocked = getattr(discoverer, "blocked_count", lambda: None)()
             network_notes.append(
                 "LLM local (Ollama, loopback), nada enviado. Tentativas de rede fora de loopback "
@@ -884,12 +884,17 @@ def _review_local_names(
     batch.review(state.text for state in ran)
     judged = {entity.key: entity for entity in batch.entities()}
 
+    # Agrupamento do lote (H8): a entidade do BatchRoster, nao a grafia, e a unidade do elenco. Toda grafia
+    # (erro de OCR, forma curta, "executada X") entra como variante da MESMA entrada, com o nome mais completo
+    # como canonico: um token so, e spans_for_roster acha as formas curtas, como no motor local.
+    used: set[str] = set()
     for state in ran:
         report = state.report
         in_zone = _suspect_zone(state)
         for span in state.local_names:
             value = state.text[span.start : span.end]
             kind = _NAME_KINDS[span.entity_type]
+            canonical = value
             entity = judged.get(batch.key_for(span.entity_type, value))
             if entity is not None:
                 if entity.public_agent or entity.financial:
@@ -897,16 +902,20 @@ def _review_local_names(
                     continue
                 if entity.is_street:
                     kind = "endereco"
-            entry = roster.lookup(kind, value)
+                canonical = entity.representative
+            entry = roster.lookup(kind, value) or roster.lookup(kind, canonical)
             if entry is not None and entry.action == KEEP:
                 continue
             created = entry is None
-            if created:
-                entry = roster.add_mention(
-                    Mention(kind=kind, text=value, canonical=value), source=LOCAL_FALLBACK_SOURCE
-                )
+            entry = roster.add_mention(
+                Mention(kind=kind, text=value, canonical=canonical), source=LOCAL_FALLBACK_SOURCE
+            )
             if entry is None:
                 continue
+            if entity is not None and entity.key not in used:
+                used.add(entity.key)
+                for variant in (*entity.names, *entity.role_phrases):
+                    roster.add_mention(Mention(kind=kind, text=variant, canonical=canonical), source=LOCAL_FALLBACK_SOURCE)
             state.anchored.append((span.start, span.end, entry.key))
             if in_zone(span.start):
                 report.fallback_entities += 1

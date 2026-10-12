@@ -278,7 +278,7 @@ class DefaultParallelismTests(unittest.TestCase):
     def test_detection_version_records_the_h5_bump(self) -> None:
         from anonimizador_app.version import DETECTION_VERSION
 
-        self.assertEqual(DETECTION_VERSION, "2.8.3")
+        self.assertEqual(DETECTION_VERSION, "2.8.4")
 
 
 class LocalFloorCliTests(_Workspace):
@@ -328,7 +328,7 @@ class LocalFloorCliTests(_Workspace):
 
 
 class LocalLlmCliTests(_Workspace):
-    """H8: --canal ollama-local roda sem --confirmo-envio e sem aviso de envio; nada sai da maquina."""
+    """H9-b: --canal ollama-local roda sem --confirmo-envio e sem aviso de envio; nada sai da maquina."""
 
     def _doc(self) -> Path:
         from test_ollama_local import DOC

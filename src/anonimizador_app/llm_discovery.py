@@ -16,7 +16,7 @@ Este modulo nao le variavel de ambiente nem cofre: a chave chega pronta em
 motor (``llm_engine.check_engine``) liberar. ``offline=True`` usa so o cache
 (reaplica um elenco revisado sem rede).
 
-H8: o canal ``ollama-local`` usa o provedor Ollama do LangExtract contra o loopback (nada sai da maquina):
+H9-b: o canal ``ollama-local`` usa o provedor Ollama do LangExtract contra o loopback (nada sai da maquina):
 nao exige ``RunPermit``, nao le variavel de ambiente (o endereco vai fixo) e nao usa chave.
 """
 
@@ -51,7 +51,7 @@ from .roster import Mention
 
 PROMPT_VERSION = "2026-10-01.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
-# H8: canal local (Ollama em loopback). Modelo padrao e janela de contexto do pedido.
+# H9-b: canal local (Ollama em loopback). Modelo padrao e janela de contexto do pedido.
 OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 OLLAMA_DEFAULT_NUM_CTX = 4096
 OLLAMA_CHUNK_CHARS = 2000
@@ -441,10 +441,10 @@ class LangExtractDiscoverer:
         self.network_check: NetworkCheck | None = None
         # H6: tokens e respostas cortadas da rodada, para a AUDITORIA.
         self.usage = UsageMeter()
-        # H8, canal local: SO TESTE. Porta do Ollama (falso) no loopback; o host nunca muda e nenhuma variavel
+        # H9-b, canal local: SO TESTE. Porta do Ollama (falso) no loopback; o host nunca muda e nenhuma variavel
         # de ambiente chega aqui.
         self._loopback_port = loopback_port
-        # H8: tentativas de rede fora do loopback que o bloqueio da rodada barrou. ``blocked_attempts`` e o
+        # H9-b: tentativas de rede fora do loopback que o bloqueio da rodada barrou. ``blocked_attempts`` e o
         # total ao fim da rodada; ``attempts_live`` e a lista viva (para a AUDITORIA escrita antes do fim).
         self.blocked_attempts: int | None = None
         self.attempts_live: list[str] | None = None
@@ -525,7 +525,7 @@ class LangExtractDiscoverer:
     ) -> set[int]:
         if self._model_factory is None and not self.is_local:
             # Ponto da rede: so com a confirmacao desta rodada ativa (B2). A escolha do motor, sozinha,
-            # nao autoriza o envio. (O canal local, H8, nao envia nada: sem confirmacao.)
+            # nao autoriza o envio. (O canal local, H9-b, nao envia nada: sem confirmacao.)
             if self.permit is None:
                 raise LlmConfigError(
                     "Envio ao provedor sem a confirmacao desta rodada: confirme canal, arquivos e "
@@ -678,7 +678,7 @@ class LangExtractDiscoverer:
         return model
 
     def _build_ollama_model(self, check: NetworkCheck) -> Any:
-        """Modelo do canal local (H8): provedor Ollama do LangExtract contra o loopback, endereco fixo.
+        """Modelo do canal local (H9-b): provedor Ollama do LangExtract contra o loopback, endereco fixo.
 
         Nenhuma variavel de ambiente decide o endereco (o LangExtract leria ``OLLAMA_BASE_URL``: por isso
         ``base_url`` e ``model_url`` vao os dois, iguais). ``think=False``, ``temperature=0``, janela de

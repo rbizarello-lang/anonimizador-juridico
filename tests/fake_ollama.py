@@ -1,4 +1,4 @@
-"""Servidor Ollama FALSO em loopback, so para teste (H8). Nenhum teste abre rede real.
+"""Servidor Ollama FALSO em loopback, so para teste (H9-b). Nenhum teste abre rede real.
 
 Escuta em ``127.0.0.1`` numa porta livre (a porta do Ollama de verdade, 11434, nunca e usada) e responde
 ``/api/generate`` e ``/api/chat`` como o Ollama: um JSON de extracao do LangExtract com as entidades
