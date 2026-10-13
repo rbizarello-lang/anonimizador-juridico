@@ -55,6 +55,10 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 OLLAMA_DEFAULT_NUM_CTX = 4096
 OLLAMA_CHUNK_CHARS = 2000
+# Teto de saida por chamada no canal local. Sem ele o provedor manda num_predict = 8192, maior que a propria
+# janela: um modelo pequeno em laco gerou 3.800 a 5.500 tokens por chamada (8 minutos cada) ate o Ollama
+# devolver 500. Um trecho de 2000 caracteres cabe em ~2000 tokens de JSON; o laco e cortado em ~2 minutos.
+OLLAMA_MAX_OUTPUT_TOKENS = 2000
 
 # Raciocinio do modelo (H6). O LangExtract nao repassa ``thinking_config`` ao Gemini: sem isto o modelo pensa no
 # nivel padrao dele, cobrado como saida; num modelo que pensa muito, o raciocinio esgota o ``max_output_tokens``
@@ -695,7 +699,8 @@ class LangExtractDiscoverer:
             "num_ctx": cfg.num_ctx,
             "keep_alive": cfg.keep_alive,
             "timeout": cfg.timeout,
-            "max_output_tokens": cfg.max_output_tokens,
+            # Teto no ponto em que o modelo e criado, haja o que houver na configuracao (ver OLLAMA_MAX_OUTPUT_TOKENS).
+            "max_output_tokens": min(cfg.max_output_tokens, OLLAMA_MAX_OUTPUT_TOKENS),
         }
         config = lx.factory.ModelConfig(model_id=cfg.model_id, provider="ollama", provider_kwargs=kwargs)
         try:

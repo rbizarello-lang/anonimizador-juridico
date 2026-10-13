@@ -292,7 +292,16 @@ def _covered(occurrence: Occurrence, spans: Sequence[Span]) -> bool:
 
 def evaluate(name: str, detect: Detector, targets: Sequence[Target], texts: Sequence[str]) -> dict:
     started = time.perf_counter()
-    spans_by_text = [detect(text) for text in texts]
+    spans_by_text: list[list[Span]] = []
+    for index, text in enumerate(texts, 1):
+        # Progresso por documento (so numeros: indice, caracteres, spans, segundos), para um lote de horas que
+        # roda desacoplado: quem le o log sabe onde parou.
+        spans_by_text.append(detect(text))
+        print(
+            f"[{name}] documento {index}/{len(texts)}: {len(text)} caracteres, {len(spans_by_text[-1])} spans, "
+            f"{time.perf_counter() - started:.0f} s acumulados",
+            file=sys.stderr, flush=True,
+        )
     elapsed = time.perf_counter() - started
 
     tokenize = [t for t in targets if t.acao == "tokenizar" and t.occurrences]
@@ -397,6 +406,14 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
         return 2
 
     results = []
+    # Gravacao parcial: o JSON (privado) e reescrito a cada motor concluido, para um lote interrompido nao perder
+    # os motores que ja terminaram.
+    out = private_root / "gabaritos" / f"comparacao_motores_{datetime.now():%Y%m%d_%H%M%S}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    def save() -> None:
+        out.write_text(json.dumps({"aviso": "CONTEM NOMES: NAO ENVIAR", "resultados": results}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     for name in names:
         try:
             detect = registry[name](args.limiar, private_root)
@@ -409,6 +426,8 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
         for label, runner in runs:
             try:
                 results.append(evaluate(label, runner, targets, texts))
+                save()
+                print(f"[{label}] concluido em {results[-1]['segundos']} s; parcial gravado em {out}", file=sys.stderr, flush=True)
             except Exception as exc:  # noqa: BLE001 - um motor que quebra no meio nao apaga os outros
                 print(f"{label}: falhou ao rodar ({type(exc).__name__})", file=sys.stderr)
     if not results:
@@ -416,9 +435,7 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
     print(f"Gabarito: {len([t for t in targets if t.acao == 'tokenizar'])} entidade(s) a tokenizar, "
           f"{len([t for t in targets if t.acao != 'tokenizar'])} a manter; textos: {len(texts)}; limiar {args.limiar}")
     print(table(results))
-    out = private_root / "gabaritos" / f"comparacao_motores_{datetime.now():%Y%m%d_%H%M%S}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"aviso": "CONTEM NOMES: NAO ENVIAR", "resultados": results}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    save()
     print(f"Detalhe por entidade (privado, nao enviar): {out}")
     return 0
 

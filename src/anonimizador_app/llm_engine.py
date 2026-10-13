@@ -36,6 +36,7 @@ from .llm_discovery import (
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
     OLLAMA_CHUNK_CHARS,
+    OLLAMA_MAX_OUTPUT_TOKENS,
     OLLAMA_DEFAULT_MODEL,
     THINKING_LEVELS,
     LangExtractDiscoverer,
@@ -353,7 +354,11 @@ def check_engine(
 
     if reasons:
         return EngineDecision(False, channel, tuple(reasons), key=None, key_source=key.source if key else "")
-    extra = {"chunk_chars": OLLAMA_CHUNK_CHARS, "max_workers": 1} if spec.is_local else {}
+    extra = (
+        {"chunk_chars": OLLAMA_CHUNK_CHARS, "max_workers": 1, "max_output_tokens": OLLAMA_MAX_OUTPUT_TOKENS}
+        if spec.is_local
+        else {}
+    )
     config = LlmConfig(
         provider=spec.provider,
         channel=channel,
@@ -418,7 +423,7 @@ def build_offline_discoverer(
         model_id = OLLAMA_DEFAULT_MODEL
     config = LlmConfig(provider=spec.provider, channel=channel, model_id=model_id)
     if spec.is_local:
-        config = replace(config, chunk_chars=OLLAMA_CHUNK_CHARS, max_workers=1)
+        config = replace(config, chunk_chars=OLLAMA_CHUNK_CHARS, max_workers=1, max_output_tokens=OLLAMA_MAX_OUTPUT_TOKENS)
     if chunk_chars is not None:
         config = replace(config, chunk_chars=max(500, chunk_chars))
     return LangExtractDiscoverer(config, cache_dir=cache_dir, offline=True)

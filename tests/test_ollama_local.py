@@ -69,7 +69,7 @@ class OllamaProviderTests(unittest.TestCase):
             self.assertIs(body["stream"], False)
             self.assertEqual(body["options"]["num_ctx"], 4096)
             self.assertEqual(body["options"]["temperature"], 0.0)
-            self.assertEqual(body["options"]["num_predict"], 8192)
+            self.assertEqual(body["options"]["num_predict"], 2000)
             # keep_alive curto (2 min), em segundos, nas duas posicoes que o provedor usa.
             self.assertEqual(body["keep_alive"], 120)
             self.assertEqual(body["options"]["keep_alive"], 120)
