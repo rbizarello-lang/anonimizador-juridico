@@ -194,10 +194,49 @@ class OllamaEngineTests(unittest.TestCase):
             detect(TEXTO)
         self.assertIn("1 tentativa(s) de rede fora de loopback", err.getvalue())
 
+    def test_the_llm_reads_the_masked_text_of_the_pipeline_and_spans_return_to_the_original(self) -> None:
+        from anonimizador_app.llm_discovery import Discovery, DiscoveryReport
+        from anonimizador_app.roster import Mention
+
+        text = "CPF 529.982.247-25 de OLAVO RICARDO TEIXEIRA, sócio. Outro: 529.982.247-25 e MARLENE OLIVEIRA SAMPAIO."
+
+        class Finder:
+            texts: list[str] = []
+
+            def discover(self, body):
+                Finder.texts.append(body)
+                found = []
+                for value in ("OLAVO RICARDO TEIXEIRA", "MARLENE OLIVEIRA SAMPAIO"):
+                    start = body.find(value)
+                    found.append(Mention(kind="pessoa", text=value, role="", canonical=value, start=start,
+                                         end=start + len(value), source_text=value))
+                return Discovery(mentions=found, report=DiscoveryReport())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            detect = comparar.app_local_ollama_detector(
+                Path(tmp), local=lambda _t: [], discoverer=Finder()
+            )
+            spans = detect(text)
+        self.assertEqual(len(Finder.texts), 1)
+        self.assertNotIn("529.982.247-25", Finder.texts[0])  # o LLM le o texto com o ID mascarado
+        self.assertIn("[CPF_", Finder.texts[0])
+        self.assertEqual(
+            sorted(text[start:end] for start, end, _kind in spans),
+            ["MARLENE OLIVEIRA SAMPAIO", "OLAVO RICARDO TEIXEIRA"],  # posicoes de volta ao texto original
+        )
+
+    def test_the_cache_folder_is_the_pipelines(self) -> None:
+        from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR
+
+        self.assertEqual(comparar.OLLAMA_CACHE_SUBDIR, LLM_CACHE_SUBDIR)
+        with tempfile.TemporaryDirectory() as tmp:
+            discoverer = comparar.build_ollama_discoverer(Path(tmp), "qwen3:4b", env={})
+            self.assertEqual(discoverer.cache_dir, Path(tmp) / LLM_CACHE_SUBDIR)
+
     def test_the_real_builder_uses_the_local_channel_cache_and_the_app_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             discoverer = comparar.build_ollama_discoverer(Path(tmp), "llama3.2:3b", env={})
-            self.assertEqual(discoverer.cache_dir, Path(tmp) / "cache_llm_local")
+            self.assertEqual(discoverer.cache_dir, Path(tmp) / "cache_llm")
             self.assertEqual(discoverer.config.channel, "ollama-local")
             self.assertEqual(discoverer.config.model_id, "llama3.2:3b")
             for env, model in (({"OLLAMA_HOST": "http://10.0.0.5:11434"}, "qwen3:4b"),
