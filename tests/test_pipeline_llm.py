@@ -456,8 +456,10 @@ class StructureParityTests(unittest.TestCase):
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
         self.assertIn("recusada", audit)
         self.assertNotIn("Joinville", audit)
-        private = (result.job.map_path.parent / "AUDITORIA_PRIVADA.txt").read_text(encoding="utf-8")
-        self.assertIn("Joinville", private)
+        # H9-c: a mencao de uma palavra que e nome de municipio nem chega ao elenco (higiene das mencoes do LLM);
+        # a trava de marca (``drop_geo_brand_spans``) segue para o que vem do motor local e da marca do lote.
+        self.assertIn("geografia 3", audit)
+        self.assertTrue((result.job.map_path.parent / "AUDITORIA_PRIVADA.txt").is_file())
         self.assertFalse((result.job.export_dir / "AUDITORIA_PRIVADA.txt").exists())
 
     def test_registry_number_is_keyed_by_the_office_and_the_office_stays(self) -> None:

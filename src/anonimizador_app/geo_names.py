@@ -142,3 +142,41 @@ def geo_context(text: str, start: int, end: int) -> bool:
     if any(char.isalpha() for char in line) and line.upper() == line and _COURT_HEADER.search(line):
         return True
     return inside_geo_name(text, start, end)
+
+
+_UF_ONLY = re.compile(rf"^(?:{UF_SIGLAS})$")
+
+
+def is_geo_name(value: str) -> bool:
+    """O texto inteiro e nome de municipio ou de estado do Brasil (uma ou mais palavras), ou sigla de UF.
+
+    A sigla de UF so vale em maiuscula ("SC"); "sc" ou "Pa" podem ser outra coisa."""
+
+    compact = " ".join(value.split()).strip(" ,.;:-")
+    if not compact:
+        return False
+    if _UF_ONLY.match(compact):
+        return True
+    single, multi, _states = _load()
+    folded = fold_lexical(compact)
+    return folded in single or folded in multi
+
+
+def is_state_name(value: str) -> bool:
+    """O texto inteiro e nome de estado do Brasil ("Santa Catarina") ou sigla de UF: nunca e pessoa."""
+
+    compact = " ".join(value.split()).strip(" ,.;:-")
+    if not compact:
+        return False
+    if _UF_ONLY.match(compact):
+        return True
+    return fold_lexical(compact) in _load()[2]
+
+
+def place_label_before(text: str, start: int) -> bool:
+    """O trecho vem logo depois de rotulo ou expressao que anuncia lugar ("Comarca de", "Cidade:", "Vara
+    Federal de", "sede em"). Nao olha o que vem depois nem o CEP em volta: serve para nome solto."""
+
+    line_start = text.rfind("\n", 0, start) + 1
+    before = text[max(line_start, start - 160) : start]
+    return bool(_LABEL_BEFORE.search(before) or _COURT_BEFORE.search(before) or _SEAT_BEFORE.search(before))

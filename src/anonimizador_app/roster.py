@@ -223,9 +223,15 @@ def normalize_role(raw: str) -> str:
 
 
 def policy_action(roles: Iterable[str]) -> str:
-    """Um papel que tokeniza basta: na duvida entre dois papeis, protege a pessoa."""
+    """Um papel que tokeniza basta: na duvida entre dois papeis, protege a pessoa.
 
-    actions = [ROLE_POLICY.get(role, TOKENIZE) for role in roles]
+    H9-c: o papel ``desconhecido`` (mencao sem papel: a do motor local, a da verificacao, o papel que o modelo
+    inventou) nao decide nada quando a entidade ja tem papel conhecido. Antes ele valia como "tokeniza" e
+    desfazia o ``manter`` do papel publico que o proprio LLM atribuiu (magistrado, servidor...)."""
+
+    listed = list(roles)
+    known = [role for role in listed if role != UNKNOWN_ROLE]
+    actions = [ROLE_POLICY.get(role, TOKENIZE) for role in (known or listed)]
     if not actions:
         return TOKENIZE
     return TOKENIZE if TOKENIZE in actions else KEEP
@@ -269,6 +275,9 @@ class Roster:
     def __init__(self, entries: Iterable[RosterEntry] = ()) -> None:
         self._entries: dict[str, RosterEntry] = {}
         self._by_variant: dict[tuple[str, str], str] = {}
+        # H9-c: entradas que o juizo do lote mandou manter (so em memoria: nao vai para o ``elenco.json``).
+        # Nenhuma mencao posterior (verificacao, motor local) as devolve a ``tokenizar``.
+        self._locked_keep: set[str] = set()
         for entry in entries:
             self._put(entry)
 
@@ -353,8 +362,19 @@ class Roster:
             self._index_variant(entry, variant)
         if role and role not in entry.roles:
             entry.roles.append(role)
-        if not entry.pinned:
+        if not entry.pinned and entry.key not in self._locked_keep:
             entry.action = policy_action(entry.roles)
+
+    def lock_keep(self, key: str) -> bool:
+        """Marca a entrada como ``manter`` por juizo do lote; vale mesmo que mencoes novas tragam outro papel.
+        Nao mexe em entrada fixada pelo usuario nem na lista de alvos."""
+
+        entry = self._entries.get(key)
+        if entry is None or entry.pinned or entry.source == "lista":
+            return False
+        entry.action = KEEP
+        self._locked_keep.add(key)
+        return True
 
     def to_dict(self, annotations: Mapping[str, Mapping] | None = None) -> dict:
         """``annotations``: por chave, campos so de leitura (token, ocorrencias) para revisar a mao."""

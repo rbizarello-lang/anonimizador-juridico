@@ -27,6 +27,10 @@ o motor local roda em TODAS as folhas e o resultado final e a UNIAO do que o LLM
 apontaram. O LLM so acrescenta protecao: omissao parcial (o LLM acha o executado da folha 1 e esquece
 o socio da folha 2) ou mencao sem ancora no texto nao deixam nome em claro. A AUDITORIA e o LEIA-ME
 dizem se o piso estava ligado e quantas entidades ele acrescentou fora das folhas suspeitas.
+H9-c: a mencao do LLM passa por higiene (``llm_hygiene``: classe, ancora, minusculas, termo protegido, rotulo
+com numero, termo juridico, lugar, pessoa de uma palavra, token colado em numero) e as entradas dele passam pelo
+juizo do lote (agente publico, banco do SISBAJUD, rua com nome de pessoa) antes da troca. So mencao do proprio
+LLM e descartada; nada do motor local. A AUDITORIA leva so as contagens.
 O elenco com originais fica em ``privados``; a legenda exportavel (token -> tipo ->
 papel) nao leva nome.
 
@@ -73,6 +77,7 @@ from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of,
 from .local_ner import reset_ner_status
 from .netblock import block_network
 from .llm_gate import FilePlan, GateError, SendPlan, safe_error, scrub_secrets
+from .llm_hygiene import LlmHygieneStats, filter_llm_mentions, role_counts
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
 from .pipeline import (
@@ -301,6 +306,8 @@ def _run_llm_job(
     total = len(sources)
     states: list[_FileState] = []
     errors: dict[Path, FileOutcome] = {}
+    # H9-c: contagens da higiene das mencoes do LLM (AUDITORIA, so numeros).
+    hygiene = LlmHygieneStats()
     for index, source in enumerate(sources):
         _report(on_progress, f"Lendo {source.name} ({index + 1} de {total})", 0.5 * index / total)
         state = _guard(
@@ -317,6 +324,7 @@ def _run_llm_job(
                 cache_dir=cache_dir,
                 extract_fn=extract_fn,
                 extractor_version=extractor_version,
+                hygiene=hygiene,
             ),
         )
         if state is not None:
@@ -335,7 +343,7 @@ def _run_llm_job(
             0.5 + 0.1 * index / max(1, len(states)),
         )
         _apply_local_fallback(state, engine=local_engine, exclusions=exclusions, floor=floor)
-    batch = _review_local_names(states, roster=roster, exclusions=exclusions)
+    batch = _review_local_names(states, roster=roster, exclusions=exclusions, hygiene=hygiene)
 
     for index, state in enumerate(states if not local_only else ()):
         _report(
@@ -354,6 +362,7 @@ def _run_llm_job(
                 exclusions=exclusions,
                 rounds=verification_rounds,
                 batch=batch,
+                hygiene=hygiene,
             ),
         )
 
@@ -490,7 +499,9 @@ def _run_llm_job(
                 "LLM local (Ollama, loopback), nada enviado. Tentativas de rede fora de loopback "
                 f"bloqueadas: {blocked if blocked is not None else 'rodada sem bloqueio de rede'}"
             )
-    notes.insert(0, ("motor", [engine_line, *engine_notes, *network_notes, *guide_notes]))
+    # H9-c: higiene das mencoes do LLM e papel publico (so contagens).
+    hygiene_notes = [] if local_only else hygiene.audit_lines(*role_counts(roster))
+    notes.insert(0, ("motor", [engine_line, *engine_notes, *network_notes, *hygiene_notes, *guide_notes]))
     # Defesa em profundidade: nem a chave nem nada com cara de chave entra na AUDITORIA.
     notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]
     write_audit_report(export_dir, notes, engine=engine_id)
@@ -610,13 +621,52 @@ def _extract_and_mask(
     )
     text = cached.document.markdown
     stats = FidelityDropStats()
+    ids, masked, masked_offsets = mask_text(
+        text, detector=detector, mapping=mapping, exclusions=exclusions, source_name=source.name, stats=stats
+    )
+    return cached, text, stats, ids, masked, masked_offsets
+
+
+def mask_text(
+    text: str,
+    *,
+    detector: StructuredDetector,
+    mapping: PseudonymMap,
+    exclusions: Sequence[str],
+    source_name: str = "",
+    stats: FidelityDropStats | None = None,
+) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap]:
+    """Acha os IDs nesta maquina e os mascara: o texto que (so ele) pode ir ao LLM. Uma so definicao, usada
+    pelo pipeline e pelo comparador de motores (H9-c), para que os dois leiam o mesmo texto e dividam o cache."""
+
     ids = detector.detect(text)
     ids = propagate_mapped_ids(text, ids, mapping=mapping)
     ids = resolve_overlaps(
-        drop_protected_spans(text, ids, exclusions, source_name=source.name, stats=stats)
+        drop_protected_spans(text, ids, exclusions, source_name=source_name, stats=stats)
     )
     masked, masked_offsets = pseudonymize_with_offsets(text, ids, mapping)
-    return cached, text, stats, ids, masked, masked_offsets
+    return ids, masked, masked_offsets
+
+
+class LlmTextMasker:
+    """O texto que o pipeline manda ao LLM, sem rodar o pipeline nem gravar nada: mesmo detector de IDs, mesmo
+    ``settings`` e um ``PseudonymMap`` que vive entre os textos (como no lote), na ordem em que sao passados."""
+
+    def __init__(self, settings: AppSettings | None = None) -> None:
+        active = settings or AppSettings()
+        self._detector = StructuredDetector(recognizers=build_recognizers(active))
+        self._mapping = PseudonymMap(token_labels=active.token_labels())
+        self._exclusions = tuple(active.exclusions)
+
+    def mask(self, text: str, source_name: str = "") -> tuple[str, OffsetMap]:
+        _ids, masked, offsets = mask_text(
+            text,
+            detector=self._detector,
+            mapping=self._mapping,
+            exclusions=self._exclusions,
+            source_name=source_name,
+        )
+        return masked.text, offsets
 
 
 def _discover_file(
@@ -631,6 +681,7 @@ def _discover_file(
     cache_dir: Path | None,
     extract_fn: Callable[[Path], ExtractedDocument],
     extractor_version: str,
+    hygiene: LlmHygieneStats | None = None,
 ) -> _FileState:
     """Fase 1: extrai, acha os IDs aqui, mascara e manda o LLM descobrir o elenco."""
 
@@ -667,7 +718,12 @@ def _discover_file(
         ids=ids,
         stats=stats,
         folded=fold_with_index(text),
-        anchored=absorb_mentions(discovery.mentions, roster, masked_offsets, source="llm"),
+        anchored=absorb_mentions(
+            _clean_mentions(discovery.mentions, masked.text, roster, exclusions, hygiene),
+            roster,
+            masked_offsets,
+            source="llm",
+        ),
         report=LlmFileReport(discovery=discovery.report),
         failed_pages=[failed],
         suspect_pages=failed | empty,
@@ -756,6 +812,7 @@ def _verify_file(
     exclusions: Sequence[str],
     rounds: int,
     batch: BatchRoster | None = None,
+    hygiene: LlmHygieneStats | None = None,
 ) -> None:
     """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco."""
 
@@ -767,7 +824,12 @@ def _verify_file(
         check = discoverer.discover(result.text)
         state.report.verification.append(check.report)
         state.failed_pages.append(_pages_of(result.text, check.report.failed))
-        extra = absorb_mentions(check.mentions, roster, offsets, source="verificacao")
+        extra = absorb_mentions(
+            _clean_mentions(check.mentions, result.text, roster, exclusions, hygiene),
+            roster,
+            offsets,
+            source="verificacao",
+        )
         after = _tokenizable_state(roster)
         changed = sum(1 for key, value in after.items() if before.get(key) != value)
         if not changed and not extra:
@@ -863,18 +925,23 @@ def _review_local_names(
     *,
     roster: Roster,
     exclusions: Sequence[str],
+    hygiene: LlmHygieneStats | None = None,
 ) -> BatchRoster | None:
     """Fase 2, do lote: os nomes do motor local passam pelo mesmo juizo do motor local
     (``BatchRoster.review``) antes de entrar no elenco. Nome visto em contexto de juiz ou procurador nao
-    entra; instituicao do SISBAJUD fica em claro; rua com nome de pessoa entra como endereco. O que o LLM
-    ja pos no elenco nao muda: este juizo so decide o que o motor local acrescenta.
+    entra; instituicao do SISBAJUD fica em claro; rua com nome de pessoa entra como endereco. Ate o H9-b o que
+    o LLM ja pos no elenco nao mudava; a partir do H9-c o mesmo juizo vale para as entradas dele.
 
     O que passa entra no elenco (origem ``motor_local``: aparece na revisao e propaga pelo lote). Entrada
     do elenco marcada ``manter`` vence o motor local (juiz, orgao). Folha em que o LLM FALHOU conta como
     tratada pelo motor local mesmo que ele nao ache nada; folha de resposta vazia (ou, sem rede, fora do
     cache) so conta se o motor local achar algo.
+
+    H9-c: as entradas que o LLM pos no elenco passam pelo mesmo juizo (``_judge_llm_entries``), antes dos nomes
+    do motor local, mesmo quando o motor local nao rodou em nenhuma folha.
     """
 
+    _judge_llm_entries(states, roster, exclusions, hygiene)
     ran = [state for state in states if state.local_ran]
     if not ran:
         return None
@@ -1224,6 +1291,101 @@ def pseudonymize_with_offsets(
         orig_ends.append(entity.end)
         shift = token_end - entity.end
     return result, OffsetMap(tuple(new_starts), tuple(new_ends), tuple(orig_ends))
+
+
+def _clean_mentions(
+    mentions: Iterable[Mention],
+    text: str,
+    roster: Roster,
+    exclusions: Sequence[str],
+    stats: LlmHygieneStats | None,
+) -> list[Mention]:
+    """H9-c: higiene das mencoes do LLM (``llm_hygiene``), a mesma em todos os canais, antes do elenco.
+    So descarta mencao do proprio LLM que nao e nome de pessoa, empresa ou endereco; o motor local nao passa
+    por aqui. ``text`` e o texto que o LLM leu (as posicoes sao dele)."""
+
+    known = [
+        value
+        for entry in roster.entries
+        if entry.kind == "pessoa"
+        for value in (entry.name, *entry.variants)
+    ]
+    return filter_llm_mentions(mentions, text, stats, extra_keep=exclusions, known_people=known)
+
+
+_JUDGED_TYPES = {"pessoa": "PERSON", "empresa": "ORGANIZATION"}
+
+
+def _judge_llm_entries(
+    states: Sequence[_FileState],
+    roster: Roster,
+    exclusions: Sequence[str],
+    stats: LlmHygieneStats | None,
+) -> None:
+    """H9-c: o juizo do lote (``BatchRoster.review``: agente publico por contexto de "assinado por"/cargo,
+    instituicao do SISBAJUD, rua com nome de pessoa) tambem sobre as entradas que o LLM pos no elenco.
+    Antes so o NER passava por ele. Entrada julgada agente publico ou instituicao financeira vira ``manter``
+    (``Roster.lock_keep``: "entrada manter vence", nenhuma mencao posterior a desfaz); rua com nome de pessoa
+    passa a endereco. Entrada fixada pelo usuario e lista de alvos nao mudam.
+
+    Usa um ``BatchRoster`` so para julgar (nao o do pipeline): as entidades do LLM nao entram na marca de uma
+    palavra nem na propagacao de IDs do lote, que seguem sendo do motor local."""
+
+    keys = {key for state in states for _s, _e, key in state.anchored}
+    candidates = [
+        entry
+        for key in sorted(keys)
+        if (entry := roster.get(key)) is not None
+        and entry.kind in _JUDGED_TYPES
+        and entry.action == TOKENIZE
+        and not entry.pinned
+        and entry.source != "lista"
+    ]
+    if not candidates:
+        return
+    judge = BatchRoster(exclusions)
+    for state in states:
+        spans = list(state.local_names)
+        for start, end, key in state.anchored:
+            entry = roster.get(key)
+            if entry is None or entry.kind not in _JUDGED_TYPES or not 0 <= start < end <= len(state.text):
+                continue
+            spans.append(
+                EntitySpan(start=start, end=end, entity_type=_JUDGED_TYPES[entry.kind], score=0.9, recognizer="LlmMention")
+            )
+        judge.add(state.text, spans)
+    judge.review(state.text for state in states)
+    judged = {entity.key: entity for entity in judge.entities()}
+    for entry in candidates:
+        entity_type = _JUDGED_TYPES[entry.kind]
+        entity = None
+        for value in (entry.name, *entry.variants):
+            entity = judged.get(judge.key_for(entity_type, value))
+            if entity is not None:
+                break
+        if entity is None:
+            continue
+        if entry.kind == "pessoa" and entity.is_street:
+            addresses = [
+                roster.add_mention(
+                    Mention(kind="endereco", text=value, canonical=entry.name), source=entry.source
+                )
+                for value in (entry.name, *entry.variants)
+            ]
+            street = next((item for item in addresses if item is not None), None)
+            if street is not None and roster.lock_keep(entry.key):
+                for state in states:
+                    state.anchored.extend(
+                        (start, end, street.key) for start, end, key in list(state.anchored) if key == entry.key
+                    )
+                if stats is not None:
+                    stats.lote_rua += 1
+        elif entry.kind == "pessoa" and entity.public_agent:
+            if roster.lock_keep(entry.key) and stats is not None:
+                stats.lote_publico += 1
+        elif entry.kind == "empresa" and entity.financial:
+            if roster.lock_keep(entry.key) and stats is not None:
+                stats.lote_financeiro += 1
 
 
 def absorb_mentions(
