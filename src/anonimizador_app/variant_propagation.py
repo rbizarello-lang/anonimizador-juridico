@@ -71,6 +71,9 @@ _PERSON_CUE = re.compile(
 _FAMILY = re.compile(
     r"\b(?i:fam[ií]lias?)\s+(?P<names>[A-ZÀ-ÖØ-Þ][^\W\d_]*(?:\s*(?:,|\be\b)\s*[A-ZÀ-ÖØ-Þ][^\W\d_]*)*)"
 )
+# H9-g: pista de pessoa para o sobrenome sozinho (alem das do prenome: "familia" e CPF).
+_SURNAME_CUE = re.compile(r"(?i)\bfam[ií]lia|\bcpf\b")
+_PREVIOUS_WORD = re.compile(r"([^\W\d_]+)[ \t]+\Z")
 _NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Þ][^\W\d_]*")
 _NEXT_WORD = re.compile(r"\s+([^\W\d_]+)")
 
@@ -202,6 +205,7 @@ class VariantPropagator:
                     found.append(span)
                     occupied.append((start, end))
         found.extend(self._family_spans(text, occupied))
+        found.extend(self._surname_spans(text, source, occupied))
         return found
 
     def _decide(
@@ -241,21 +245,55 @@ class VariantPropagator:
                     continue
                 # Sobrenome comum a mais de uma entrada da familia: vai para a de mais mencoes (empate: chave).
                 entry = max(owners, key=lambda item: (self.mentions[item.key], item.key))
-                reason = self._refusal(word, entry)
+                reason = self._refusal(word, entry, surname=True)
                 if reason:
                     self.stats[reason] += 1
+                    occupied.append((start, end))  # a busca por pista de pessoa nao conta a mesma palavra de novo
                     continue
                 self.stats["sobrenome"] += 1
                 found.append(self._span(entry, start, end))
                 occupied.append((start, end))
         return found
 
-    def _refusal(self, word: str, entry: RosterEntry) -> str:
-        """Motivo para a palavra nao propagar, ou "" se pode."""
+    def _surname_spans(
+        self, text: str, source: FoldedText, occupied: list[tuple[int, int]]
+    ) -> list[EntitySpan]:
+        """Sobrenome sozinho com pista de pessoa a ate 40 caracteres ("o socio Fagundes", "Sr. Fagundes",
+        "CPF de Fagundes"). A palavra logo antes nao pode ser outro nome proprio, nem a seguinte (e outra
+        pessoa). Nome de municipio so propaga aqui se a entrada tem 3+ mencoes (``_refusal``)."""
+
+        found: list[EntitySpan] = []
+        for word in sorted(self._surnames):
+            owners = {entry.key: entry for entry in self._surnames[word]}
+            for start, end in _brand_hits(text, source, word, occupied, self._protected, None):
+                if not _capitalized(text[start:end]):
+                    continue
+                window = _cue_window(text, start)
+                if not (_PERSON_CUE.search(window) or _SURNAME_CUE.search(window)):
+                    continue
+                if len(owners) > 1:
+                    self.stats["ambiguo"] += 1
+                    continue
+                entry = next(iter(owners.values()))
+                reason = self._refusal(word, entry, surname=True)
+                if reason:
+                    self.stats[reason] += 1
+                    continue
+                if _after_other_name(text, start) or self._followed_by_name(text, end):
+                    self.stats["contexto"] += 1
+                    continue
+                self.stats["sobrenome"] += 1
+                found.append(self._span(entry, start, end))
+                occupied.append((start, end))
+        return found
+
+    def _refusal(self, word: str, entry: RosterEntry, surname: bool = False) -> str:
+        """Motivo para a palavra nao propagar, ou "" se pode. ``surname``: ha pista de pessoa colada no
+        sobrenome; ai o nome de municipio propaga se a entrada tem 3+ mencoes (H9-g: "Fagundes", "Santos")."""
 
         if word in _NEVER or is_protected(word, self._protected):
             return "protegido"
-        if is_geo_word(word):
+        if is_geo_word(word) and not (surname and self.mentions[entry.key] >= _MIN_FULL_MENTIONS_COMMON):
             return "geografia"
         if word in _label_words():
             return "dicionario"
@@ -415,14 +453,13 @@ class VariantPropagator:
         return [self.audit_line(), f"Tokens estendidos por adjacencia: {self.stats['adjacencia']}"]
 
     def audit_line(self) -> str:
-        refused = self.stats["dicionario"] + self.stats["geografia"] + self.stats["protegido"]
-        other = self.stats["ambiguo"] + self.stats["contexto"]
         return (
             f"Variantes propagadas pelo elenco: {self.propagated} ocorrencias "
             f"(marca curta {self.stats['marca']}, prenome {self.stats['prenome']}, "
             f"sobrenome {self.stats['sobrenome']}, OCR {self.stats['ocr']}); "
-            f"recusadas por dicionario/geografia/protegido: {refused}; "
-            f"por ambiguidade ou contexto: {other}"
+            f"recusadas por dicionario {self.stats['dicionario']}, geografia {self.stats['geografia']}, "
+            f"protegido {self.stats['protegido']}, ambiguidade {self.stats['ambiguo']}, "
+            f"contexto {self.stats['contexto']}"
         )
 
 
@@ -446,6 +483,22 @@ def _word_after(text: str, position: int) -> list[tuple[str, int]]:
         forms.append((joined, joined_end))
     forms.append((first.group(0), first.end()))
     return forms
+
+
+def _after_other_name(text: str, start: int) -> bool:
+    """A palavra logo antes e outro nome proprio ("socio Pedro Fagundes"): o sobrenome e de outra pessoa."""
+
+    match = _PREVIOUS_WORD.search(text[max(0, start - 40) : start])
+    if match is None:
+        return False
+    previous = match.group(1)
+    if not previous[:1].isupper() or len(previous) < 2:
+        return False
+    return not (
+        fold_lexical(previous) in _CONNECTIVES
+        or _PERSON_CUE.search(previous)
+        or _SURNAME_CUE.search(previous)
+    )
 
 
 def _overlaps(start: int, end: int, others: Sequence[tuple[int, int]]) -> bool:

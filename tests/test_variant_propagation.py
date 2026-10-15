@@ -56,7 +56,7 @@ class MarcaCurtaTests(_Pipeline):
         self.assertIn(f"Segundo a {token},", body)
         self.assertIn("Alfa Têxtil", body)  # outra empresa: a palavra abre outro nome proprio
         self.assertRegex(audit, r"Variantes propagadas pelo elenco: 2 ocorrencias \(marca curta 2, prenome 0")
-        self.assertRegex(audit, r"recusadas por dicionario/geografia/protegido: 0")
+        self.assertRegex(audit, r"recusadas por dicionario 0, geografia 0, protegido 0, ambiguidade 0, contexto 1")
 
     def test_palavra_comum_nao_propaga_sozinha_e_com_tres_mencoes_propaga(self) -> None:
         full = "Premium Fictício Ltda"
@@ -64,7 +64,7 @@ class MarcaCurtaTests(_Pipeline):
         discoverer = VariantDiscoverer([("empresa", full, "parte")], [("empresa", "Premium", "parte", full)])
         _result, body, audit = self.go(two, discoverer)
         self.assertIn("A Premium pagou", body)
-        self.assertRegex(audit, r"marca curta 0.*recusadas por dicionario/geografia/protegido: 1")
+        self.assertRegex(audit, r"marca curta 0.*recusadas por dicionario 1,")
 
         three = _page(f"A {full}, a {full} e a {full} compareceram.", "A Premium pagou.")
         _result, body, audit = self.go(three, VariantDiscoverer([("empresa", full, "parte")],
@@ -122,19 +122,20 @@ class PessoaTests(_Pipeline):
         few = _page(f"O sócio {full} foi citado.", "A família Silva reside aqui.")
         _result, body, audit = self.go(few, FakeDiscoverer([("pessoa", full, "socio")]))
         self.assertIn("A família Silva reside", body)
-        self.assertRegex(audit, r"sobrenome 0.*recusadas por dicionario/geografia/protegido: 1")
+        self.assertRegex(audit, r"sobrenome 0.*recusadas por dicionario 1,")
 
         many = _page(f"O sócio {full}, {full} e {full} foram citados.", "A família Silva reside aqui.")
         _result, body, _audit = self.go(many, FakeDiscoverer([("pessoa", full, "socio")]))
         self.assertNotIn("família Silva", body)
         self.assertRegex(body, r"A família \[PESSOA_\d+\] reside")
 
-    def test_sobrenome_de_municipio_e_nome_de_estado_ficam(self) -> None:
+    def test_sobrenome_de_municipio_com_poucas_mencoes_fica(self) -> None:
         full = "Carlos Eduardo Santos"
-        text = _page(f"O sócio {full}, {full} e {full} foram citados.", "A família Santos reside aqui.")
-        _result, body, _audit = self.go(text, FakeDiscoverer([("pessoa", full, "socio")]))
-        # "Santos" e municipio e palavra comum: so propaga com 3+ mencoes e fora da lista de municipios.
+        text = _page(f"O sócio {full} e {full} foram citados.", "A família Santos reside aqui.")
+        _result, body, audit = self.go(text, FakeDiscoverer([("pessoa", full, "socio")]))
+        # 2 mencoes da entrada completa: "Santos" (municipio e palavra comum) nao propaga.
         self.assertIn("A família Santos reside", body)
+        self.assertRegex(audit, r"geografia 1")
 
 
 class UnidadeTests(unittest.TestCase):
@@ -189,5 +190,5 @@ class UnidadeTests(unittest.TestCase):
         self.assertEqual(
             propagator.audit_line(),
             "Variantes propagadas pelo elenco: 7 ocorrencias (marca curta 3, prenome 2, sobrenome 1, OCR 1); "
-            "recusadas por dicionario/geografia/protegido: 7; por ambiguidade ou contexto: 0",
+            "recusadas por dicionario 4, geografia 1, protegido 2, ambiguidade 0, contexto 0",
         )
