@@ -181,9 +181,12 @@ class LlmJobResult:
 
 def run_local_job(files: Sequence[str | Path], **kwargs) -> LlmJobResult:
     """Pipeline unico sem LLM: so o motor local acha os nomes, e o resto (elenco, troca, AUDITORIA, ELENCO)
-    e o mesmo do motor LLM. Com isso a deteccao e a unica diferenca entre os dois modos (H5)."""
+    e o mesmo do motor LLM. Com isso a deteccao e a unica diferenca entre os dois modos (H5).
 
-    return _run_llm_job(files, discoverer=None, **kwargs)
+    H9-d: roda com a rede bloqueada fora do loopback, como o canal local; a AUDITORIA registra a contagem."""
+
+    with block_network(allow_loopback=True) as attempts:
+        return _run_llm_job(files, discoverer=None, local_blocked=attempts, **kwargs)
 
 
 def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
@@ -250,8 +253,12 @@ def _run_llm_job(
     on_progress: ProgressFn | None = None,
     fallback_engine: ContextualEngine | None = None,
     local_floor: bool | None = None,
+    local_blocked: list[str] | None = None,
 ) -> LlmJobResult:
     """Tres fases: descobre em todos os arquivos, confere, e so entao troca.
+
+    ``local_blocked``: no modo sem LLM, a lista viva das tentativas de rede barradas pelo bloqueio da rodada
+    (``run_local_job``); a AUDITORIA grava o total.
 
     O elenco e do processo inteiro, nao do arquivo: socio que so aparece com
     nome completo na PARTE_2 tambem e trocado na PARTE_1.
@@ -482,6 +489,11 @@ def _run_llm_job(
     network = getattr(discoverer, "network_check", None)
     if local_only:
         network_notes = ["Nenhuma chamada a provedor: nada saiu desta maquina."]
+        # H9-d: o modo local tambem roda com a rede bloqueada fora do loopback; o zero fica escrito.
+        network_notes.append(
+            "Tentativas de rede fora de loopback bloqueadas: "
+            f"{len(local_blocked) if local_blocked is not None else 'rodada sem bloqueio de rede'}"
+        )
         engine_line = "Motor: local (pipeline unico, sem LLM)"
     else:
         network_notes = (

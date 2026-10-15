@@ -33,6 +33,7 @@ from .lote_elenco import CAST_NAME, apply_company_groups, write_lote_cast
 from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
 from .gemini_detector import ContextualEngine
 from .local_ner import ner_fallback_warning, reset_ner_status
+from .netblock import block_network
 from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
 from .settings import AppSettings
@@ -221,14 +222,21 @@ def finalize_lote(
     outcomes: Sequence[FileOutcome],
     mapping: PseudonymMap,
     roster: BatchRoster | None = None,
+    network_attempts: int | None = None,
 ) -> None:
-    """Depois da troca de todos os arquivos: mapa, AUDITORIA (e a privada), INDICE, ELENCO e LEIA-ME."""
+    """Depois da troca de todos os arquivos: mapa, AUDITORIA (e a privada), INDICE, ELENCO e LEIA-ME.
+
+    ``network_attempts``: tentativas de rede fora de loopback barradas durante a rodada (H9-d); a AUDITORIA
+    registra o numero mesmo sem LLM, para o zero ficar escrito."""
 
     mapping.dump(map_path)
     # Empresas ligadas por vinculo declarado levam o sufixo de grupo no texto, antes da AUDITORIA, do INDICE e
     # do ELENCO (que leem o texto ja com o sufixo).
     apply_company_groups([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None])
-    write_audit_report(export_dir, build_audit_notes(outcomes, mapping, roster))
+    notes = build_audit_notes(outcomes, mapping, roster)
+    if network_attempts is not None:
+        notes.insert(0, ("motor", local_network_lines(network_attempts)))
+    write_audit_report(export_dir, notes)
     if roster is not None:
         write_private_audit(map_path.parent, roster, mapping)
     write_outcomes_index(export_dir, outcomes)
@@ -290,6 +298,47 @@ def run_job(
     private_root.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # H9-d: a rodada local inteira roda com a rede bloqueada fora do loopback (o loopback fica livre para a
+    # tela). Nada aqui precisa de rede; a contagem vai para a AUDITORIA e tem de dar zero.
+    with block_network(allow_loopback=True) as attempts:
+        return _run_job_blocked(
+            sources,
+            identifier=identifier,
+            export_dir=export_dir,
+            map_path=map_path,
+            split_warning=split_warning,
+            private_root=private_root,
+            on_progress=on_progress,
+            contextual=contextual,
+            settings=settings,
+            use_cache=use_cache,
+            attempts=attempts,
+        )
+
+
+def local_network_lines(blocked: int) -> list[str]:
+    """Bloco "motor" da AUDITORIA do modo local (sem LLM): so contagens."""
+
+    return [
+        "Motor: local (sem LLM). Nenhuma chamada a provedor: nada saiu desta maquina.",
+        f"Tentativas de rede fora de loopback bloqueadas: {blocked}",
+    ]
+
+
+def _run_job_blocked(
+    sources: Sequence[Path],
+    *,
+    identifier: str,
+    export_dir: Path,
+    map_path: Path,
+    split_warning: str,
+    private_root: Path,
+    on_progress: ProgressFn | None,
+    contextual: ContextualEngine | None,
+    settings: AppSettings | None,
+    use_cache: bool,
+    attempts: list[str],
+) -> JobResult:
     active = settings or AppSettings()
     reset_ner_status()
     detector = StructuredDetector(recognizers=build_recognizers(active))
@@ -347,6 +396,7 @@ def run_job(
         outcomes=outcomes,
         mapping=mapping,
         roster=roster,
+        network_attempts=len(attempts),
     )
     _report(on_progress, "Concluido", 1.0)
     return build_job_result(

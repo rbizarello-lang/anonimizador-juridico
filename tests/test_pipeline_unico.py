@@ -220,6 +220,8 @@ class LocalOnlyTests(_Lote):
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
         self.assertIn("Motor: local (pipeline unico, sem LLM)", audit)
         self.assertIn("nada saiu desta maquina", audit)
+        # H9-d: a linha de rede existe tambem sem LLM, com zero.
+        self.assertIn("Tentativas de rede fora de loopback bloqueadas: 0", audit)
         self.assertNotIn("Motor LLM", audit)
         self.assertNotIn("RAIMUNDO", audit)
         legend = result.job.export_dir / LEGEND_FILENAME
