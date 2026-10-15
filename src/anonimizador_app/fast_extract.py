@@ -722,8 +722,28 @@ def _bookmarks_by_page(toc: list, page_count: int) -> dict[int, list[tuple[int, 
     return headings
 
 
+IMAGE_OMITTED = "[imagem omitida]"
+# Imagem inline ou ancorada (``w:drawing``) e figura antiga (``w:pict``); a copia de reserva do mesmo desenho
+# dentro de ``mc:Fallback`` nao conta de novo.
+_IMAGE_XPATH = (
+    ".//*[(local-name()='drawing' or local-name()='pict') and not(ancestor::*[local-name()='Fallback'])]"
+)
+
+
+def docx_image_count(element) -> int:
+    """Quantas imagens o elemento do documento (paragrafo ou tabela) traz."""
+
+    try:
+        return len(element.xpath(_IMAGE_XPATH))
+    except Exception:  # noqa: BLE001 - elemento sem xpath: nao ha o que contar
+        return 0
+
+
 def docx_to_markdown(path: str | Path) -> str:
     """Paragrafos e tabelas na ordem do documento; estilo Titulo vira ``#``.
+
+    Cada imagem (inline, ancorada ou dentro de tabela) vira a linha ``[imagem omitida]``: o texto extraido
+    nao a le, e o leitor precisa saber que havia prova ali.
 
     O leitor antigo punha todas as tabelas no fim do texto, longe do
     paragrafo que as cita.
@@ -743,14 +763,15 @@ def docx_to_markdown(path: str | Path) -> str:
         if tag == "p":
             paragraph = Paragraph(child, document)
             text = paragraph.text.strip()
-            if not text:
-                continue
-            level = _heading_level(paragraph.style.name if paragraph.style is not None else "")
-            chunks.append(f"{'#' * level} {text}" if level else text)
+            if text:
+                level = _heading_level(paragraph.style.name if paragraph.style is not None else "")
+                chunks.append(f"{'#' * level} {text}" if level else text)
+            chunks.extend([IMAGE_OMITTED] * docx_image_count(child))
         elif tag == "tbl":
             rendered = _table_markdown(Table(child, document))
             if rendered:
                 chunks.append(rendered)
+            chunks.extend([IMAGE_OMITTED] * docx_image_count(child))
     return "\n\n".join(chunks).rstrip() + "\n"
 
 

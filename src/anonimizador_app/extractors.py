@@ -118,15 +118,19 @@ def _read_docx(path: Path) -> str:
     except ImportError as exc:  # pragma: no cover - depende do ambiente
         raise RuntimeError("python-docx nao esta instalado") from exc
 
+    from .fast_extract import IMAGE_OMITTED, docx_image_count
+
     document = Document(path)
     chunks: list[str] = []
     for paragraph in document.paragraphs:
         text = paragraph.text.strip()
         if text:
             chunks.append(text)
+        chunks.extend([IMAGE_OMITTED] * docx_image_count(paragraph._p))
     for table in document.tables:
         for row in table.rows:
             cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
             if cells:
                 chunks.append(" | ".join(cells))
+        chunks.extend([IMAGE_OMITTED] * docx_image_count(table._tbl))
     return "\n".join(chunks).rstrip()
