@@ -33,6 +33,10 @@ from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_
 from .report_layouts import report_plan
 
 FAST_EXTRACTOR_VERSION = "pymupdf-rapido|15"
+# H9-g: o marcador de imagem do .docx ([imagem omitida], H9-f item D) so vale em docx extraido de novo. A chave do
+# cache de .docx leva este sufixo proprio, SEM mexer em FAST_EXTRACTOR_VERSION: o cache de OCR dos PDFs (~90 min
+# por lote) nao pode ser invalidado por uma mudanca que so afeta .docx. Mude o sufixo se o leitor de docx mudar.
+FAST_DOCX_CACHE_SUFFIX = "|docx2"
 # Versoes cujas folhas lidas por OCR saem iguais as desta (a |14 so mudou o texto nativo: relatorios
 # SISBAJUD/RENAJUD/capa, fila 3.x E12; a |15 so a capa do agravo, E13). O cache delas serve de ponto
 # de partida: so as folhas nativas sao refeitas, e o OCR (~90 min no lote C1) nao roda de novo.

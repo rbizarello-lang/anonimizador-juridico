@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .coverage import parse_coverage
 from .extractors import ExtractedDocument, extract_document
-from .fast_extract import FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
+from .fast_extract import FAST_DOCX_CACHE_SUFFIX, FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
 
 CACHE_SUBDIR = "cache_extracao"
 _OCR_PAGES = re.compile(r"<!--\s*ocr-paginas:\s*(\d+)", re.IGNORECASE)
@@ -46,6 +46,15 @@ def docling_extractor_version() -> str:
 
 def default_extractor_version(*, prefer_docling: bool = False) -> str:
     return docling_extractor_version() if prefer_docling else FAST_EXTRACTOR_VERSION
+
+
+def docx_aware_version(path: str | Path, version: str) -> str:
+    """Versao que entra na chave do cache: .docx extraido pelo leitor rapido leva o sufixo proprio de docx
+    (H9-g); PDF, texto e os demais extratores seguem com a versao que vieram."""
+
+    if Path(path).suffix.lower() == ".docx" and version == FAST_EXTRACTOR_VERSION:
+        return version + FAST_DOCX_CACHE_SUFFIX
+    return version
 
 
 def cache_key(file_bytes: bytes, version: str) -> str:
@@ -88,7 +97,7 @@ def load_or_extract(
     """
 
     source = Path(path)
-    version = version_string or default_extractor_version(prefer_docling=prefer_docling)
+    version = docx_aware_version(source, version_string or default_extractor_version(prefer_docling=prefer_docling))
     file_bytes = source.read_bytes()
     digest = cache_key(file_bytes, version)
     md_path = json_path = None
