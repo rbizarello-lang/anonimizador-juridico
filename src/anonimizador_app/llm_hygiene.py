@@ -522,9 +522,18 @@ def _person_with_place_name(text: str, start: int, end: int, value: str, roster_
 
 # H9-f: marca ou modelo de veiculo ("Fiat Strada 2020", "Honda CG 160") nao e empresa. Lista pequena das marcas
 # mais comuns; com sufixo societario ou palavra de comercio ("Fiat Veiculos Ltda") a mencao segue empresa.
+# H9-g: so descarta quando, depois da marca, ha modelo conhecido ou numero (ano, cilindrada, codigo do modelo);
+# "Volkswagen Financial Services", "Toyota Leasing", "BMW Financeira" e a marca sozinha seguem empresa.
 _VEHICLE_BRANDS = frozenset(
     "fiat volkswagen vw chevrolet gm ford toyota honda hyundai renault nissan jeep peugeot citroen mitsubishi "
     "kia bmw mercedes audi volvo yamaha suzuki kawasaki iveco scania chery caoa byd harley".split()
+)
+_VEHICLE_MODELS = frozenset(
+    "uno palio siena strada toro mobi argo cronos fiorino doblo gol polo virtus saveiro voyage fox golf jetta "
+    "amarok tiguan nivus kombi fusca onix prisma celta corsa classic cobalt cruze tracker spin montana s10 "
+    "camaro fiesta ka focus ranger ecosport fusion hilux corolla etios yaris civic fit city cg biz titan fazer "
+    "factor lander hornet xre hb20 creta tucson sandero duster kwid logan captur kicks versa march frontier "
+    "compass renegade commander clio megane scenic ninja".split()
 )
 _VEHICLE_TRADE = frozenset(
     "veiculos automoveis automotores motos motors motor comercio concessionaria pecas distribuidora revenda "
@@ -537,9 +546,12 @@ def _is_vehicle(value: str) -> bool:
     if _COMPANY_SUFFIX.search(value):
         return False
     words = fold_lexical(value).replace("-", " ").split()
-    if not words or words[0] not in _VEHICLE_BRANDS or len(words) > 4:
+    if len(words) < 2 or words[0] not in _VEHICLE_BRANDS or len(words) > 4:
         return False
-    return not any(word in _VEHICLE_TRADE for word in words[1:])
+    rest = words[1:]
+    if any(word in _VEHICLE_TRADE for word in rest):
+        return False
+    return any(word in _VEHICLE_MODELS or any(char.isdigit() for char in word) for word in rest)
 
 
 # Instituicao financeira onde so cabe endereco (o juizo do lote cobre a posicao de SISBAJUD; aqui o texto).
