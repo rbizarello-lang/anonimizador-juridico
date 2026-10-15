@@ -278,7 +278,7 @@ class DefaultParallelismTests(unittest.TestCase):
     def test_detection_version_records_the_h9e_bump(self) -> None:
         from anonimizador_app.version import DETECTION_VERSION
 
-        self.assertEqual(DETECTION_VERSION, "2.8.5")
+        self.assertEqual(DETECTION_VERSION, "2.9.0")
 
 
 class LocalFloorCliTests(_Workspace):
