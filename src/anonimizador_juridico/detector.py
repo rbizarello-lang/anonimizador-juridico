@@ -29,6 +29,11 @@ _TYPE_PRIORITY = {
     "BR_NASCIMENTO": 82,
     "BR_TITULO_ELEITOR": 82,
     "BR_PIS": 82,
+    # Identificador rotulado vence o CPF/telefone que os mesmos digitos poderiam ser (NIRE e CNH tem
+    # 11 digitos como o CPF).
+    "BR_NIRE": 101,
+    "BR_CNH": 101,
+    "BR_URL": 95,
     "BR_EPROC": 82,
     "BR_CEP": 80,
     "BR_PHONE": 70,

@@ -26,6 +26,8 @@
   vistos no lote e a marca de uma palavra (com o token da empresa), e a revisao residual avisa como no local.
   2.8.4 = H9-a: o agente publico do juizo do lote (cargo colado ao nome em alguma ocorrencia) sai da troca
   tambem quando a deteccao direta o achou, com ou sem cargo perto; antes so a propagacao era barrada.
+  2.8.5 = H9-e: reconhecedores novos (RG de SC "8/R.1.964.808", NIRE, CNH, celular com o 9 separado, processo CNJ
+  partido em duas linhas, URL com chave de assinatura/consulta) e a segunda higiene das mencoes do LLM.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -43,7 +45,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.8.4"
+DETECTION_VERSION = "2.8.5"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent

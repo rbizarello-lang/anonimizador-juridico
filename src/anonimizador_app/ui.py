@@ -324,9 +324,9 @@ _EMPTY_ART = f"""
 # Etiquetas estruturadas agrupadas por assunto na aba Regras. O que nao
 # estiver aqui cai em "Outros" (nada some se o catalogo crescer).
 _TAG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Pessoa física", ("BR_CPF", "BR_RG", "BR_PIS", "BR_TITULO_ELEITOR", "BR_NASCIMENTO")),
-    ("Empresa e processo", ("BR_CNPJ", "BR_PROCESSO", "BR_OAB", "BR_EPROC")),
-    ("Contato e endereço", ("EMAIL_ADDRESS", "BR_PHONE", "BR_CEP")),
+    ("Pessoa física", ("BR_CPF", "BR_RG", "BR_CNH", "BR_PIS", "BR_TITULO_ELEITOR", "BR_NASCIMENTO")),
+    ("Empresa e processo", ("BR_CNPJ", "BR_NIRE", "BR_PROCESSO", "BR_OAB", "BR_EPROC")),
+    ("Contato e endereço", ("EMAIL_ADDRESS", "BR_PHONE", "BR_CEP", "BR_URL")),
     (
         "Bens e contas",
         (

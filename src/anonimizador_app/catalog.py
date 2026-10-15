@@ -29,6 +29,9 @@ STRUCTURED_TAGS: tuple[TagInfo, ...] = (
     TagInfo("BR_NASCIMENTO", "[NASCIMENTO_n]", "Data de nascimento com rótulo de formulário", True),
     TagInfo("BR_TITULO_ELEITOR", "[TITULO_n]", "Título de eleitor com rótulo de formulário", True),
     TagInfo("BR_PIS", "[PIS_n]", "PIS/PASEP/NIT com rótulo e dígito verificador", True),
+    TagInfo("BR_NIRE", "[NIRE_n]", "NIRE (Junta Comercial) com o rótulo NIRE", True),
+    TagInfo("BR_CNH", "[CNH_n]", "CNH com o rótulo CNH ou Carteira Nacional de Habilitação", True),
+    TagInfo("BR_URL", "[URL_n]", "URL de assinatura/consulta com chave na query", True),
     TagInfo("BR_EPROC", "[EPROC_n]", "Código eproc do procurador na capa (PR900001, P9000001)", True),
 )
 

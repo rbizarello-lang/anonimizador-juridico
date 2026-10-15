@@ -36,6 +36,19 @@ _PHONE_LABEL_PREFIX = re.compile(
     rf"(?i)^{_PHONE_LABEL}(?![A-Za-z])[^\n\d(]*"
 )
 _PIS_LABEL = r"(?:PIS(?:\s*/\s*PASEP)?|PASEP|NIT)"
+# Vao permitido entre os grupos do numero CNJ: no maximo UMA quebra de linha (e espacos ao redor),
+# como sai de um PDF que partiu o numero no fim da linha ("5048714-\n11.2025.4.04.7200").
+_CNJ_GAP = r"[ \t]*\n?[ \t]*"
+_CNJ_FORMATADO = (
+    rf"\d{{7}}-{_CNJ_GAP}\d{{2}}\.{_CNJ_GAP}\d{{4}}\.{_CNJ_GAP}\d\.{_CNJ_GAP}\d{{2}}\.{_CNJ_GAP}\d{{4}}"
+)
+# NIRE: 11 digitos, com no maximo um espaco ou ponto entre dois digitos ("42 2 0123456 7").
+_NIRE_VALOR = r"\d(?:[ .\-]?\d){10}"
+# Parametro de chave de assinatura/consulta numa URL (chave1=, codigo=, key=, hash=, token=...).
+_URL_CHAVE_PARAM = re.compile(
+    r"(?i)[?&;][A-Za-z_]*(?:chave|key|codigo|token|hash|verific|assinatura|signature|senha)"
+    r"[A-Za-z0-9_]*="
+)
 _GLUED_EMAIL = re.compile(
     r"[A-Za-z0-9._%+\-]+@(?:[A-Za-z0-9-]+\.)+[a-z]{2,24}(?=[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])"
 )
@@ -242,11 +255,7 @@ class BrProcessNumberRecognizer(PatternRecognizer):
             patterns=[
                 Pattern(
                     name="numero_cnj_formatado_ou_compacto",
-                    regex=(
-                        r"(?<!\d)(?:"
-                        r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}"
-                        r"|\d{20})(?!\d)"
-                    ),
+                    regex=rf"(?<!\d)(?:{_CNJ_FORMATADO}|\d{{20}})(?!\d)",
                     score=0.85,
                 )
             ],
@@ -277,8 +286,81 @@ class BrRgRecognizer(ValueGroupPatternRecognizer):
                     ),
                     score=0.75,
                 ),
+                Pattern(
+                    # RG de Santa Catarina: "8/R.1.964.808" (digito, barra, R, grupos pontuados).
+                    name="rg_sc_barra_r",
+                    regex=r"(?<![\w/.])(?P<valor>\d{1,2}/R\.\d{1,3}(?:\.\d{3}){1,2})(?!\d)",
+                    score=0.8,
+                ),
             ],
         )
+
+
+class BrNireRecognizer(ValueGroupPatternRecognizer):
+    """NIRE (registro na Junta Comercial): 11 digitos depois do rotulo "NIRE". Sem DV padronizado."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_NIRE",
+            supported_language="pt",
+            name="BrNireRecognizer",
+            patterns=[
+                Pattern(
+                    name="nire_rotulado",
+                    regex=(
+                        rf"\bNIRE\s*(?:N[.\s]*[Oº°]?\s*)?[:;]?\s*(?<!\d)(?P<valor>{_NIRE_VALOR})(?!\d)"
+                    ),
+                    score=0.85,
+                )
+            ],
+        )
+
+
+class BrCnhRecognizer(ValueGroupPatternRecognizer):
+    """CNH: 11 digitos depois de "CNH" ou "Carteira Nacional de Habilitacao". Sem DV conferido."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_CNH",
+            supported_language="pt",
+            name="BrCnhRecognizer",
+            patterns=[
+                Pattern(
+                    name="cnh_rotulada",
+                    regex=(
+                        r"\b(?:CNH|Carteira\s+Nacional\s+de\s+Habilita[cç][aã]o(?:\s*\(CNH\))?)"
+                        r"\s*(?:N[.\s]*[Oº°]?\s*)?[:;]?\s*(?:de\s+registro\s*)?"
+                        r"(?<!\d)(?P<valor>\d{11})(?![\d.,]?\d)"
+                    ),
+                    score=0.85,
+                )
+            ],
+        )
+
+
+class BrUrlChaveRecognizer(PatternRecognizer):
+    """URL de assinatura/consulta com chave na query (chave1=, codigo=, hash=...). A URL inteira vira
+    um token; URL institucional sem parametro de chave ("https://www.trf4.jus.br") fica em claro."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_URL",
+            supported_language="pt",
+            name="BrUrlChaveRecognizer",
+            patterns=[
+                Pattern(
+                    name="url_com_parametro_de_chave",
+                    regex=(
+                        r"(?<![\w/@.-])(?:https?://|www\.)[^\s<>\"'\[\]()]*\?[^\s<>\"'\[\]()]*"
+                        r"[^\s<>\"'\[\]().,;:!]"
+                    ),
+                    score=0.85,
+                )
+            ],
+        )
+
+    def validate_result(self, pattern_text: str) -> bool:
+        return _URL_CHAVE_PARAM.search(pattern_text) is not None
 
 
 class BrPisRecognizer(ValueGroupPatternRecognizer):
@@ -543,6 +625,16 @@ class BrPhoneRecognizer(PatternRecognizer):
                     score=0.8,
                 ),
                 Pattern(
+                    # Celular com o nono digito separado por espaco: "47 9 8473-5213".
+                    name="telefone_nono_digito_separado",
+                    regex=(
+                        r"(?<!\d)(?:\+?55[\s.\-]?)?"
+                        r"(?:\([1-9]\d\)|[1-9]\d)[\s.\-]?"
+                        r"9[ \t]\d{4}[\s.\-]?\d{4}(?!\d)"
+                    ),
+                    score=0.8,
+                ),
+                Pattern(
                     name="telefone_ddd_parenteses",
                     regex=(
                         r"(?<!\d)(?:\+?55[\s.\-]?)?"
@@ -596,7 +688,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                     name="processo_rotulado_sem_validacao",
                     regex=(
                         r"\b(?:PROCESSO|AUTOS)\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
-                        r"(?P<valor>\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}|\d{20})(?!\d)"
+                        rf"(?P<valor>{_CNJ_FORMATADO}|\d{{20}})(?!\d)"
                     ),
                     score=0.55,
                 )
@@ -637,6 +729,9 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
             ],
         ),
         BrRgRecognizer(),
+        BrNireRecognizer(),
+        BrCnhRecognizer(),
+        BrUrlChaveRecognizer(),
         BrPisRecognizer(),
         BrMatriculaImovelRecognizer(),
         BrCepRecognizer(),

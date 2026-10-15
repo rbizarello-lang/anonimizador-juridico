@@ -32,6 +32,9 @@ _TOKEN_LABELS = {
     "BR_NASCIMENTO": "NASCIMENTO",
     "BR_TITULO_ELEITOR": "TITULO",
     "BR_PIS": "PIS",
+    "BR_NIRE": "NIRE",
+    "BR_CNH": "CNH",
+    "BR_URL": "URL",
     "BR_EPROC": "EPROC",
     "PERSON": "PESSOA",
     "ORGANIZATION": "EMPRESA",
@@ -164,6 +167,8 @@ def canonicalize(entity_type: str, value: str) -> str:
         "BR_NASCIMENTO",
         "BR_TITULO_ELEITOR",
         "BR_PIS",
+        "BR_NIRE",
+        "BR_CNH",
     }:
         return only_digits(value)
     if entity_type == "BR_PIX":
