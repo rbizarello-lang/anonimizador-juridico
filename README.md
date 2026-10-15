@@ -210,6 +210,22 @@ A API esta suspensa por decisao do Operador (07/10/2026): o caminho local e medi
 3. **LeNER dentro do app** (H8, em avaliacao): `--motor app-local+lener` mede o motor local inteiro com o
    BERT do LeNER-Br somado ao GLiNER, pelos mesmos filtros. Para usar no app, `"extra_ner": "lener"` no
    `config.json` (desligado por padrao) e `pip install transformers`.
+4. **LLM local contra o gabarito** (H9-b): `--motor app-local+ollama --modelo-ollama qwen3:4b` roda o motor
+   local mais o canal `ollama-local` sobre o mesmo texto (a uniao), e grava a resposta de cada trecho no
+   cache do pipeline (`saidas\privados\cache_llm`, por modelo). O progresso por documento sai no stderr e o
+   JSON privado e regravado a cada motor.
+5. **Reaplicar o pipeline sobre as respostas de uma medicao, sem chamar o modelo** (H9-c/H9-d): a higiene,
+   o papel publico e o juizo do lote agem depois do modelo, entao mudar uma regra do app nao exige rodar a
+   IA de novo. Para o cache gravado pelo `comparar_motores` anterior ao H9-c (texto cru, pasta
+   `cache_llm_local`):
+   ```
+   python tools\reaplicar_cache.py <PDFs do lote> --modelo gemma4:e4b
+   ```
+   Gera o lote exportavel pelo canal local em modo sem rede (nenhum modelo e criado; a AUDITORIA conta as
+   tentativas de rede, que tem de dar 0); trecho sem resposta no cache cai no piso local. Para cache ja
+   gravado sobre o texto mascarado (`cache_llm`), basta `anonimizar_llm.py <PDFs> --canal ollama-local
+   --modelo <modelo> --sem-rede --verificacao 0`. Depois, as reguas: `medir_vazamento.py <gabarito> <lote
+   local> <lote do modelo>` e `medir_estrutura.py <PDFs> <lote>`.
 
 ## Pipeline unico (aceite pendente)
 
