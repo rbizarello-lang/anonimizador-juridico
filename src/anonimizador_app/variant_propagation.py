@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -72,6 +73,22 @@ _FAMILY = re.compile(
 )
 _NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Þ][^\W\d_]*")
 _NEXT_WORD = re.compile(r"\s+([^\W\d_]+)")
+
+
+# H9-g: extensao do token por adjacencia. Cargo publico: nunca vira parte do nome ("[PESSOA_2] Juiza Federal").
+_ROLE_WORDS = frozenset(
+    "juiz juiza desembargador desembargadora procurador procuradora promotor promotora defensor defensora "
+    "ministro ministra delegado delegada escrivao escriva oficial analista tecnico tecnica tabeliao tabelia "
+    "registrador registradora servidor servidora secretario secretaria diretor diretora sr sra srta dr dra".split()
+)
+# Entre duas palavras do nome: espaco, ou hifen de quebra de linha do OCR ("De-\nDomenico").
+_GAP = re.compile(r"[ \t]+|-[ \t]*\n[ \t]*")
+_WORD = re.compile(r"[^\W\d_]+")
+_BREAK = re.compile(r"-[ \t]*\n[ \t]*")
+_WORD_BEFORE_GAP = re.compile(
+    r"(?P<joined>[^\W\d_]+-[ \t]*\n[ \t]*[^\W\d_]+|[^\W\d_]+)(?P<gap>[ \t]+|-[ \t]*\n[ \t]*)\Z"
+)
+_SIMPLE_WORD_BEFORE_GAP = re.compile(r"(?P<joined>[^\W\d_]+)(?P<gap>[ \t]+|-[ \t]*\n[ \t]*)\Z")
 
 
 @lru_cache(maxsize=1)
@@ -113,6 +130,7 @@ class VariantPropagator:
         self._surnames: dict[str, list[RosterEntry]] = defaultdict(list)
         self._people_words: set[str] = set()
         self._prepared = False
+        self._owners: tuple[int, dict[str, set[str]]] | None = None
 
     # --- preparo ----------------------------------------------------------------------------------
     def prepare(self, files: Iterable[tuple[str, FoldedText | None, Sequence[tuple[int, int, str]]]]) -> None:
@@ -267,10 +285,134 @@ class VariantPropagator:
             alvo=entry.name,
         )
 
+    # --- extensao por adjacencia (H9-g) ------------------------------------------------------------
+    def extend_adjacent(self, text: str, entities: Sequence[EntitySpan]) -> list[EntitySpan]:
+        """Estende o span de pessoa sobre a palavra de nome colada nele (``[PESSOA_2] Domenico``,
+        ``Maria [PESSOA_4]``), com o mesmo token.
+
+        A adjacencia ao proprio token e a evidencia: nao consulta dicionario, geografia nem termo
+        protegido de varias palavras. A palavra so entra se for parte do nome completo da MESMA entrada do
+        elenco (ou grafia com similaridade >= 0,85 de uma parte), separada so por espaco ou por hifen de
+        quebra de linha, com conectivos de/da/do/dos/das/e no meio. Nunca entra palavra de OUTRA entrada,
+        palavra protegida inteira (Uniao, Fazenda) nem cargo (Juiz, Procurador)."""
+
+        owners = self._word_owners()
+        result = list(entities)
+        for index, span in enumerate(result):
+            if span.entity_type != "PERSON" or not span.canonical_key:
+                continue
+            entry = self._roster.get(span.canonical_key)
+            if entry is None or entry.kind != "pessoa" or entry.action != TOKENIZE:
+                continue
+            parts = self._parts(entry)
+            if not parts:
+                continue
+            others = [(other.start, other.end) for j, other in enumerate(result) if j != index]
+            start = self._reach_left(text, span.start, parts, owners, others)
+            end = self._reach_right(text, span.end, parts, owners, others)
+            if (start, end) != (span.start, span.end):
+                result[index] = replace(span, start=start, end=end)
+                self.stats["adjacencia"] += 1
+        return result
+
+    @staticmethod
+    def _parts(entry: RosterEntry) -> frozenset[str]:
+        words: set[str] = set()
+        for value in (entry.name, *entry.variants):
+            words.update(
+                word
+                for word in _WORDS.findall(entity_core(entry.kind, value))
+                if word not in _CONNECTIVES and len(word) >= 2
+            )
+        return frozenset(words)
+
+    def _word_owners(self) -> dict[str, set[str]]:
+        """Palavra dobrada -> chaves das entradas (pessoa ou empresa) cujo nome a traz."""
+
+        if self._owners is not None and self._owners[0] == len(self._roster):
+            return self._owners[1]
+        owners: dict[str, set[str]] = defaultdict(set)
+        for entry in self._roster.entries:
+            if entry.kind not in {"pessoa", "empresa"}:
+                continue
+            for word in self._parts(entry):
+                owners[word].add(entry.key)
+        self._owners = (len(self._roster), owners)
+        return owners
+
+    def _qualifies(self, word: str, parts: frozenset[str], owners: dict[str, set[str]]) -> bool:
+        if not word[:1].isupper():
+            return False
+        folded = fold_lexical(word)
+        if len(folded) < 2 or folded in _ROLE_WORDS or folded in _NEVER or folded in _CONNECTIVES:
+            return False
+        if is_protected(word, self._protected):
+            return False
+        if folded in parts:
+            return True
+        if folded in owners:
+            return False  # palavra de OUTRA entrada
+        return len(folded) >= 5 and any(
+            len(part) >= 5 and SequenceMatcher(None, folded, part).ratio() >= _OCR_RATIO for part in parts
+        )
+
+    def _kind_of(self, word: str, parts: frozenset[str], owners: dict[str, set[str]]) -> str:
+        if fold_lexical(word) in _CONNECTIVES:
+            return "conectivo"
+        return "nome" if self._qualifies(word, parts, owners) else ""
+
+    def _reach_right(self, text, end, parts, owners, others) -> int:
+        reach = end
+        cursor = end
+        for _ in range(8):
+            gap = _GAP.match(text, cursor)
+            if gap is None:
+                break
+            kind, word_end = "", cursor
+            for word, candidate_end in _word_after(text, gap.end()):
+                kind = self._kind_of(word, parts, owners)
+                if kind:
+                    word_end = candidate_end
+                    break
+            if not kind:
+                break
+            cursor = word_end
+            if kind == "nome":
+                if _overlaps(reach, cursor, others):
+                    break
+                reach = cursor
+        return reach
+
+    def _reach_left(self, text, start, parts, owners, others) -> int:
+        reach = start
+        cursor = start
+        for _ in range(8):
+            window = text[max(0, cursor - 80) : cursor]
+            kind, word_start = "", cursor
+            for pattern in (_WORD_BEFORE_GAP, _SIMPLE_WORD_BEFORE_GAP):
+                match = pattern.search(window)
+                if match is None:
+                    continue
+                kind = self._kind_of(match.group("joined"), parts, owners)
+                if kind:
+                    word_start = cursor - len(window) + match.start("joined")
+                    break
+            if not kind:
+                break
+            cursor = word_start
+            if kind == "nome":
+                if _overlaps(cursor, reach, others):
+                    break
+                reach = cursor
+        return reach
+
     # --- auditoria --------------------------------------------------------------------------------
     @property
     def propagated(self) -> int:
         return sum(self.stats[name] for name in ("marca", "prenome", "sobrenome", "ocr"))
+
+    def audit_lines(self) -> list[str]:
+        return [self.audit_line(), f"Tokens estendidos por adjacencia: {self.stats['adjacencia']}"]
 
     def audit_line(self) -> str:
         refused = self.stats["dicionario"] + self.stats["geografia"] + self.stats["protegido"]
@@ -282,6 +424,32 @@ class VariantPropagator:
             f"recusadas por dicionario/geografia/protegido: {refused}; "
             f"por ambiguidade ou contexto: {other}"
         )
+
+
+def _word_after(text: str, position: int) -> list[tuple[str, int]]:
+    """Palavra que comeca em ``position``: a forma com hifen de quebra de linha juntada (Dome-, quebra, nico)
+    primeiro e depois a primeira parte sozinha (o "De" de De-, quebra, Domenico)."""
+
+    first = _WORD.match(text, position)
+    if first is None:
+        return []
+    joined, joined_end = first.group(0), first.end()
+    while True:
+        gap = _BREAK.match(text, joined_end)
+        nxt = _WORD.match(text, gap.end()) if gap else None
+        if nxt is None:
+            break
+        joined += nxt.group(0)
+        joined_end = nxt.end()
+    forms = []
+    if joined_end != first.end():
+        forms.append((joined, joined_end))
+    forms.append((first.group(0), first.end()))
+    return forms
+
+
+def _overlaps(start: int, end: int, others: Sequence[tuple[int, int]]) -> bool:
+    return any(start < other_end and other_start < end for other_start, other_end in others)
 
 
 # Fim de frase (nao o ponto de "Sr." nem de "Dra.") ou quebra de linha: a pista nao atravessa.

@@ -494,7 +494,7 @@ def _run_llm_job(
     notes.insert(1, ("marca de uma palavra (so contagens)", brand_guard_lines(refused_brands)))
     if batch is not None:
         notes.insert(2, ("elenco do lote: marca de uma palavra (so tokens e contagens)", batch.brand_report(mapping)))
-    notes.insert(1, ("variantes do elenco (so contagens)", [variants.audit_line()]))
+    notes.insert(1, ("variantes do elenco (so contagens)", variants.audit_lines()))
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
@@ -1204,6 +1204,9 @@ def _tokenize(
     if variants is not None:
         spans.extend(variants.spans(text, [*ids, *spans], folded))
     entities = resolve_overlaps([*ids, *spans])
+    if variants is not None:
+        # H9-g: palavra de nome colada no token da pessoa (``[PESSOA_2] Domenico``) entra no mesmo token.
+        entities = variants.extend_adjacent(text, entities)
     result, offsets = pseudonymize_with_offsets(text, entities, mapping)
     return entities, result, offsets, refused
 
