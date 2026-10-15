@@ -76,6 +76,13 @@ _FAMILY = re.compile(
 # H9-g: pista de pessoa para o sobrenome sozinho (alem das do prenome: "familia" e CPF).
 _SURNAME_CUE = re.compile(r"(?i)\bfam[ií]lia|\bcpf\b")
 _PREVIOUS_WORD = re.compile(r"([^\W\d_]+)[ \t]+\Z")
+# H9-g: palavra do dicionario em uso comum ("Conselho Nacional de Justica", "Valor de Real"): nome proprio
+# composto de orgao ou instituicao, nao a marca nem o sobrenome.
+_CAPITALIZED_BEFORE_PREPOSITION = re.compile(r"[A-ZÀ-ÖØ-Þ][^\W\d_]+[ \t]+(?:de|da|do|dos|das)[ \t]+\Z")
+_NOT_A_NAME_BEFORE = frozenset(
+    "o a os as um uma uns umas ao aos na no nas nos em de da do das dos e ou pela pelo pelas pelos por para "
+    "com sem sob sobre ate apos entre contra perante segundo conforme sr sra srta dr dra".split()
+)
 _NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Þ][^\W\d_]*")
 _NEXT_WORD = re.compile(r"\s+([^\W\d_]+)")
 
@@ -260,7 +267,7 @@ class VariantPropagator:
             self.stats["ambiguo"] += 1
             return None
         entry, category = next(iter(owners.values()))
-        reason = self._refusal(word, entry)
+        reason = self._refusal(word, entry) or self._common_use(text, word, start)
         if reason:
             self.stats[reason] += 1
             return None
@@ -290,7 +297,7 @@ class VariantPropagator:
                     continue
                 # Sobrenome comum a mais de uma entrada da familia: vai para a de mais mencoes (empate: chave).
                 entry = max(owners, key=lambda item: (self.mentions[item.key], item.key))
-                reason = self._refusal(word, entry, surname=True)
+                reason = self._refusal(word, entry, surname=True) or self._common_use(text, word, start)
                 if reason:
                     self.stats[reason] += 1
                     occupied.append((start, end))  # a busca por pista de pessoa nao conta a mesma palavra de novo
@@ -320,7 +327,7 @@ class VariantPropagator:
                     self.stats["ambiguo"] += 1
                     continue
                 entry = next(iter(owners.values()))
-                reason = self._refusal(word, entry, surname=True)
+                reason = self._refusal(word, entry, surname=True) or self._common_use(text, word, start)
                 if reason:
                     self.stats[reason] += 1
                     continue
@@ -344,6 +351,24 @@ class VariantPropagator:
             return "dicionario"
         if word in common_words() and self.mentions[entry.key] < _MIN_FULL_MENTIONS_COMMON:
             return "dicionario"
+        return ""
+
+    @staticmethod
+    def _common_use(text: str, word: str, start: int) -> str:
+        """Palavra do dicionario em uso comum nao propaga, mesmo com 3+ mencoes da entrada completa, quando a
+        palavra anterior e capitalizada ("Conselho Nacional") ou vem "de/da/do/dos/das" + nome capitalizado
+        logo antes ("Receita Federal do Brasil", "Valor de Real"). Devolve o motivo ("dicionario") ou ""."""
+
+        if word not in common_words():
+            return ""
+        before = text[max(0, start - 60) : start]
+        if _CAPITALIZED_BEFORE_PREPOSITION.search(before):
+            return "dicionario"
+        previous = _PREVIOUS_WORD.search(before)
+        if previous is not None:
+            name = previous.group(1)
+            if len(name) >= 2 and name[:1].isupper() and fold_lexical(name) not in _NOT_A_NAME_BEFORE:
+                return "dicionario"
         return ""
 
     @staticmethod
