@@ -186,18 +186,28 @@ class VarianteSemRelacaoTests(unittest.TestCase):
         self.assertFalse(variant_related("empresa", "Beta Industrial Ltda", "https://eproc.jfsc.jus.br/x?chave=1"))
         self.assertFalse(variant_related("empresa", "Beta Industrial Ltda", "Ltda"))
 
-    def test_variante_sem_relacao_e_descartada_e_contada(self) -> None:
-        text = "A Gama Ficticia Ltda e Delta Outra SA. Veja a Beta Industrial Ltda."
+    def test_variante_sem_relacao_que_nao_parece_nome_e_descartada_e_contada(self) -> None:
+        text = "A Gama Ficticia Ltda e o Omega. Veja a Beta Industrial Ltda e o Epsilon."
         out, stats = run(
             [
-                mention("empresa", "Delta Outra SA", text, canonical="Beta Industrial Ltda"),
+                mention("empresa", "Omega", text, canonical="Beta Industrial Ltda"),
+                mention("empresa", "Epsilon", text, canonical="Beta Industrial Ltda"),
                 mention("empresa", "Beta Industrial Ltda", text, canonical="Beta Industrial Ltda"),
                 mention("empresa", "Gama Ficticia Ltda", text, canonical="Gama Ficticia"),
             ],
             text,
         )
         self.assertEqual([item.text for item in out], ["Beta Industrial Ltda", "Gama Ficticia Ltda"])
-        self.assertEqual(stats.variante, 1)
+        self.assertEqual((stats.variante, stats.variante_aceita), (2, 0))
+
+    def test_nome_fantasia_de_varias_palavras_e_aceito_e_contado_a_parte(self) -> None:
+        text = "A Alfa Comércio de Alimentos Ltda, conhecida como Padaria Pão Quente."
+        out, stats = run(
+            [mention("empresa", "Padaria Pão Quente", text, canonical="Alfa Comércio de Alimentos Ltda")], text
+        )
+        self.assertEqual([item.text for item in out], ["Padaria Pão Quente"])
+        self.assertEqual((stats.variante, stats.variante_aceita), (0, 1))
+        self.assertIn("aceitas por parecerem nome proprio: 1", " ".join(stats.audit_lines()))
 
     def test_variante_relacionada_entra_na_mesma_entrada(self) -> None:
         text = "A Beta Industrial Ltda, www.betaindustrial.com.br."

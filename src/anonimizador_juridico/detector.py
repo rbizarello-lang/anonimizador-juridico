@@ -33,7 +33,8 @@ _TYPE_PRIORITY = {
     # 11 digitos como o CPF).
     "BR_NIRE": 101,
     "BR_CNH": 101,
-    "BR_URL": 95,
+    # H9-f: URL com chave vence processo CNJ e CPF que ela traga na query (senao sobra &chave= em claro).
+    "BR_URL": 102,
     "BR_EPROC": 82,
     "BR_CEP": 80,
     "BR_PHONE": 70,

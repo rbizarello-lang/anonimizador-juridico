@@ -126,6 +126,8 @@ class LlmHygieneStats:
     url: int = 0
     duas_pessoas: int = 0
     variante: int = 0
+    # H9-f: variante de 2+ palavras capitalizadas sem palavra em comum com o canonico, aceita (nome fantasia).
+    variante_aceita: int = 0
     banco_endereco: int = 0
     colado_recortado: int = 0
     colado_descartado: int = 0
@@ -156,6 +158,10 @@ class LlmHygieneStats:
                 f"URL ou dominio {self.url}, duas pessoas {self.duas_pessoas}, "
                 f"variante sem relacao {self.variante}, banco como endereco {self.banco_endereco}); "
                 f"entradas mantidas pelo papel publico do LLM: {kept_public}; papel misto: {mixed}"
+            ),
+            (
+                "Variantes sem palavra em comum com o nome canonico, aceitas por parecerem nome proprio: "
+                f"{self.variante_aceita}"
             ),
             (
                 f"Mencoes do LLM coladas a numero: recortadas {self.colado_recortado}, "
@@ -273,7 +279,9 @@ def _known_full_names(mentions: Sequence[Mention], known_people: Iterable[str]) 
     return names
 
 
-def _geo_reason(kind: str, value: str, text: str, start: int, end: int = -1) -> bool:
+def _geo_reason(
+    kind: str, value: str, text: str, start: int, end: int = -1, roster_names: Sequence[Sequence[str]] = ()
+) -> bool:
     """Municipio, estado, UF ou lugar solto onde devia haver pessoa ou empresa (ou rua)."""
 
     if kind == "endereco":
@@ -290,7 +298,12 @@ def _geo_reason(kind: str, value: str, text: str, start: int, end: int = -1) -> 
     tail = _UF_TAIL.search(value)
     if tail is not None and is_geo_name(value[: tail.start()]):
         return True
-    if kind == "pessoa" and len(words) >= 2 and is_geo_name(value) and not _person_cue(text, start, end):
+    if (
+        kind == "pessoa"
+        and len(words) >= 2
+        and is_geo_name(value)
+        and not _person_with_place_name(text, start, end, value, roster_names)
+    ):
         return True
     # Rotulo de lugar logo antes ("Comarca de X", "Bairro: X"): nome curto sem sufixo societario.
     if 0 <= start <= len(text) and len(words) <= 3 and not _COMPANY_SUFFIX.search(value) and place_label_before(text, start):
@@ -399,11 +412,37 @@ _COUPLE_POSSESSIVE = re.compile(r"(?i)\s+e\s+(?:sua|seu|suas|seus)\s+")
 _AND_SPLIT = re.compile(r"\s+[eE]\s+")
 
 
+# Sobrenomes comuns e sufixos de parentesco: "Joao Pedro de Almeida E SILVA" e UM nome, nao dois.
+_COMMON_SURNAMES = frozenset(
+    "silva souza santos oliveira pereira costa castro lima ferreira almeida rodrigues alves carvalho gomes "
+    "martins araujo ribeiro barbosa melo cardoso rocha dias nunes moreira teixeira correia mendes freitas "
+    "filho junior neto sobrinho netto".split()
+)
+
+
+def _capitalized_words(part: str) -> list[str]:
+    return [word for word in _WORD.findall(part) if word[:1].isupper() and fold_lexical(word) not in _CONNECTIVES]
+
+
 def _is_two_people(value: str) -> bool:
+    """Duas pessoas numa mencao so: "Fulano e sua filha/seu filho", ou "Fulano Silva e Beltrana Souza" (cada
+    lado com 2+ palavras capitalizadas e o segundo comecando por prenome, nao por sobrenome comum). Nome com
+    "e" no meio ("Joao Pedro de Almeida e Silva", "MARIA DE SOUZA E SILVA", "Ana Paula Ferreira e Castro")
+    e UM nome e passa. Duas palavras soltas ("Maria e Jose") so contam quando o segundo nao e sobrenome."""
+
     if _COUPLE_POSSESSIVE.search(value):
         return True
     parts = _AND_SPLIT.split(value.strip())
-    return len(parts) >= 2 and all(part[:1].isupper() for part in parts)
+    if len(parts) != 2 or not all(part[:1].isupper() for part in parts):
+        return False
+    left, right = _capitalized_words(parts[0]), _capitalized_words(parts[1])
+    if not left or not right:
+        return False
+    if fold_lexical(right[0]) in _COMMON_SURNAMES:
+        return False
+    if len(left) >= 2 and len(right) >= 2:
+        return True
+    return len(left) == 1 and len(right) == 1
 
 
 # Cidade com sufixo de UF: "Balneario Camboriu/SC", "Porto Alegre - RS", "Itajai, SC", "Joinville (SC)".
@@ -425,6 +464,46 @@ def _person_cue(text: str, start: int, end: int) -> bool:
     before = text[max(0, start - 40) : start]
     after = text[end : min(len(text), end + 40)]
     return bool(_PERSON_CUE_BEFORE.search(before) or _PERSON_CUE_AFTER.match(after))
+
+
+# H9-f: rotulo "Nome:" antes, ou virgula e qualificacao de pessoa em ate 80 caracteres depois.
+_NAME_LABEL_BEFORE = re.compile(r"(?i)\b(?:nome(?:\s+completo)?|parte|pessoa|titular)\s*:\s*$")
+_QUALIFICATION_AFTER = re.compile(
+    r"(?i)^\s*,[^\n]{0,80}?\b(?:brasileir|casad|solteir|divorciad|vi[uú]v|portador|inscrit|residente|"
+    r"domiciliad|nascid|cpf|rg|empres[aá]ri|aposentad|advogad)"
+)
+# Contexto de lugar ao redor: "cidade de X", "comarca de X", "municipio de X", "em X," ou "X/UF" colado.
+_PLACE_BEFORE = re.compile(r"(?i)\b(?:cidade|comarca|munic[ií]pio|foro|distrito|localidade|natural)\s+(?:d[eao]s?\s+)?$")
+_EM_BEFORE = re.compile(r"(?i)\bem\s+$")
+_PLACE_AFTER = re.compile(rf"^\s*(?:[/(–—-]\s*(?:{UF_SIGLAS})\b|,\s*(?:{UF_SIGLAS})\b)")
+
+
+def _place_context(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - 40) : start]
+    after = text[end : min(len(text), end + 40)]
+    if _PLACE_BEFORE.search(before) or _PLACE_AFTER.match(after):
+        return True
+    return bool(_EM_BEFORE.search(before) and re.match(r"^\s*[,/(–—-]", after))
+
+
+def _person_with_place_name(text: str, start: int, end: int, value: str, roster_names: Sequence[Sequence[str]]) -> bool:
+    """H9-f: pessoa de nome igual ao de municipio ("Pedro Leopoldo", "Maria Helena", "Antonio Carlos", "Paulo
+    Lopes"): fica quando o nome ja e pessoa do elenco, ha pista de pessoa (cargo/papel antes, qualificacao
+    depois, rotulo "Nome:"), ou o texto em volta nao traz contexto de lugar nem sufixo /UF. Com /UF ou termo
+    de lugar e sem nenhuma pista de pessoa, continua cidade."""
+
+    words = _person_words(value)
+    if any(words == list(names) or _contains_run(names, words) for names in roster_names):
+        return True
+    if start < 0:
+        return False
+    if _person_cue(text, start, end):
+        return True
+    before = text[max(0, start - 40) : start]
+    after = text[end : min(len(text), end + 80)]
+    if _NAME_LABEL_BEFORE.search(before) or _QUALIFICATION_AFTER.match(after):
+        return True
+    return not _place_context(text, start, end)
 
 
 # Instituicao financeira onde so cabe endereco (o juizo do lote cobre a posicao de SISBAJUD; aqui o texto).
@@ -549,15 +628,22 @@ def filter_llm_mentions(
 
     items = list(mentions)
     extra = tuple(str(item) for item in extra_keep if str(item).strip())
+    known_people = list(known_people)
     full_names = _known_full_names(items, known_people)
+    roster_names = _known_full_names([], known_people)
     kept: list[Mention] = []
     for mention in items:
-        reason = _reject(mention, text, extra, full_names)
+        reason = _reject(mention, text, extra, full_names, roster_names)
         if reason is not None:
             if stats is not None:
                 setattr(stats, reason, getattr(stats, reason) + 1)
             continue
         kind = normalize_kind(mention.kind)
+        canonical = strip_token_tail(mention.canonical or "")
+        value = strip_token_tail(mention.text)
+        if canonical and value and canonical != value and not variant_related(kind, canonical, value):
+            if stats is not None:
+                stats.variante_aceita += 1
         if kind in {"pessoa", "empresa"}:
             trimmed = _trim_glued(text, mention, stats)
             if trimmed is None:
@@ -569,7 +655,13 @@ def filter_llm_mentions(
     return kept
 
 
-def _reject(mention: Mention, text: str, extra: Sequence[str], full_names: Sequence[Sequence[str]]) -> str | None:
+def _reject(
+    mention: Mention,
+    text: str,
+    extra: Sequence[str],
+    full_names: Sequence[Sequence[str]],
+    roster_names: Sequence[Sequence[str]] = (),
+) -> str | None:
     kind = normalize_kind(mention.kind)
     if kind not in _KINDS:
         return "classe"
@@ -599,7 +691,7 @@ def _reject(mention: Mention, text: str, extra: Sequence[str], full_names: Seque
         return "duas_pessoas"
     if is_street and _is_bank_as_address(value):
         return "banco_endereco"
-    if _geo_reason(kind, value, text, mention.start, mention.end):
+    if _geo_reason(kind, value, text, mention.start, mention.end, roster_names):
         return "geografia"
     if kind == "pessoa":
         words = _person_words(value)
@@ -609,8 +701,22 @@ def _reject(mention: Mention, text: str, extra: Sequence[str], full_names: Seque
                 return "uma_palavra"
     canonical = strip_token_tail(mention.canonical or "")
     if canonical and canonical != value and not variant_related(kind, canonical, value):
-        return "variante"
+        if not _looks_like_proper_name(kind, value):
+            return "variante"
     return None
+
+
+def _looks_like_proper_name(kind: str, value: str) -> bool:
+    """H9-f: variante sem palavra em comum com o canonico ("Padaria Pao Quente" para "Alfa Comercio de Alimentos
+    Ltda", apelido de varias palavras) so e descartada se NAO parecer nome proprio. Ja passaram pelos filtros
+    de minusculas, rotulo, URL, termo protegido e termo juridico; aqui exige 2+ palavras capitalizadas e,
+    se houver digito, sufixo societario."""
+
+    if len(_capitalized_words(value)) < 2:
+        return False
+    if any(char.isdigit() for char in value) and not _COMPANY_SUFFIX.search(value):
+        return False
+    return True
 
 
 # --- papeis do LLM (item 2) ---------------------------------------------------------------------
