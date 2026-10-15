@@ -32,6 +32,10 @@
   de processo e CPF, "manter" indevido nas entradas do LLM, propagacao de variante aceita no elenco (marca curta,
   prenome, sobrenome em "familia X", OCR), nome de arquivo pseudonimizado, imagem omitida no docx, endereco
   recortado antes da cidade.
+  2.9.1 = H9-g: token estendido por adjacencia sobre a palavra de nome colada ("[PESSOA_2] Domenico"), recusas da
+  propagacao contadas por motivo, sobrenome de municipio com pista de pessoa, marca curta ligada a razao social,
+  dicionario em uso comum, veiculo so com modelo ou numero, "socio" fora da prova de nome particular, cargos de
+  magistrado, cache de extracao do docx com versao propria.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -49,7 +53,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.9.0"
+DETECTION_VERSION = "2.9.1"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
