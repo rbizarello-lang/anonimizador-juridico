@@ -54,6 +54,8 @@ COMMON_FILE = Path(__file__).with_name("data") / "palavras_comuns.txt"
 _WORDS = re.compile(r"[^\W\d_]+")
 _CONNECTIVES = frozenset({"de", "da", "do", "das", "dos", "e"})
 _LOCAL_SOURCE = "motor_local"
+# H9-g: palavra generica que abre a razao social e nao e a marca ("Comercio Alfa Ltda" -> marca "Alfa").
+_GENERIC_LEAD = frozenset({"comercio", "industria", "transportes"})
 _MIN_FULL_MENTIONS_LOCAL = 2
 _MIN_FULL_MENTIONS_COMMON = 3
 _OCR_RATIO = 0.85
@@ -133,6 +135,8 @@ class VariantPropagator:
         self._surnames: dict[str, list[RosterEntry]] = defaultdict(list)
         self._people_words: set[str] = set()
         self._prepared = False
+        # chave da entrada de marca curta -> chave da razao social a que foi ligada (H9-g)
+        self.links: dict[str, str] = {}
         self._owners: tuple[int, dict[str, set[str]]] | None = None
 
     # --- preparo ----------------------------------------------------------------------------------
@@ -154,11 +158,52 @@ class VariantPropagator:
                 text, full, anchored=anchored, folded=folded or fold_with_index(text)
             ):
                 self.mentions[span.canonical_key] += 1
+        registered: list[RosterEntry] = []
         for entry in full:
             if entry.source == _LOCAL_SOURCE and self.mentions[entry.key] < _MIN_FULL_MENTIONS_LOCAL:
                 continue
             self._register(entry)
+            registered.append(entry)
+        self._link_short_brands(registered)
         self._prepared = True
+
+    def _link_short_brands(self, registered: Sequence[RosterEntry]) -> None:
+        """H9-g: a entrada ``empresa`` de uma palavra ("Alfa") e ligada a UMA razao social completa cuja primeira
+        palavra de conteudo (fora de Comercio, Industria, Transportes e artigos) e a mesma. Vira variante dela:
+        propaga pelas mesmas salvaguardas e leva o token da razao social (``links``). Duas razoes sociais
+        candidatas: nao liga; a palavra fica ambigua e cada ocorrencia e contada como ambiguidade."""
+
+        leads: dict[str, list[RosterEntry]] = defaultdict(list)
+        for entry in registered:
+            if entry.kind != "empresa":
+                continue
+            words = [word for word in _content_words(entry) if word not in _GENERIC_LEAD]
+            if words:
+                leads[words[0]].append(entry)
+        taken = {entry.key for entry in registered}
+        for short in self._roster.entries:
+            if short.kind != "empresa" or short.action != TOKENIZE or short.key in taken:
+                continue
+            word = _single_word(short.kind, short.name)
+            candidates = leads.get(word) if len(word) >= 4 else None
+            if not candidates:
+                continue
+            for target in candidates:
+                self._words[word][target.key] = (target, "marca")
+            if len(candidates) == 1:
+                self.links[short.key] = candidates[0].key
+
+    def relink(self, spans: Sequence[EntitySpan]) -> list[EntitySpan]:
+        """Spans da marca curta ligada levam a chave (e o token) da razao social."""
+
+        if not self.links:
+            return list(spans)
+        return [
+            replace(span, canonical_key=self.links[span.canonical_key])
+            if span.canonical_key in self.links
+            else span
+            for span in spans
+        ]
 
     def _register(self, entry: RosterEntry) -> None:
         content = _content_words(entry)

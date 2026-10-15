@@ -473,8 +473,8 @@ def _run_llm_job(
         map_path.parent / ROSTER_FILENAME,
         annotations={
             entry.key: {
-                "token": tokens.get(entry.key, ""),
-                "ocorrencias": occurrences.get(entry.key, 0),
+                "token": tokens.get(variants.links.get(entry.key, entry.key), ""),
+                "ocorrencias": occurrences.get(variants.links.get(entry.key, entry.key), 0),
             }
             for entry in roster.entries
         },
@@ -1203,7 +1203,11 @@ def _tokenize(
             spans.append(replace(span, canonical_key=key))
     if variants is not None:
         spans.extend(variants.spans(text, [*ids, *spans], folded))
-    entities = resolve_overlaps([*ids, *spans])
+    merged = [*ids, *spans]
+    if variants is not None:
+        # H9-g: a marca curta ligada a uma razao social leva o token dela.
+        merged = variants.relink(merged)
+    entities = resolve_overlaps(merged)
     if variants is not None:
         # H9-g: palavra de nome colada no token da pessoa (``[PESSOA_2] Domenico``) entra no mesmo token.
         entities = variants.extend_adjacent(text, entities)
