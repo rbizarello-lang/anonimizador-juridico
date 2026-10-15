@@ -129,6 +129,9 @@ class LlmHygieneStats:
     # H9-f: variante de 2+ palavras capitalizadas sem palavra em comum com o canonico, aceita (nome fantasia).
     variante_aceita: int = 0
     banco_endereco: int = 0
+    # H9-f: modelo ou marca de veiculo como empresa; endereco recortado antes da cidade.
+    veiculo: int = 0
+    endereco_recortado: int = 0
     colado_recortado: int = 0
     colado_descartado: int = 0
     # Juizo do lote sobre as entradas do LLM (``judge_llm_entries``).
@@ -148,7 +151,7 @@ class LlmHygieneStats:
             self.classe + self.ancora + self.minusculas + self.protegido
             + self.rotulo_numero + self.juridico + self.geografia + self.uma_palavra
             + self.rotulo_formulario + self.ordinal + self.url + self.duas_pessoas
-            + self.variante + self.banco_endereco
+            + self.variante + self.banco_endereco + self.veiculo
         )
 
     def audit_lines(self, kept_public: int = 0, mixed: int = 0) -> list[str]:
@@ -160,7 +163,8 @@ class LlmHygieneStats:
                 f"termo juridico {self.juridico}, geografia {self.geografia}, uma palavra {self.uma_palavra}, "
                 f"rotulo de formulario {self.rotulo_formulario}, clausula ordinal {self.ordinal}, "
                 f"URL ou dominio {self.url}, duas pessoas {self.duas_pessoas}, "
-                f"variante sem relacao {self.variante}, banco como endereco {self.banco_endereco}); "
+                f"variante sem relacao {self.variante}, banco como endereco {self.banco_endereco}, "
+                f"marca ou modelo de veiculo {self.veiculo}); "
                 f"entradas mantidas pelo papel publico do LLM: {kept_public}; papel misto: {mixed}"
             ),
             (
@@ -169,7 +173,8 @@ class LlmHygieneStats:
             ),
             (
                 f"Mencoes do LLM coladas a numero: recortadas {self.colado_recortado}, "
-                f"descartadas {self.colado_descartado}; aceitas no elenco: {self.aceitas}"
+                f"descartadas {self.colado_descartado}; enderecos recortados antes da cidade "
+                f"{self.endereco_recortado}; aceitas no elenco: {self.aceitas}"
             ),
             (
                 "Juizo do lote sobre as entradas do LLM: mantidas por agente publico "
@@ -403,11 +408,14 @@ _URL_INSTITUTIONAL = re.compile(r"(?i)\.(?:jus|gov|leg|mp|def)\.br\b|\.sc\.gov\b
 def _is_url_mention(kind: str, value: str) -> bool:
     if not _URL_MARK.search(value):
         return False
+    # H9-f: so o dominio nu ("www.empresa.com.br") pode ser nome de empresa; URL com esquema, caminho ou
+    # parametro nao e entidade, tenha chave ou nao.
+    bare = "?" not in value and "://" not in value and "/" not in value.strip().strip("/")
     private_domain = (
         kind == "empresa"
         and _DOMAIN.search(value) is not None
         and _URL_INSTITUTIONAL.search(value) is None
-        and "?" not in value
+        and bare
     )
     return not private_domain
 
@@ -512,6 +520,28 @@ def _person_with_place_name(text: str, start: int, end: int, value: str, roster_
     return not _place_context(text, start, end)
 
 
+# H9-f: marca ou modelo de veiculo ("Fiat Strada 2020", "Honda CG 160") nao e empresa. Lista pequena das marcas
+# mais comuns; com sufixo societario ou palavra de comercio ("Fiat Veiculos Ltda") a mencao segue empresa.
+_VEHICLE_BRANDS = frozenset(
+    "fiat volkswagen vw chevrolet gm ford toyota honda hyundai renault nissan jeep peugeot citroen mitsubishi "
+    "kia bmw mercedes audi volvo yamaha suzuki kawasaki iveco scania chery caoa byd harley".split()
+)
+_VEHICLE_TRADE = frozenset(
+    "veiculos automoveis automotores motos motors motor comercio concessionaria pecas distribuidora revenda "
+    "auto locadora locacao transportes transportadora do da de brasil".split()
+)
+_YEAR = re.compile(r"^(?:19|20)\d{2}(?:/(?:19|20)?\d{2})?$")
+
+
+def _is_vehicle(value: str) -> bool:
+    if _COMPANY_SUFFIX.search(value):
+        return False
+    words = fold_lexical(value).replace("-", " ").split()
+    if not words or words[0] not in _VEHICLE_BRANDS or len(words) > 4:
+        return False
+    return not any(word in _VEHICLE_TRADE for word in words[1:])
+
+
 # Instituicao financeira onde so cabe endereco (o juizo do lote cobre a posicao de SISBAJUD; aqui o texto).
 _BANK_WORDS = re.compile(
     r"(?i)\b(?:banco|caixa\s+econ[oô]mica|cooperativa\s+de\s+cr[eé]dito|sicredi|sicoob|bradesco|ita[uú]|"
@@ -614,6 +644,46 @@ def _trim_glued(text: str, mention: Mention, stats: LlmHygieneStats | None) -> M
     return replace(mention, text=piece, start=start, end=end, source_text=piece)
 
 
+_TAIL_PART = re.compile(r"\s*,\s*([^,]+)$")
+_CITY_UF = re.compile(rf"\s*(?:[/(–—-])\s*(?:{UF_SIGLAS})\s*\)?\s*$")
+
+
+def _city_tail(part: str) -> bool:
+    """Ultimo pedaco do endereco que e so UF ("SC"), cidade ("Itajai") ou cidade com UF ("Itajai/SC")."""
+
+    part = part.strip()
+    if re.fullmatch(rf"(?:{UF_SIGLAS})", part):
+        return True
+    name = _CITY_UF.sub("", part).strip()
+    return bool(name) and not any(char.isdigit() for char in name) and is_geo_name(name)
+
+
+def _trim_address_city(text: str, mention: Mention, stats: LlmHygieneStats | None) -> Mention:
+    """H9-f: endereco que termina em ", Cidade", ", Cidade/UF" ou ", UF" e recortado antes da cidade: o token
+    cobre a rua, o numero e o bairro; a cidade fica em claro (dado publico que o leitor precisa para o foro)."""
+
+    start, end = mention.start, mention.end
+    if not 0 <= start < end <= len(text):
+        return mention
+    value = text[start:end]
+    cut, changed = len(value), False
+    while True:
+        found = _TAIL_PART.search(value[:cut])
+        if found is None or not _city_tail(found.group(1)):
+            break
+        cut, changed = found.start(), True
+    if not changed:
+        return mention
+    piece = value[:cut].rstrip(" ,;-–—")
+    if len(piece) < 3 or (is_geo_name(piece) and not any(char.isdigit() for char in piece)):
+        return mention
+    if stats is not None:
+        stats.endereco_recortado += 1
+    canonical = strip_token_tail(mention.canonical or "")
+    canonical = piece if not canonical or canonical.startswith(piece) else canonical
+    return replace(mention, text=piece, end=start + len(piece), source_text=piece, canonical=canonical)
+
+
 def _glued_drop(stats: LlmHygieneStats | None) -> None:
     if stats is not None:
         stats.colado_descartado += 1
@@ -655,6 +725,8 @@ def filter_llm_mentions(
             if trimmed is None:
                 continue
             mention = trimmed
+        elif kind == "endereco":
+            mention = _trim_address_city(text, mention, stats)
         kept.append(mention)
     if stats is not None:
         stats.aceitas += len(kept)
@@ -693,6 +765,8 @@ def _reject(
         return "rotulo_formulario"
     if not is_street and _is_legal_term(value):
         return "juridico"
+    if kind == "empresa" and _is_vehicle(value):
+        return "veiculo"
     if kind == "pessoa" and _is_two_people(value):
         return "duas_pessoas"
     if is_street and _is_bank_as_address(value):

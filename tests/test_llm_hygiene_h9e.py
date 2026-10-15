@@ -236,7 +236,7 @@ class AuditoriaH9eTests(unittest.TestCase):
         line = stats.audit_lines()[0]
         self.assertIn(
             "rotulo de formulario 3, clausula ordinal 4, URL ou dominio 5, duas pessoas 6, "
-            "variante sem relacao 7, banco como endereco 8)",
+            "variante sem relacao 7, banco como endereco 8, marca ou modelo de veiculo 0)",
             line,
         )
         self.assertIn("descartadas 33 (", line)

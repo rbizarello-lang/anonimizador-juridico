@@ -108,3 +108,56 @@ class UrlComChaveVenceProcessoTests(unittest.TestCase):
         self.assertNotIn("key=", out)
         self.assertEqual(out.count("[URL_"), 2)
         self.assertIn("[PROCESSO_1]", out)  # o processo solto continua sendo processo
+
+
+class EnderecoEEntidadesQueNaoSaoEntidadeTests(unittest.TestCase):
+    def test_endereco_e_recortado_antes_da_cidade(self) -> None:
+        text = (
+            "Mora na Rua das Acácias, 120, Centro, Itajaí/SC. Sede na Avenida Brasil, 50, Joinville, SC. "
+            "Escritório na Rua Sete, 9, Porto Alegre. Fica na Rua Quinze, 3, Itajaí, SC."
+        )
+        casos = {
+            "Rua das Acácias, 120, Centro, Itajaí/SC": "Rua das Acácias, 120, Centro",
+            "Avenida Brasil, 50, Joinville, SC": "Avenida Brasil, 50",
+            "Rua Sete, 9, Porto Alegre": "Rua Sete, 9",
+            "Rua Quinze, 3, Itajaí, SC": "Rua Quinze, 3",
+        }
+        for original, esperado in casos.items():
+            with self.subTest(original=original):
+                out, stats = run([mention("endereco", original, text)], text)
+                self.assertEqual([item.text for item in out], [esperado])
+                self.assertEqual(out[0].canonical, esperado)
+                self.assertEqual(text[out[0].start : out[0].end], esperado)
+                self.assertEqual(stats.endereco_recortado, 1)
+
+    def test_endereco_sem_cidade_no_fim_nao_muda(self) -> None:
+        text = "Mora na Rua das Acácias, 120, Centro. Outra, Rua do Porto, 30."
+        out, stats = run([mention("endereco", "Rua das Acácias, 120, Centro", text)], text)
+        self.assertEqual([item.text for item in out], ["Rua das Acácias, 120, Centro"])
+        self.assertEqual(stats.endereco_recortado, 0)
+
+    def test_marca_e_modelo_de_veiculo_nao_sao_empresa(self) -> None:
+        text = "Veículos: Fiat Strada 2020, Honda CG 160. A Fiat Veículos Ltda vendeu. A Toyota do Brasil Ltda."
+        for value in ("Fiat Strada 2020", "Honda CG 160"):
+            with self.subTest(value=value):
+                out, stats = run([mention("empresa", value, text)], text)
+                self.assertEqual((out, stats.veiculo), ([], 1))
+        for value in ("Fiat Veículos Ltda", "Toyota do Brasil Ltda"):
+            with self.subTest(value=value):
+                self.assertTrue(_kept("empresa", value, text))
+
+    def test_url_sem_chave_nao_e_entidade_mas_dominio_nu_de_empresa_passa(self) -> None:
+        text = "Veja https://www.exemplo-privado.com.br/produtos e https://www.trf4.jus.br e www.vidracaria-alvorada.com.br."
+        for value in ("https://www.exemplo-privado.com.br/produtos", "https://www.trf4.jus.br"):
+            with self.subTest(value=value):
+                out, stats = run([mention("empresa", value, text)], text)
+                self.assertEqual((out, stats.url), ([], 1))
+        self.assertTrue(_kept("empresa", "www.vidracaria-alvorada.com.br", text))
+
+    def test_linha_da_auditoria_leva_as_contagens(self) -> None:
+        from anonimizador_app.llm_hygiene import LlmHygieneStats
+
+        stats = LlmHygieneStats(veiculo=4, endereco_recortado=5)
+        text = "\n".join(stats.audit_lines())
+        self.assertIn("marca ou modelo de veiculo 4", text)
+        self.assertIn("enderecos recortados antes da cidade 5", text)
