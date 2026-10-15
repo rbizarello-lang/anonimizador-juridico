@@ -1,0 +1,303 @@
+"""Propagacao de variante aceita no elenco (H9-f; decisao do Operador, revisa o Veredito 2.0).
+
+Ate o H9-e a variante de uma palavra (marca curta da empresa, prenome isolado, sobrenome em "familia X") so
+recebia token onde o modelo a apontou: o resto do lote ficava em claro, embora o elenco tivesse a entidade
+completa (medido: marca curta em claro 16 a 41 vezes no arquivo A; "marca de uma palavra propagada: 0").
+
+Esta camada leva a variante a TODAS as ocorrencias do lote, com o mesmo token da entrada completa, quando:
+
+- a variante esta ligada a uma entrada COMPLETA do elenco (2+ palavras de conteudo) que o LLM trouxe, ou que o
+  motor local achou em 2+ mencoes;
+- tem limite de palavra, esta escrita como nome proprio (inicial maiuscula) e nao cai dentro de nome ja achado;
+- nao e termo protegido, nem nome de municipio ou estado, nem rotulo de formulario, nem palavra do dicionario
+  ``data/palavras_comuns.txt`` (essas so propagam se a entrada completa tiver 3+ mencoes; "Uniao" e ente
+  publico nunca);
+- pertence a uma entrada so (a mesma palavra em duas entradas e ambigua e fica como estava).
+
+Por que nao reabre o P13 (super-redacao do Veredito 2.0): a palavra nao vem de lista acumulada nem de
+particula de razao social; vem de uma entrada completa DESTE lote, com o mesmo token dela, e passa pelas
+mesmas travas de geografia, termo protegido e dicionario. O que a regra nao prova fica em claro.
+
+Formas:
+
+- marca curta de empresa: variante de uma palavra igual a primeira palavra de conteudo da razao social, sem
+  outra palavra de nome proprio logo depois;
+- prenome isolado: primeira palavra do nome da pessoa, so com pista de pessoa a ate 40 caracteres antes
+  ("Sr.", "Sra.", "socio", "conjuge", "filho", "o executado", "requerido"...);
+- sobrenome em "familia X" / "familias X e Y": so o sobrenome vira token, a palavra "familia" fica;
+- grafia de OCR: variante de uma palavra com similaridade >= 0,85 com a marca ou o prenome (com as mesmas
+  travas da forma que ela imita). A forma em caixa alta e a mesma palavra: a busca ignora a caixa.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Sequence
+from difflib import SequenceMatcher
+from functools import lru_cache
+from pathlib import Path
+
+from anonimizador_juridico import EntitySpan
+from anonimizador_juridico.pseudonymizer import fold_lexical
+
+from .batch_propagation import _LABEL_WORDS, _brand_hits, _capitalized
+from .geo_names import is_geo_word
+from .llm_hygiene import _label_vocabulary
+from .propagation import FoldedText, fold_value, fold_with_index, is_protected, protected_forms, spans_for_roster
+from .roster import TOKENIZE, Roster, RosterEntry, entity_core
+
+RECOGNIZER = "VarianteElenco"
+_SCORE = 0.9
+COMMON_FILE = Path(__file__).with_name("data") / "palavras_comuns.txt"
+_WORDS = re.compile(r"[^\W\d_]+")
+_CONNECTIVES = frozenset({"de", "da", "do", "das", "dos", "e"})
+_LOCAL_SOURCE = "motor_local"
+_MIN_FULL_MENTIONS_LOCAL = 2
+_MIN_FULL_MENTIONS_COMMON = 3
+_OCR_RATIO = 0.85
+_CUE_WINDOW = 40
+# Ente publico e orgao: nunca propaga, nem com 3+ mencoes.
+_NEVER = frozenset(
+    "uniao fazenda estado municipio republica federal justica tribunal juizo vara comarca foro cartorio "
+    "ministerio secretaria prefeitura delegacia procuradoria defensoria".split()
+)
+# Pista de pessoa antes do prenome isolado.
+_PERSON_CUE = re.compile(
+    r"(?i)\b(?:sr|sra|srta|dr|dra)\b\.?|\bs[oó]ci[oa]\b|\bc[oô]njuge\b|\bcompanheir[oa]|\bfilh[oa]|\besposa\b|"
+    r"\bmarido\b|\b[oa]\s+executad[oa]\b|\brequerid[oa]"
+)
+_FAMILY = re.compile(
+    r"\b(?i:fam[ií]lias?)\s+(?P<names>[A-ZÀ-ÖØ-Þ][^\W\d_]*(?:\s*(?:,|\be\b)\s*[A-ZÀ-ÖØ-Þ][^\W\d_]*)*)"
+)
+_NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Þ][^\W\d_]*")
+_NEXT_WORD = re.compile(r"\s+([^\W\d_]+)")
+
+
+@lru_cache(maxsize=1)
+def common_words() -> frozenset[str]:
+    """Palavras do dicionario ``data/palavras_comuns.txt``, dobradas (sem acento, minusculas)."""
+
+    words: set[str] = set()
+    for raw in COMMON_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            words.add(fold_lexical(line))
+    return frozenset(words)
+
+
+def _content_words(entry: RosterEntry) -> list[str]:
+    words = _WORDS.findall(entity_core(entry.kind, entry.name))
+    return [word for word in words if word not in _CONNECTIVES and len(word) >= 3]
+
+
+def _single_word(kind: str, value: str) -> str:
+    """A unica palavra de conteudo da variante (sem sufixo societario nem titulo), ou "" se ha mais de uma."""
+
+    words = [word for word in _WORDS.findall(entity_core(kind, value)) if word not in _CONNECTIVES]
+    return words[0] if len(words) == 1 else ""
+
+
+class VariantPropagator:
+    """Uma por rodada: ``prepare`` conta as mencoes das entradas completas em todos os arquivos do lote,
+    ``spans`` acha as variantes de um arquivo. ``stats`` acumula as contagens da AUDITORIA."""
+
+    def __init__(self, roster: Roster, exclusions: Iterable[str] = ()) -> None:
+        self._roster = roster
+        self._protected = protected_forms(tuple(exclusions))
+        self.stats: Counter[str] = Counter()
+        self.mentions: Counter[str] = Counter()
+        # palavra dobrada -> {chave da entrada: (entrada, categoria)}
+        self._words: dict[str, dict[str, tuple[RosterEntry, str]]] = defaultdict(dict)
+        # sobrenome dobrado -> entradas de pessoa que o trazem
+        self._surnames: dict[str, list[RosterEntry]] = defaultdict(list)
+        self._people_words: set[str] = set()
+        self._prepared = False
+
+    # --- preparo ----------------------------------------------------------------------------------
+    def prepare(self, files: Iterable[tuple[str, FoldedText | None, Sequence[tuple[int, int, str]]]]) -> None:
+        """``files``: (texto, texto dobrado ou None, ancoras) de cada arquivo do lote."""
+
+        full = [
+            entry
+            for entry in self._roster.entries
+            if entry.action == TOKENIZE
+            and entry.kind in {"pessoa", "empresa"}
+            and entry.source != "lista"
+            and len(_content_words(entry)) >= 2
+        ]
+        for text, folded, anchored in files:
+            if not full:
+                break
+            for span in spans_for_roster(
+                text, full, anchored=anchored, folded=folded or fold_with_index(text)
+            ):
+                self.mentions[span.canonical_key] += 1
+        for entry in full:
+            if entry.source == _LOCAL_SOURCE and self.mentions[entry.key] < _MIN_FULL_MENTIONS_LOCAL:
+                continue
+            self._register(entry)
+        self._prepared = True
+
+    def _register(self, entry: RosterEntry) -> None:
+        content = _content_words(entry)
+        if entry.kind == "pessoa":
+            self._people_words.update(content)
+            self._words[content[0]][entry.key] = (entry, "prenome")
+            for word in content[1:]:
+                if len(word) >= 4:
+                    self._surnames[word].append(entry)
+            targets = (("prenome", content[0]),)
+        else:
+            targets = (("marca", content[0]),)
+        for value in entry.variants:
+            word = _single_word(entry.kind, value)
+            if not word or len(word) < 4:
+                continue
+            for category, base in targets:
+                if word == base:
+                    if category == "marca":
+                        self._words[word][entry.key] = (entry, "marca")
+                elif (
+                    len(word) >= 5
+                    and len(base) >= 5
+                    and SequenceMatcher(None, word, base).ratio() >= _OCR_RATIO
+                ):
+                    self._words[word][entry.key] = (entry, "ocr")
+
+    # --- busca ------------------------------------------------------------------------------------
+    def spans(self, text: str, taken: Sequence[EntitySpan], folded: FoldedText | None = None) -> list[EntitySpan]:
+        """Variantes do elenco neste texto, so fora do que ``taken`` ja cobre."""
+
+        if not self._prepared or not (self._words or self._surnames):
+            return []
+        source = folded or fold_with_index(text)
+        occupied = [(span.start, span.end) for span in taken]
+        found: list[EntitySpan] = []
+        for word in sorted(self._words):
+            owners = self._words[word]
+            for start, end in _brand_hits(text, source, word, occupied, self._protected, None):
+                if not _capitalized(text[start:end]):
+                    continue
+                span = self._decide(text, word, owners, start, end)
+                if span is not None:
+                    found.append(span)
+                    occupied.append((start, end))
+        found.extend(self._family_spans(text, occupied))
+        return found
+
+    def _decide(
+        self, text: str, word: str, owners: dict[str, tuple[RosterEntry, str]], start: int, end: int
+    ) -> EntitySpan | None:
+        if len(owners) > 1:
+            self.stats["ambiguo"] += 1
+            return None
+        entry, category = next(iter(owners.values()))
+        reason = self._refusal(word, entry)
+        if reason:
+            self.stats[reason] += 1
+            return None
+        if category in {"prenome", "ocr"} and entry.kind == "pessoa":
+            if not _PERSON_CUE.search(_cue_window(text, start)):
+                return None
+        if self._followed_by_name(text, end):
+            self.stats["contexto"] += 1
+            return None
+        if entry.kind == "empresa" and word in self._people_words:
+            self.stats["ambiguo"] += 1
+            return None
+        self.stats[category] += 1
+        return self._span(entry, start, end)
+
+    def _family_spans(self, text: str, occupied: list[tuple[int, int]]) -> list[EntitySpan]:
+        found: list[EntitySpan] = []
+        for match in _FAMILY.finditer(text):
+            base = match.start("names")
+            for name in _NAME_WORD.finditer(match.group("names")):
+                start, end = base + name.start(), base + name.end()
+                if any(start < other_end and other_start < end for other_start, other_end in occupied):
+                    continue
+                word = fold_lexical(name.group(0))
+                owners = self._surnames.get(word)
+                if not owners:
+                    continue
+                # Sobrenome comum a mais de uma entrada da familia: vai para a de mais mencoes (empate: chave).
+                entry = max(owners, key=lambda item: (self.mentions[item.key], item.key))
+                reason = self._refusal(word, entry)
+                if reason:
+                    self.stats[reason] += 1
+                    continue
+                self.stats["sobrenome"] += 1
+                found.append(self._span(entry, start, end))
+                occupied.append((start, end))
+        return found
+
+    def _refusal(self, word: str, entry: RosterEntry) -> str:
+        """Motivo para a palavra nao propagar, ou "" se pode."""
+
+        if word in _NEVER or is_protected(word, self._protected):
+            return "protegido"
+        if is_geo_word(word):
+            return "geografia"
+        if word in _label_words():
+            return "dicionario"
+        if word in common_words() and self.mentions[entry.key] < _MIN_FULL_MENTIONS_COMMON:
+            return "dicionario"
+        return ""
+
+    @staticmethod
+    def _followed_by_name(text: str, end: int) -> bool:
+        """A palavra abre outro nome proprio ("Alfa Textil", "Joel Souza"): nao e a variante isolada."""
+
+        match = _NEXT_WORD.match(text, end)
+        if match is None:
+            return False
+        following = match.group(1)
+        return following[:1].isupper() and following.casefold() not in _CONNECTIVES and not _is_suffix(following)
+
+    @staticmethod
+    def _span(entry: RosterEntry, start: int, end: int) -> EntitySpan:
+        return EntitySpan(
+            start=start,
+            end=end,
+            entity_type=entry.entity_type,
+            score=_SCORE,
+            recognizer=RECOGNIZER,
+            canonical_key=entry.key,
+            alvo=entry.name,
+        )
+
+    # --- auditoria --------------------------------------------------------------------------------
+    @property
+    def propagated(self) -> int:
+        return sum(self.stats[name] for name in ("marca", "prenome", "sobrenome", "ocr"))
+
+    def audit_line(self) -> str:
+        refused = self.stats["dicionario"] + self.stats["geografia"] + self.stats["protegido"]
+        other = self.stats["ambiguo"] + self.stats["contexto"]
+        return (
+            f"Variantes propagadas pelo elenco: {self.propagated} ocorrencias "
+            f"(marca curta {self.stats['marca']}, prenome {self.stats['prenome']}, "
+            f"sobrenome {self.stats['sobrenome']}, OCR {self.stats['ocr']}); "
+            f"recusadas por dicionario/geografia/protegido: {refused}; "
+            f"por ambiguidade ou contexto: {other}"
+        )
+
+
+# Fim de frase (nao o ponto de "Sr." nem de "Dra.") ou quebra de linha: a pista nao atravessa.
+_SENTENCE_BREAK = re.compile(r"(?i)(?<!\bsr)(?<!\bsra)(?<!\bsrta)(?<!\bdr)(?<!\bdra)[.;!?]\s+|\n")
+
+
+def _cue_window(text: str, start: int) -> str:
+    """Os ate 40 caracteres antes do nome, so da mesma frase."""
+
+    return _SENTENCE_BREAK.split(text[max(0, start - _CUE_WINDOW) : start])[-1]
+
+
+def _is_suffix(word: str) -> bool:
+    return word.casefold().rstrip(".") in {"ltda", "me", "epp", "eireli", "sa", "s", "cia"}
+
+
+@lru_cache(maxsize=1)
+def _label_words() -> frozenset[str]:
+    return frozenset(_LABEL_WORDS) | frozenset(_label_vocabulary())

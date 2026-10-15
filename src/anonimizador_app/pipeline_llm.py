@@ -98,6 +98,8 @@ from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
 from .roster import KEEP, TOKENIZE, UNKNOWN_ROLE, Mention, Roster
+from .variant_propagation import RECOGNIZER as VARIANT_RECOGNIZER
+from .variant_propagation import VariantPropagator
 from .rules import build_recognizers
 from .settings import AppSettings
 from .version import ENGINE_LOCAL
@@ -380,6 +382,9 @@ def _run_llm_job(
     occurrences: Counter[str] = Counter()
     refused_brands: Counter[tuple[str, str]] = Counter()
     held: list[str] = []
+    # H9-f: variante aceita no elenco (marca curta, prenome, sobrenome em "familia X", OCR) vale em todo o lote.
+    variants = VariantPropagator(roster, exclusions)
+    variants.prepare((item.text, item.folded, item.anchored) for item in states)
     for source in sources:
         if source in errors:
             outcomes.append(errors[source])
@@ -387,7 +392,7 @@ def _run_llm_job(
         state = next(item for item in states if item.source == source)
         # Troca final com o elenco completo do lote (so acrescenta tokens).
         entities, result, _offsets, refused = _tokenize(
-            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
+            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch, variants
         )
         refused_brands.update(refused)
         state.report.unread_pages = [
@@ -424,7 +429,7 @@ def _run_llm_job(
         occurrences.update(
             entity.canonical_key
             for entity in entities
-            if entity.recognizer == ROSTER_RECOGNIZER and entity.canonical_key in roster
+            if entity.recognizer in {ROSTER_RECOGNIZER, VARIANT_RECOGNIZER} and entity.canonical_key in roster
         )
         occurrences.update(_kept_occurrences(state, roster, exclusions))
         outcome = FileOutcome(
@@ -478,6 +483,7 @@ def _run_llm_job(
     notes.insert(1, ("marca de uma palavra (so contagens)", brand_guard_lines(refused_brands)))
     if batch is not None:
         notes.insert(2, ("elenco do lote: marca de uma palavra (so tokens e contagens)", batch.brand_report(mapping)))
+    notes.insert(1, ("variantes do elenco (so contagens)", [variants.audit_line()]))
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
@@ -1157,6 +1163,7 @@ def _tokenize(
     folded: FoldedText,
     mapping: PseudonymMap,
     batch: BatchRoster | None = None,
+    variants: VariantPropagator | None = None,
 ) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap, list[tuple[str, str]]]:
     spans = spans_for_roster(
         text,
@@ -1178,6 +1185,8 @@ def _tokenize(
             if entry is not None and entry.action == KEEP:
                 continue
             spans.append(replace(span, canonical_key=key))
+    if variants is not None:
+        spans.extend(variants.spans(text, [*ids, *spans], folded))
     entities = resolve_overlaps([*ids, *spans])
     result, offsets = pseudonymize_with_offsets(text, entities, mapping)
     return entities, result, offsets, refused
