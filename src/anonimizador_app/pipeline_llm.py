@@ -94,6 +94,7 @@ from .pipeline import (
     write_lote_guides,
     write_outcomes_index,
 )
+from .file_names import export_stem, write_name_map
 from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
@@ -382,6 +383,8 @@ def _run_llm_job(
     occurrences: Counter[str] = Counter()
     refused_brands: Counter[tuple[str, str]] = Counter()
     held: list[str] = []
+    # H9-f: nome pseudonimizado de cada arquivo (o que vai para a pasta exportavel e para o texto da AUDITORIA).
+    shown: dict[str, str] = {}
     # H9-f: variante aceita no elenco (marca curta, prenome, sobrenome em "familia X", OCR) vale em todo o lote.
     variants = VariantPropagator(roster, exclusions)
     variants.prepare((item.text, item.folded, item.anchored) for item in states)
@@ -405,6 +408,7 @@ def _run_llm_job(
         if state.report.fallback_error:
             # Nem o motor local tratou as folhas que o LLM nao leu: o texto tem nome em claro e NAO vai
             # para a pasta exportavel (B1). Fica retido, na pasta privada do lote.
+            shown[source.name] = export_stem(source, mapping, sources.index(source) + 1) + ".md"
             held_path = _unique_path(map_path.parent / QUARANTINE_DIR, source.stem, ".md")
             held_path.parent.mkdir(parents=True, exist_ok=True)
             held_path.write_text(add_sheet_anchors(result.text, held_path.name), encoding="utf-8")
@@ -422,7 +426,10 @@ def _run_llm_job(
                 )
             )
             continue
-        markdown_path = _unique_path(export_dir, source.stem, ".md")
+        markdown_path = _unique_path(
+            export_dir, export_stem(source, mapping, sources.index(source) + 1), ".md"
+        )
+        shown[source.name] = markdown_path.name
         # Ancora visivel por folha, depois da troca (igual ao motor local).
         final_text = add_sheet_anchors(result.text, markdown_path.name)
         markdown_path.write_text(final_text, encoding="utf-8")
@@ -473,6 +480,10 @@ def _run_llm_job(
         },
     )
     write_outcomes_index(export_dir, outcomes)
+    write_name_map(
+        map_path.parent,
+        ((outcome.markdown_path.name, outcome.source.name) for outcome in outcomes if outcome.ok and outcome.markdown_path),
+    )
     legend_path = (
         _append_llm_roles(export_dir, roster, tokens, occurrences, groups)
         if write_legend and not local_only
@@ -488,8 +499,13 @@ def _run_llm_job(
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
     }
-    fallback_notes = _fallback_lines(fallback_by_file, held)
-    floor_notes = _local_only_lines(reports) if local_only else _floor_lines(floor, reports)
+    # Texto exportavel (AUDITORIA, LEIA-ME): so o nome pseudonimizado; a tela segue com o nome real.
+    shown_reports = {shown.get(name, name): item for name, item in reports.items()}
+    fallback_notes = _fallback_lines(
+        {shown.get(name, name): pages for name, pages in fallback_by_file.items()},
+        [shown.get(name, name) for name in held],
+    )
+    floor_notes = _local_only_lines(shown_reports) if local_only else _floor_lines(floor, shown_reports)
     guide_notes = [*floor_notes, *fallback_notes]
     secrets = _secrets_of(discoverer)
     network = getattr(discoverer, "network_check", None)

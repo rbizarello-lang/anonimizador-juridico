@@ -623,8 +623,8 @@ def main(argv: list[str] | None = None) -> int:
         check("elenco revisado so na pasta privada", (second.reviewed_path.parent == first.roster_path.parent) and not list(export_root.rglob("elenco*.json")))
 
         print("\n== 5. As duas reguas ==")
-        out_a = run_ruler(structure, ["x", str(pdf_dir), str(folder_a)])
-        out_b = run_ruler(structure, ["x", str(pdf_dir), str(folder_b)])
+        out_a = run_ruler(structure, ["x", str(pdf_dir), str(folder_a), str(first.job.map_path.parent / "nomes_arquivos.json")])
+        out_b = run_ruler(structure, ["x", str(pdf_dir), str(folder_b), str(second.result.job.map_path.parent / "nomes_arquivos.json")])
         tot_a, tot_b = structure_totals(out_a), structure_totals(out_b)
         print(f"  estrutura A: {tot_a}")
         print(f"  estrutura B: {tot_b}")

@@ -28,6 +28,7 @@ from .catalog import EXPORT_BLOCKED_REASON
 from .coverage import pages_label, unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import UnsupportedDocumentError
+from .file_names import export_stem, write_name_map
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .lote_elenco import CAST_NAME, apply_company_groups, write_lote_cast
 from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
@@ -240,6 +241,10 @@ def finalize_lote(
     if roster is not None:
         write_private_audit(map_path.parent, roster, mapping)
     write_outcomes_index(export_dir, outcomes)
+    write_name_map(
+        map_path.parent,
+        ((o.markdown_path.name, o.source.name) for o in outcomes if o.ok and o.markdown_path is not None),
+    )
     write_lote_guides(
         job_id=job_id,
         export_dir=export_dir,
@@ -385,6 +390,7 @@ def _run_job_blocked(
                 mapping=mapping,
                 roster=roster,
                 contextual=contextual,
+                ordinal=index + 1,
             )
         )
 
@@ -487,6 +493,7 @@ def finish_file(
     mapping: PseudonymMap,
     roster: BatchRoster | None = None,
     contextual: ContextualEngine | None = None,
+    ordinal: int = 0,
 ) -> FileOutcome:
     """Fase 2: aplica o elenco do lote (mesmo token por entidade; ocorrências que
     a detecção não pegou), troca e grava."""
@@ -500,7 +507,9 @@ def finish_file(
             entities = roster.apply(text, entities, source_name=prepared.source.name)
         result = pseudonymize(text, entities, mapping=mapping)
         residual = tuple(contextual.scan_residual(result.text)) if contextual else ()
-        markdown_path = _unique_path(export_dir, prepared.source.stem, ".md")
+        # H9-f: o nome exportado nao leva o nome de origem (pode ter razao social); ver ``file_names``.
+        number = ordinal or 1 + sum(1 for _item in export_dir.glob("*.md"))
+        markdown_path = _unique_path(export_dir, export_stem(prepared.source, mapping, number), ".md")
         # Ancora visivel por folha ("[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]"), depois da troca:
         # nao entra na deteccao nem muda os caches.
         markdown_path.write_text(add_sheet_anchors(result.text, markdown_path.name), encoding="utf-8")

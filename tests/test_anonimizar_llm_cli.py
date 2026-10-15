@@ -218,7 +218,7 @@ class OfflineCliTests(_Workspace):
         self.assertIn("Modo sem rede", audit)
         self.assertIn("motor LLM: gemini-pago", audit)
         self.assertIn("tratadas pelo motor local por falha do LLM", audit)
-        text = (folder / "autos.md").read_text(encoding="utf-8")
+        text = (folder / "doc_1.md").read_text(encoding="utf-8")
         self.assertNotIn("OLAVO RICARDO TEIXEIRA", text.upper())
         self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", text.upper())
 
@@ -242,7 +242,7 @@ class FallbackExitCodeTests(_Workspace):
 
         # A pasta ja tem o lote da rodada anterior: o texto foi gravado, sem o nome em claro.
         folder = next((self.base / "exp").iterdir())
-        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", (folder / "autos.md").read_text(encoding="utf-8").upper())
+        self.assertNotIn("MARLENE OLIVEIRA SAMPAIO", (folder / "doc_1.md").read_text(encoding="utf-8").upper())
 
         code, _out, err = self._run_with(
             FakeChannelDiscoverer(fail_pass={1, 2}), FakeLocalEngine(PAGE_2_NAMES), "--aceitar-fallback"
@@ -261,7 +261,7 @@ class FallbackExitCodeTests(_Workspace):
         self.assertEqual(code, 1)
         self.assertIn("NAO ENVIE AINDA", err)
         folder = next((self.base / "exp").iterdir())
-        self.assertFalse((folder / "autos.md").exists())
+        self.assertFalse((folder / "doc_1.md").exists())
 
 
 

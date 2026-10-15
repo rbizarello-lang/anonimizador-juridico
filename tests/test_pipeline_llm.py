@@ -242,7 +242,7 @@ class PipelineLlmTests(unittest.TestCase):
         self.assertIn("<!-- pagina-origem: 2 -->\n[fl. 2]\n", text)
         self.assertTrue((folder / "INDICE.md").is_file())
         index = (folder / "INDICE.md").read_text(encoding="utf-8")
-        self.assertIn("## autos.md", index)
+        self.assertIn("## doc_1.md", index)
         cast = (folder / "ELENCO.md").read_text(encoding="utf-8")
         self.assertIn("# Elenco do lote (sem nomes)", cast)
         self.assertIn("## Papéis atribuídos pelo LLM", cast)
@@ -521,9 +521,9 @@ class LlmFailureFallbackTests(unittest.TestCase):
         self.assertEqual(result.fallback_pages, {"autos.md": [2]})
         self.assertEqual(result.reports["autos.md"].unread_pages, [])
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
-        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: autos.md: paginas 2", audit)
+        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: doc_1.md: paginas 2", audit)
         guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
-        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: autos.md: paginas 2", guide)
+        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: doc_1.md: paginas 2", guide)
         self.assertIn("Folhas tratadas pelo motor local", result.job.export_warning)
         # O que o motor local achou entrou no elenco, com a origem, para a tela de revisao.
         sources = {entry.source for entry in result.roster.entries}
