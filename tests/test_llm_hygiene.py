@@ -163,7 +163,9 @@ class AuditLineTests(unittest.TestCase):
         self.assertEqual(
             lines[0],
             "Higiene das mencoes do LLM: descartadas 36 (classe fora da lista 1, sem ancora 2, minusculas 3, "
-            "termo protegido 4, rotulo/numero 5, termo juridico 6, geografia 7, uma palavra 8); "
+            "termo protegido 4, rotulo/numero 5, termo juridico 6, geografia 7, uma palavra 8, "
+            "rotulo de formulario 0, clausula ordinal 0, URL ou dominio 0, duas pessoas 0, "
+            "variante sem relacao 0, banco como endereco 0); "
             "entradas mantidas pelo papel publico do LLM: 11; papel misto: 12",
         )
         for line in lines:

@@ -12,6 +12,12 @@ Motivos de descarte (contados em ``LlmHygieneStats``; a AUDITORIA leva so os num
 classe fora de pessoa/empresa/endereco; sem ancora no texto; so minusculas; termo protegido (ou nome que o
 contem); rotulo seguido de numero, so numero ou sigla; termo juridico; municipio, UF ou lugar solto; pessoa
 de uma palavra so (sem nome completo no elenco que a contenha). Mais: mencao colada a numero e recortada.
+
+Segunda rodada (H9-e), medida na leitura do lote IDPJ real: cidade de duas palavras ou com UF e orgao judicial
+("Balneario Camboriu/SC", "19a Vara Federal de Porto Alegre"); rotulo de formulario e cartorio sem numero
+("Razao Social", "Registro de Imoveis", lista em ``data/rotulos_formulario.txt``); clausula e paragrafo ordinais
+("Clausula Decima", "DECIMA PRIMEIRA"); URL e dominio institucional; mencao que junta duas pessoas ("Fulano e
+sua filha"); variante sem nenhuma palavra em comum com o nome canonico; instituicao financeira como endereco.
 """
 
 from __future__ import annotations
@@ -19,11 +25,14 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
+from functools import lru_cache
+from pathlib import Path
 
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
-from .gemini_detector import KEEP_TERMS
-from .geo_names import is_geo_name, is_state_name, place_label_before
+from .gemini_detector import KEEP_TERMS, is_registry_office
+from .geo_names import UF_SIGLAS, is_geo_name, is_state_name, place_label_before
 from .roster import (
     KEEP,
     ROLE_POLICY,
@@ -111,6 +120,13 @@ class LlmHygieneStats:
     juridico: int = 0
     geografia: int = 0
     uma_palavra: int = 0
+    # H9-e: segunda rodada.
+    rotulo_formulario: int = 0
+    ordinal: int = 0
+    url: int = 0
+    duas_pessoas: int = 0
+    variante: int = 0
+    banco_endereco: int = 0
     colado_recortado: int = 0
     colado_descartado: int = 0
     # Juizo do lote sobre as entradas do LLM (``judge_llm_entries``).
@@ -125,6 +141,8 @@ class LlmHygieneStats:
         return (
             self.classe + self.ancora + self.minusculas + self.protegido
             + self.rotulo_numero + self.juridico + self.geografia + self.uma_palavra
+            + self.rotulo_formulario + self.ordinal + self.url + self.duas_pessoas
+            + self.variante + self.banco_endereco
         )
 
     def audit_lines(self, kept_public: int = 0, mixed: int = 0) -> list[str]:
@@ -133,7 +151,10 @@ class LlmHygieneStats:
                 f"Higiene das mencoes do LLM: descartadas {self.descartadas} "
                 f"(classe fora da lista {self.classe}, sem ancora {self.ancora}, minusculas {self.minusculas}, "
                 f"termo protegido {self.protegido}, rotulo/numero {self.rotulo_numero}, "
-                f"termo juridico {self.juridico}, geografia {self.geografia}, uma palavra {self.uma_palavra}); "
+                f"termo juridico {self.juridico}, geografia {self.geografia}, uma palavra {self.uma_palavra}, "
+                f"rotulo de formulario {self.rotulo_formulario}, clausula ordinal {self.ordinal}, "
+                f"URL ou dominio {self.url}, duas pessoas {self.duas_pessoas}, "
+                f"variante sem relacao {self.variante}, banco como endereco {self.banco_endereco}); "
                 f"entradas mantidas pelo papel publico do LLM: {kept_public}; papel misto: {mixed}"
             ),
             (
@@ -252,7 +273,7 @@ def _known_full_names(mentions: Sequence[Mention], known_people: Iterable[str]) 
     return names
 
 
-def _geo_reason(kind: str, value: str, text: str, start: int) -> bool:
+def _geo_reason(kind: str, value: str, text: str, start: int, end: int = -1) -> bool:
     """Municipio, estado, UF ou lugar solto onde devia haver pessoa ou empresa (ou rua)."""
 
     if kind == "endereco":
@@ -265,9 +286,209 @@ def _geo_reason(kind: str, value: str, text: str, start: int) -> bool:
         return True
     if is_geo_name(value) and (kind == "empresa" or len(words) == 1 or is_state_name(value)):
         return True
+    # H9-e: cidade com sufixo de UF ("Balneario Camboriu/SC") e cidade de 2+ palavras como pessoa.
+    tail = _UF_TAIL.search(value)
+    if tail is not None and is_geo_name(value[: tail.start()]):
+        return True
+    if kind == "pessoa" and len(words) >= 2 and is_geo_name(value) and not _person_cue(text, start, end):
+        return True
     # Rotulo de lugar logo antes ("Comarca de X", "Bairro: X"): nome curto sem sufixo societario.
     if 0 <= start <= len(text) and len(words) <= 3 and not _COMPANY_SUFFIX.search(value) and place_label_before(text, start):
         return True
+    return False
+
+
+# --- segunda rodada (H9-e) ----------------------------------------------------------------------
+
+LABELS_FILE = Path(__file__).with_name("data") / "rotulos_formulario.txt"
+# Conectivos que nao tornam um texto "nome": "Uso exclusivo DO Regin", "No Processo Judicial".
+_CONNECTIVES = frozenset("de da do das dos e em no na nos nas n a o as os para por ao com".split())
+
+
+@lru_cache(maxsize=1)
+def _label_vocabulary() -> frozenset[str]:
+    """Palavras da lista de rotulos de formulario (``data/rotulos_formulario.txt``), dobradas."""
+
+    words: set[str] = set()
+    for raw in LABELS_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            words.update(_words(line))
+    return frozenset(words)
+
+
+def _is_form_label(value: str) -> bool:
+    """Texto formado so por palavras da lista de rotulos de formulario/cartorio (mais conectivos): e o rotulo
+    do documento ("Razao Social", "USO EXCLUSIVO DO REGIN"), nao nome proprio. Vale por prefixo tambem: o
+    rotulo seguido so de palavras da lista. Nome de verdade traz ao menos uma palavra fora da lista."""
+
+    words = _words(value)
+    content = [word for word in words if word not in _CONNECTIVES]
+    if not content:
+        return False
+    vocabulary = _label_vocabulary()
+    return all(word in vocabulary for word in content)
+
+
+# Orgao judicial ou publico generico: "19a Vara Federal de Porto Alegre", "Delegacia da Receita Federal".
+_ORGAO = re.compile(
+    r"^(?:\d+[a-z]?\s+)?(?:vara|juizo|subsecao|secao\s+judiciaria|turma\s+recursal|tribunal|camara|comarca|"
+    r"juizado|delegacia|procuradoria|secretaria|ministerio|prefeitura|forum|cartorio|tabelionato|"
+    r"receita\s+federal|justica\s+(?:federal|estadual|do\s+trabalho)|conselho)\b"
+)
+
+
+def _is_organ(value: str) -> bool:
+    if _COMPANY_SUFFIX.search(value):
+        return False
+    return bool(_ORGAO.match(" ".join(fold_lexical(value).split())))
+
+
+# Clausula, paragrafo, artigo... + ordinal ("Clausula Decima", "Paragrafo Primeiro", "Artigo 5") e ordinal por
+# extenso sozinho ("DECIMA PRIMEIRA").
+_STRUCT_WORDS = frozenset(
+    "clausula paragrafo artigo item capitulo secao titulo inciso alinea livro anexo subclausula".split()
+)
+_ORDINAL_WORD = re.compile(
+    r"^(?:primeir|segund|terceir|quart|quint|sext|setim|oitav|non|decim|vigesim|trigesim|quadragesim|"
+    r"quinquagesim|sexagesim|septuagesim|octogesim|nonagesim|centesim|unic|ultim|penultim)[oa]s?$"
+)
+_NUMBER_WORD = re.compile(r"^\d+[a-z]{0,2}$")
+_ROMAN_WORD = re.compile(r"^[ivxlcdm]+$")
+
+
+def _is_ordinal_label(value: str) -> bool:
+    words = [word for word in _words(value) if word not in {"e", "do", "da", "de"}]
+    if not words:
+        return False
+    has_struct = any(word in _STRUCT_WORDS for word in words)
+    meaningful = False
+    for word in words:
+        if word in _STRUCT_WORDS:
+            continue
+        if _ORDINAL_WORD.match(word):
+            meaningful = True
+        elif has_struct and (_NUMBER_WORD.match(word) or _ROMAN_WORD.match(word)):
+            meaningful = True
+        else:
+            return False
+    return meaningful
+
+
+# URL e dominio: institucional (.jus.br, .gov.br, .leg.br, .mp.br, .def.br, .sc.gov) ou com parametro de chave
+# nunca e nome; dominio de empresa privada sem query segue aceito como empresa.
+_URL_MARK = re.compile(r"(?i)http|www\.|\?chave|\.(?:jus|gov|leg|mp|def)\.br\b|\.sc\.gov\b")
+_URL_INSTITUTIONAL = re.compile(r"(?i)\.(?:jus|gov|leg|mp|def)\.br\b|\.sc\.gov\b")
+
+
+def _is_url_mention(kind: str, value: str) -> bool:
+    if not _URL_MARK.search(value):
+        return False
+    private_domain = (
+        kind == "empresa"
+        and _DOMAIN.search(value) is not None
+        and _URL_INSTITUTIONAL.search(value) is None
+        and "?" not in value
+    )
+    return not private_domain
+
+
+# Mencao que junta duas pessoas: "Alessandro e sua filha", "Fulano e Beltrana". A propagacao do lote cobre os
+# nomes individuais. Nunca vale para empresa ("Comercio e Industria Ltda").
+_COUPLE_POSSESSIVE = re.compile(r"(?i)\s+e\s+(?:sua|seu|suas|seus)\s+")
+_AND_SPLIT = re.compile(r"\s+[eE]\s+")
+
+
+def _is_two_people(value: str) -> bool:
+    if _COUPLE_POSSESSIVE.search(value):
+        return True
+    parts = _AND_SPLIT.split(value.strip())
+    return len(parts) >= 2 and all(part[:1].isupper() for part in parts)
+
+
+# Cidade com sufixo de UF: "Balneario Camboriu/SC", "Porto Alegre - RS", "Itajai, SC", "Joinville (SC)".
+_UF_TAIL = re.compile(rf"\s*(?:[/,(–—-])\s*(?:{UF_SIGLAS})\s*\)?\s*$")
+# Quem e pessoa de verdade, mesmo com nome igual ao de um municipio ("Pedro Leopoldo", "Maria Helena").
+_PERSON_CUE_BEFORE = re.compile(
+    r"(?i)\b(?:sr|sra|srta|dr|dra|s[oó]cio|s[oó]cia|administrador|administradora|executad[oa]|requerid[oa]|"
+    r"autor|autora|r[eé]u|embargante|advogad[oa]|testemunha|representante|propriet[aá]ri[oa]|c[oô]njuge|"
+    r"filh[oa]|pai|m[aã]e)\b\.?\s*:?\s*$"
+)
+_PERSON_CUE_AFTER = re.compile(
+    r"(?i)^\s*,?\s*(?:inscrit[oa]|portador|portadora|brasileir|nascid|casad|solteir|cpf|rg|oab)\b"
+)
+
+
+def _person_cue(text: str, start: int, end: int) -> bool:
+    if start < 0:
+        return False
+    before = text[max(0, start - 40) : start]
+    after = text[end : min(len(text), end + 40)]
+    return bool(_PERSON_CUE_BEFORE.search(before) or _PERSON_CUE_AFTER.match(after))
+
+
+# Instituicao financeira onde so cabe endereco (o juizo do lote cobre a posicao de SISBAJUD; aqui o texto).
+_BANK_WORDS = re.compile(
+    r"(?i)\b(?:banco|caixa\s+econ[oô]mica|cooperativa\s+de\s+cr[eé]dito|sicredi|sicoob|bradesco|ita[uú]|"
+    r"santander|nubank|banrisul|cresol|unicred|safra|corretora|distribuidora\s+de\s+t[ií]tulos)\b"
+)
+_STREET_WORD = re.compile(
+    r"(?i)\b(?:rua|r\.|avenida|av\.?|alameda|travessa|rodovia|estrada|pra[cç]a|largo|via|beco|servid[aã]o)\b"
+)
+
+
+def _is_bank_as_address(value: str) -> bool:
+    return (
+        _BANK_WORDS.search(value) is not None
+        and not any(char.isdigit() for char in value)
+        and _STREET_WORD.search(value) is None
+    )
+
+
+# Variante que nao partilha nada com o nome canonico: "nome empresarial" ou uma URL virando apelido de empresa.
+_NAME_STOP = frozenset(
+    "de da do das dos e em no na nos nas a o as os com para por ao ltda me epp eireli sa s cia companhia".split()
+)
+
+
+def _significant(value: str, minimum: int) -> list[str]:
+    return [word for word in _words(value) if word not in _NAME_STOP and len(word) >= minimum]
+
+
+def _initials(value: str, *, with_suffix: bool) -> str:
+    stop = _CONNECTIVES if with_suffix else _NAME_STOP
+    return "".join(word[0] for word in _words(value) if word not in stop and word[:1].isalpha())
+
+
+def variant_related(kind: str, canonical: str, variant: str) -> bool:
+    """A variante tem algo do nome canonico: uma palavra significativa em comum (4+ letras; 3+ em pessoa, onde
+    "Ana" e apelido de "Ana Souza"; fora artigos, preposicoes e LTDA/ME/EIRELI/S.A.), contida no outro texto
+    (dominio "betaindustrial" casa "Beta Industrial"), parecida o bastante para ser erro de OCR, ou sigla/iniciais
+    dele. Sem nada disso a variante e outra coisa (rotulo, URL) e nao entra na entrada."""
+
+    minimum = 3 if kind == "pessoa" else 4
+    left = _significant(canonical, minimum)
+    right = _significant(variant, minimum)
+    if not left or not right:
+        left = left or _words(canonical)
+        right = right or _words(variant)
+    compact_left = "".join(left)
+    compact_right = "".join(right)
+    for word in left:
+        if word in compact_right:
+            return True
+    for word in right:
+        if word in compact_left:
+            return True
+    for first in left:
+        for second in right:
+            if min(len(first), len(second)) >= 5 and SequenceMatcher(None, first, second).ratio() >= 0.8:
+                return True
+    for short, long in ((variant, canonical), (canonical, variant)):
+        letters = "".join(_words(short))
+        if 2 <= len(letters) <= 6 and short.strip().replace(".", "").replace(" ", "").isupper():
+            if letters == _initials(long, with_suffix=False) or letters == _initials(long, with_suffix=True):
+                return True
     return False
 
 
@@ -358,6 +579,8 @@ def _reject(mention: Mention, text: str, extra: Sequence[str], full_names: Seque
     if not value:
         return None  # so token: o elenco ja o descarta
     is_street = kind == "endereco"
+    if _is_url_mention(kind, value):
+        return "url"
     if not is_street:
         letters = any(char.isalpha() for char in value)
         if letters and not _has_initial_capital(value) and not (kind == "empresa" and _DOMAIN.search(value)):
@@ -366,9 +589,17 @@ def _reject(mention: Mention, text: str, extra: Sequence[str], full_names: Seque
         return "protegido"
     if _is_label_or_number(value):
         return "rotulo_numero"
+    if not is_street and _is_ordinal_label(value):
+        return "ordinal"
+    if not is_street and (_is_form_label(value) or _is_organ(value) or is_registry_office(value)):
+        return "rotulo_formulario"
     if not is_street and _is_legal_term(value):
         return "juridico"
-    if _geo_reason(kind, value, text, mention.start):
+    if kind == "pessoa" and _is_two_people(value):
+        return "duas_pessoas"
+    if is_street and _is_bank_as_address(value):
+        return "banco_endereco"
+    if _geo_reason(kind, value, text, mention.start, mention.end):
         return "geografia"
     if kind == "pessoa":
         words = _person_words(value)
@@ -376,6 +607,9 @@ def _reject(mention: Mention, text: str, extra: Sequence[str], full_names: Seque
             word = words[0] if words else ""
             if not word or not any(word in names for names in full_names):
                 return "uma_palavra"
+    canonical = strip_token_tail(mention.canonical or "")
+    if canonical and canonical != value and not variant_related(kind, canonical, value):
+        return "variante"
     return None
 
 

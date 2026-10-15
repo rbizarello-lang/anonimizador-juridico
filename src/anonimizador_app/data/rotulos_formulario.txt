@@ -1,0 +1,51 @@
+# Rotulos e termos de formulario, cartorio e junta comercial que o LLM costuma devolver como se fossem
+# nome de pessoa, empresa ou endereco (H9-e). Uma expressao por linha; comparacao por fold_lexical
+# (sem acento, minusculo, sem pontuacao nas pontas). Vale a expressao inteira ou como prefixo
+# ("Razao Social" casa "Razao Social:"), desde que o resto do texto tambem seja so dessas palavras.
+# Regra de apoio: texto formado SO por palavras que aparecem aqui (mais conectivos) e rotulo, nao nome.
+# Nao entra aqui palavra que sirva de nome proprio ou de ramo de atividade de empresa.
+# Dado generico de formulario publico; nenhum dado de caso.
+documento de consulta interna
+uso exclusivo do regin
+uso exclusivo
+razao social
+nome empresarial
+nome fantasia
+sociedade empresaria limitada
+sociedade empresaria
+sociedade limitada unipessoal
+empresa individual de responsabilidade limitada
+empresario individual
+microempresa
+empresa de pequeno porte
+numero processo judicial
+numero do processo judicial
+processo judicial
+processo administrativo
+registro de imoveis
+registro civil das pessoas naturais
+registro civil das pessoas juridicas
+registro de titulos e documentos
+registro publico de empresas mercantis
+registro mercantil
+junta comercial
+ministerio da fazenda
+ministerio da economia
+ministerio publico
+carater excepcional
+objeto social
+capital social
+sede social
+situacao cadastral
+data de abertura
+natureza juridica
+inscricao estadual
+inscricao municipal
+certidao de inteiro teor
+certidao de matricula
+ficha cadastral
+dados da empresa
+dados do imovel
+dados do requerente
+espaco reservado
+campo obrigatorio

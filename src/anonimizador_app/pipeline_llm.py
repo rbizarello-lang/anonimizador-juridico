@@ -1325,7 +1325,9 @@ def _clean_mentions(
     return filter_llm_mentions(mentions, text, stats, extra_keep=exclusions, known_people=known)
 
 
-_JUDGED_TYPES = {"pessoa": "PERSON", "empresa": "ORGANIZATION"}
+# H9-e: "endereco" entra como ORGANIZATION so para a posicao de instituicao financeira (SISBAJUD): no 8b, seis
+# bancos viraram [ENDERECO_n] porque o LLM os classificou como endereco.
+_JUDGED_TYPES = {"pessoa": "PERSON", "empresa": "ORGANIZATION", "endereco": "ORGANIZATION"}
 
 
 def _judge_llm_entries(
@@ -1395,7 +1397,7 @@ def _judge_llm_entries(
         elif entry.kind == "pessoa" and entity.public_agent:
             if roster.lock_keep(entry.key) and stats is not None:
                 stats.lote_publico += 1
-        elif entry.kind == "empresa" and entity.financial:
+        elif entry.kind in {"empresa", "endereco"} and entity.financial:
             if roster.lock_keep(entry.key) and stats is not None:
                 stats.lote_financeiro += 1
 
