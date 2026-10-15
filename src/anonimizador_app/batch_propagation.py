@@ -84,22 +84,31 @@ _LABEL_WORDS = frozenset(
 # Agente publico, julgado uma vez por entidade: o cargo colado ao nome (antes ou depois).
 # Mais estrito que a regra por ocorrencia da deteccao ("juiz" em ate 160 caracteres),
 # que pegaria o socio na abertura da peticao ("Senhor Juiz ... em face de FULANO").
-_ROLE_BEFORE = re.compile(
-    r"(?is)(?:ju[ií]z(?:a)?(?:\s+federal)?(?:\s+substitut[oa])?"
+_SIGNATURE_CUES = (
+    r"documento\s+eletr[oô]nico\s+assinado\s+por"
+    r"|assinad[oa]\s+(?:digitalmente\s+|eletronicamente\s+)?por"
+)
+_ROLE_BEFORE_CUES = (
+    r"(?:ju[ií]z(?:a)?(?:\s+federal)?(?:\s+substitut[oa])?"
     r"(?:\s+(?:inclus[aã]o|solicitante|respons[aá]vel))?"
     r"|magistrad[oa]|desembargador(?:a)?(?:\s+federal)?|relator(?:a)?|minist(?:ro|ra)"
-    r"|documento\s+eletr[oô]nico\s+assinado\s+por"
-    r"|assinad[oa]\s+(?:digitalmente\s+|eletronicamente\s+)?por"
+    r"|{signature}"
     r"|diretor(?:a)?\s+de\s+secretaria|servidor(?:a)?|oficial(?:a)?\s+de\s+justi[cç]a"
+    r"|analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]"
     r"|usu[aá]rio|protocolad[oa]\s+por"
     r"|procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal)"
-    r"\s*(?:\([^)]{0,12}\))?\s*[:|\-–—(]?\s*$"
+    r"\s*(?:\([^)]{{0,12}}\))?\s*[:|\-–—(]?\s*$"
 )
+_ROLE_BEFORE = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=_SIGNATURE_CUES))
+# H9-f: juizo das entradas do LLM. "Assinado por" so basta com o cargo publico colado DEPOIS do nome
+# (``_ROLE_AFTER``); socio assina contrato digitalmente e nao e agente publico por isso.
+_ROLE_BEFORE_STRICT = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=r"(?!x)x"))
 _ROLE_AFTER = re.compile(
     r"(?i)^\s*[,–—\-(]?\s*(?:ju[ií]z(?:a)?\s+federal|ju[ií]z(?:a)?\s+substitut[oa]|"
     r"desembargador(?:a)?|diretor(?:a)?\s+de\s+secretaria|"
     r"procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal|"
     r"oficial(?:a)?\s+de\s+justi[cç]a|servidor(?:a)?|secret[aá]ri[oa][-\s]+geral|"
+    r"analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]|"
     r"registrador(?:a)?|tabeli[aã]o?|escrevente)\b"
 )
 
@@ -161,8 +170,9 @@ class _Entity:
 class BatchRoster:
     """Elenco do lote: coleta na fase 1 (deteccao), aplica na fase 2 (troca)."""
 
-    def __init__(self, extra_keep: Iterable[str] = ()) -> None:
+    def __init__(self, extra_keep: Iterable[str] = (), *, strict_signature: bool = False) -> None:
         self._extra_keep = tuple(str(item) for item in extra_keep)
+        self._strict_signature = strict_signature
         self._protected = protected_forms(self._extra_keep)
         self._names: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._role_phrases: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -257,7 +267,7 @@ class BatchRoster:
                 labelled, street = _street_position(text, span.start, span.end)
                 entity.street_label = entity.street_label or labelled
                 entity.street_hits += street
-                if not entity.public_agent and _public_role(text, span.start, span.end):
+                if not entity.public_agent and _public_role(text, span.start, span.end, strict=self._strict_signature):
                     entity.public_agent = True
             if candidates:
                 taken = [(span.start, span.end) for span in spans] + self._named.get(hash(text), [])
@@ -688,10 +698,11 @@ def _financial_position(text: str, start: int, end: int) -> bool:
     return bool(_BANK_HEADER_AFTER.match(text, end))
 
 
-def _public_role(text: str, start: int, end: int) -> bool:
+def _public_role(text: str, start: int, end: int, *, strict: bool = False) -> bool:
     before = text[max(0, start - 60) : start]
     after = text[end : end + 60]
-    return bool(_ROLE_BEFORE.search(before) or _ROLE_AFTER.match(after))
+    pattern = _ROLE_BEFORE_STRICT if strict else _ROLE_BEFORE
+    return bool(pattern.search(before) or _ROLE_AFTER.match(after))
 
 
 def _is_label(value: str) -> bool:

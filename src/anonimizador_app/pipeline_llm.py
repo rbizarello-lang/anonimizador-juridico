@@ -77,7 +77,7 @@ from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of,
 from .local_ner import reset_ner_status
 from .netblock import block_network
 from .llm_gate import FilePlan, GateError, SendPlan, safe_error, scrub_secrets
-from .llm_hygiene import LlmHygieneStats, filter_llm_mentions, role_counts
+from .llm_hygiene import PRIVATE_ROLES, LlmHygieneStats, filter_llm_mentions, role_counts
 from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
 from .lote_index import add_sheet_anchors
 from .pipeline import (
@@ -97,7 +97,7 @@ from .pipeline import (
 from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
-from .roster import KEEP, TOKENIZE, Mention, Roster
+from .roster import KEEP, TOKENIZE, UNKNOWN_ROLE, Mention, Roster
 from .rules import build_recognizers
 from .settings import AppSettings
 from .version import ENGINE_LOCAL
@@ -1357,7 +1357,9 @@ def _judge_llm_entries(
     ]
     if not candidates:
         return
-    judge = BatchRoster(exclusions)
+    # H9-f: juizo estrito da assinatura (socio assina contrato digitalmente) e verdicto do motor local sozinho.
+    judge = BatchRoster(exclusions, strict_signature=True)
+    local_judge, local_entities = _local_verdicts(states, exclusions)
     for state in states:
         spans = list(state.local_names)
         for start, end, key in state.anchored:
@@ -1378,6 +1380,17 @@ def _judge_llm_entries(
             if entity is not None:
                 break
         if entity is None:
+            continue
+        if _local_engine_tokenizes(entry, local_judge, local_entities):
+            # O LLM so acrescenta protecao: o que o motor local tambem achou e vai trocar nao vira "manter".
+            if stats is not None:
+                stats.lote_motor_local += 1
+            continue
+        if entry.kind == "pessoa" and entity.public_agent and _private_party(entry, states):
+            # Papeis so privados do LLM (parte, socio, terceiro...) e CPF ou qualificacao de pessoa em algum
+            # contexto: nunca vira "manter" pelo juizo do lote.
+            if stats is not None:
+                stats.lote_privado += 1
             continue
         if entry.kind == "pessoa" and entity.is_street:
             addresses = [
@@ -1400,6 +1413,66 @@ def _judge_llm_entries(
         elif entry.kind in {"empresa", "endereco"} and entity.financial:
             if roster.lock_keep(entry.key) and stats is not None:
                 stats.lote_financeiro += 1
+
+
+_PRIVATE_EVIDENCE = re.compile(
+    r"(?i)\bcpf\b|\[CPF_\d+|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|brasileir[oa]|casad[oa]|solteir[oa]|divorciad[oa]|"
+    r"vi[uú]v[oa]|residente|domiciliad[oa]|nascid[oa]|\bs[oó]ci[oa]\b|empres[aá]ri[oa]"
+)
+
+
+def _local_verdicts(states: Sequence[_FileState], exclusions: Sequence[str]):
+    """Juizo do lote so sobre o que o motor local achou (nao o das entradas do LLM): o que ele vai trocar."""
+
+    local = [state for state in states if state.local_names]
+    if not local:
+        return None, {}
+    judge = BatchRoster(exclusions)
+    for state in local:
+        judge.add(state.text, list(state.local_names))
+    judge.review(state.text for state in local)
+    return judge, {entity.key: entity for entity in judge.entities()}
+
+
+def _local_engine_tokenizes(entry, judge, entities) -> bool:
+    if judge is None:
+        return False
+    entity_type = _JUDGED_TYPES[entry.kind]
+    for value in (entry.name, *entry.variants):
+        entity = entities.get(judge.key_for(entity_type, value))
+        if entity is not None:
+            return not (entity.public_agent or entity.financial or entity.is_street)
+    return False
+
+
+_SENTENCE_END = re.compile(r"\n|[.;]\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])")
+
+
+def _evidence_window(text: str, start: int, end: int) -> tuple[int, int]:
+    """Janela da mesma frase: ate 20 caracteres antes e ate 120 depois, sem atravessar quebra de linha nem
+    fim de frase (a "socia" da frase vizinha nao qualifica quem vem depois)."""
+
+    lo = max(text.rfind("\n", 0, start) + 1, start - 20)
+    hi = min(len(text), end + 120)
+    cut = _SENTENCE_END.search(text, end, hi)
+    return lo, cut.start() if cut is not None else hi
+
+
+def _private_party(entry, states: Sequence[_FileState]) -> bool:
+    """Todos os papeis conhecidos do LLM para a entrada sao privados e ela tem CPF ou qualificacao de pessoa
+    (brasileiro, casado, residente, socio...) perto de alguma ocorrencia (ancorada ou nao), em qualquer arquivo."""
+
+    roles = {role for role in entry.roles if role != UNKNOWN_ROLE}
+    if not roles or not roles <= PRIVATE_ROLES:
+        return False
+    for state in states:
+        for span in spans_for_roster(state.text, [entry], folded=state.folded):
+            lo, hi = _evidence_window(state.text, span.start, span.end)
+            if _PRIVATE_EVIDENCE.search(state.text[lo:hi]):
+                return True
+            if any(item.entity_type == "BR_CPF" and lo <= item.start < hi for item in state.ids):
+                return True
+    return False
 
 
 def absorb_mentions(

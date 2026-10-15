@@ -135,6 +135,10 @@ class LlmHygieneStats:
     lote_publico: int = 0
     lote_financeiro: int = 0
     lote_rua: int = 0
+    # H9-f: "manter" que o juizo NAO aplicou: entrada que o motor local tambem achou e vai trocar; entrada de
+    # papel so privado do LLM com CPF ou qualificacao de pessoa.
+    lote_motor_local: int = 0
+    lote_privado: int = 0
     # Mencoes que entraram no elenco depois do filtro.
     aceitas: int = 0
 
@@ -170,7 +174,9 @@ class LlmHygieneStats:
             (
                 "Juizo do lote sobre as entradas do LLM: mantidas por agente publico "
                 f"{self.lote_publico}, por instituicao financeira {self.lote_financeiro}, "
-                f"retipadas como rua com nome de pessoa {self.lote_rua}"
+                f"retipadas como rua com nome de pessoa {self.lote_rua}; "
+                f"manter negado por o motor local tambem a ter achado e trocar {self.lote_motor_local}, "
+                f"por papel so privado com CPF ou qualificacao {self.lote_privado}"
             ),
         ]
 
