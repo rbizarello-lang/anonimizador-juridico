@@ -104,8 +104,8 @@ _ROLE_BEFORE = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=_SIGNATUR
 # (``_ROLE_AFTER``); socio assina contrato digitalmente e nao e agente publico por isso.
 _ROLE_BEFORE_STRICT = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=r"(?!x)x"))
 _ROLE_AFTER = re.compile(
-    r"(?i)^\s*[,–—\-(]?\s*(?:ju[ií]z(?:a)?\s+federal|ju[ií]z(?:a)?\s+substitut[oa]|"
-    r"desembargador(?:a)?|diretor(?:a)?\s+de\s+secretaria|"
+    r"(?i)^\s*[,–—\-(]?\s*(?:ju[ií]z(?:a|\(a\))?\s+(?:federal|de\s+direito|substitut[oa])|"
+    r"desembargador(?:a|\(a\))?|diretor(?:a)?\s+de\s+secretaria|"
     r"procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal|"
     r"oficial(?:a)?\s+de\s+justi[cç]a|servidor(?:a)?|secret[aá]ri[oa][-\s]+geral|"
     r"analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]|"

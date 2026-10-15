@@ -1447,10 +1447,16 @@ def _judge_llm_entries(
                 stats.lote_financeiro += 1
 
 
-_PRIVATE_EVIDENCE = re.compile(
-    r"(?i)\bcpf\b|\[CPF_\d+|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|brasileir[oa]|casad[oa]|solteir[oa]|divorciad[oa]|"
-    r"vi[uú]v[oa]|residente|domiciliad[oa]|nascid[oa]|\bs[oó]ci[oa]\b|empres[aá]ri[oa]"
+# H9-g: "socio" e "empresario" na frase nao provam que o NOME e de particular (o procurador da Fazenda que
+# "requereu a citacao do socio" ficava trocado). Prova: CPF a ate 40 caracteres do nome, ou a qualificacao de
+# pessoa logo depois dele ("Fulano, brasileiro, casado", "Fulano, empresario, residente em ...").
+_PRIVATE_CPF = re.compile(r"(?i)\bcpf\b|\[CPF_\d+|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
+_PRIVATE_QUALIFICATION_AFTER = re.compile(
+    r"(?i)^[\s,;(–—-]*(?:[^\W\d_]+(?:-[^\W\d_]+)?[\s,;]+)?"
+    r"(?:brasileir[oa]|casad[oa]|solteir[oa]|divorciad[oa]|vi[uú]v[oa]|residente|domiciliad[oa]|nascid[oa]|"
+    r"portador(?:a)?)\b"
 )
+_EVIDENCE_REACH = 40
 
 
 def _local_verdicts(states: Sequence[_FileState], exclusions: Sequence[str]):
@@ -1481,18 +1487,18 @@ _SENTENCE_END = re.compile(r"\n|[.;]\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])")
 
 
 def _evidence_window(text: str, start: int, end: int) -> tuple[int, int]:
-    """Janela da mesma frase: ate 20 caracteres antes e ate 120 depois, sem atravessar quebra de linha nem
-    fim de frase (a "socia" da frase vizinha nao qualifica quem vem depois)."""
+    """Janela da mesma frase: ate 40 caracteres antes e ate 40 depois do nome, sem atravessar quebra de linha
+    nem fim de frase (o CPF da frase vizinha nao qualifica quem vem depois)."""
 
-    lo = max(text.rfind("\n", 0, start) + 1, start - 20)
-    hi = min(len(text), end + 120)
+    lo = max(text.rfind("\n", 0, start) + 1, start - _EVIDENCE_REACH)
+    hi = min(len(text), end + _EVIDENCE_REACH)
     cut = _SENTENCE_END.search(text, end, hi)
     return lo, cut.start() if cut is not None else hi
 
 
 def _private_party(entry, states: Sequence[_FileState]) -> bool:
     """Todos os papeis conhecidos do LLM para a entrada sao privados e ela tem CPF ou qualificacao de pessoa
-    (brasileiro, casado, residente, socio...) perto de alguma ocorrencia (ancorada ou nao), em qualquer arquivo."""
+    (brasileiro, casado, residente...) perto de alguma ocorrencia (ancorada ou nao), em qualquer arquivo."""
 
     roles = {role for role in entry.roles if role != UNKNOWN_ROLE}
     if not roles or not roles <= PRIVATE_ROLES:
@@ -1500,7 +1506,9 @@ def _private_party(entry, states: Sequence[_FileState]) -> bool:
     for state in states:
         for span in spans_for_roster(state.text, [entry], folded=state.folded):
             lo, hi = _evidence_window(state.text, span.start, span.end)
-            if _PRIVATE_EVIDENCE.search(state.text[lo:hi]):
+            if _PRIVATE_CPF.search(state.text[lo:hi]):
+                return True
+            if _PRIVATE_QUALIFICATION_AFTER.match(state.text[span.end : hi]):
                 return True
             if any(item.entity_type == "BR_CPF" and lo <= item.start < hi for item in state.ids):
                 return True
