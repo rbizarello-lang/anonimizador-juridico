@@ -2,15 +2,48 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
+from functools import lru_cache
+from pathlib import Path
 from typing import Protocol
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
-from .role_labels import is_role_label
+from .role_labels import is_fixed_label, is_role_label
 
-KEEP_TERMS = frozenset(
+SYSTEMS_FILE = Path(__file__).with_name("data") / "sistemas_protegidos.txt"
+
+
+@lru_cache(maxsize=1)
+def protected_systems() -> frozenset[str]:
+    """Ferramentas e sistemas do processo que nunca viram token (SISBAJUD, RENAJUD, CNIB, PJe, e-CAC...), da lista
+    ``data/sistemas_protegidos.txt`` (um termo por linha, minusculo; facil de aumentar sem mexer em codigo)."""
+
+    terms = set()
+    for raw in SYSTEMS_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip().casefold()
+        if line and not line.startswith("#"):
+            terms.add(line)
+            plain = "".join(c for c in unicodedata.normalize("NFKD", line) if not unicodedata.combining(c))
+            terms.add(plain)  # a mesma expressao sem acento
+    return frozenset(terms)
+
+
+def is_system_term(value: str) -> bool:
+    """O valor inteiro e um termo da lista de sistemas/orgaos protegidos (``data/sistemas_protegidos.txt``)."""
+
+    return re.sub(r"\s+", " ", value).strip().casefold() in protected_systems()
+
+
+# So a expressao de varias palavras ("Banco do Brasil S.A.") protege tambem o que vem depois; sigla de uma palavra so
+# vale inteira ("Sida Comercial Ltda" e empresa), exceto os sistemas antigos.
+_SYSTEMS_EXACT_ONLY = frozenset(
+    term for term in protected_systems() if " " not in term
+) - frozenset({"sisbajud", "renajud", "cnib", "infojud", "serasajud", "sniper", "censec", "ccs-bacen", "simba"})
+
+KEEP_TERMS = protected_systems() | frozenset(
     {
         "uniao",
         "união",
@@ -31,10 +64,6 @@ KEEP_TERMS = frozenset(
         "justiça federal",
         "receita federal",
         "cnj",
-        "sisbajud",
-        "renajud",
-        "cnib",
-        "infojud",
         "cpc",
         "ctn",
         "lef",
@@ -117,12 +146,6 @@ KEEP_TERMS = frozenset(
         "código de processo penal",
         "codigo de processo penal",
         "comarca",
-        "sniper",
-        "censec",
-        "ccs-bacen",
-        "ccs bacen",
-        "simba",
-        "serasajud",
         "agu",
         "pgf",
         "pge",
@@ -181,6 +204,8 @@ _STREET_HINTS = (
     "quadra ",
 )
 _STREET_ABBREV = re.compile(r"(?:^|[\s,;])r\s")
+# H9-i: vias de uma palavra comum (rio, linha, bairro...) so valem como inicio da palavra, nunca dentro de um nome ("Mario Silva").
+_STREET_WORD_HINT = re.compile(r"(?:^|[\s,;(])(?:servid[ãa]o|loteamento|linha|rio|bairro|beco|gleba|localidade|distrito|acesso|tv\.|rod\.)\s")
 
 
 # Nome de cartorio ou de oficio ("1o Registro de Imoveis de X", "Cartorio de Notas de X", "Tabelionato de
@@ -209,7 +234,10 @@ def is_kept_term(value: str, extra: Iterable[str] = ()) -> bool:
     }
     if compact in terms:
         return True
-    return any(compact == term or compact.startswith(term + " ") for term in terms)
+    # Sistema acrescentado em H9-i (PJe, e-CAC, Regularize, SIDA...) so vale inteiro: "Sida Comercial Ltda" e empresa.
+    return any(
+        compact.startswith(term + " ") for term in terms if term not in _SYSTEMS_EXACT_ONLY
+    )
 
 
 _GENERIC_WORDS = frozenset(
@@ -373,6 +401,8 @@ def is_too_generic(entity_type: str, value: str) -> bool:
 
     if _looks_like_furniture(value):
         return True
+    if is_fixed_label(value):
+        return True  # "CPF/CNPJ:", "LTDA", "S/A" soltos: rotulo ou sufixo, nao entidade (H9-i)
     if entity_type in {"PERSON", "ORGANIZATION"} and is_role_label(value):
         return True  # "SOCIO ADMINISTRADOR", "ADMINISTRADOR(ES)": cargo, nao nome (H9-h)
     if len(value.strip()) < 5:
@@ -392,7 +422,7 @@ def is_too_generic(entity_type: str, value: str) -> bool:
             return True
         return len(words) < 2 or len(_content_words(value)) < 1
     if entity_type == "LOCATION":
-        if any(hint in compact for hint in _STREET_HINTS):
+        if any(hint in compact for hint in _STREET_HINTS) or _STREET_WORD_HINT.search(compact):
             return False
         return _STREET_ABBREV.search(compact) is None
     return False

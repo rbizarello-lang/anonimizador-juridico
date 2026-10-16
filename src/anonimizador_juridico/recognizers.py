@@ -24,7 +24,9 @@ _SEP = r"[.,\-\s]"
 
 _CPF_LABEL = rf"(?:C\.?\s*P\.?\s*F\.?(?:\s*/\s*MF)?|CPF\s*/\s*MF)\s*{_ORD}\s*[:;]?\s*"
 _CNPJ_LABEL = rf"(?:C\.?\s*N\.?\s*P\.?\s*J\.?(?:\s*/\s*MF)?|CNPJ\s*/\s*MF)\s*{_ORD}\s*[:;]?\s*"
-_CEP_LABEL = r"(?:C\.?\s*E\.?\s*P\.?)\s*[:\-]?\s*"
+_CEP_LABEL = r"(?:C\.?\s*E\.?\s*P\.?)\s*(?:n[^\s\d]{0,3}\s*)?[:\-]?\s*"
+# CEP digitado de qualquer jeito (H9-i): "88.330-000", "88330 000", "88.330.000", "88330 - 000", "88330000".
+_CEP_VALOR = r"\d{2}[.\s]?\d{3}[\s.\-]{0,3}\d{3}\d?(?!\d)"
 _RG_NUMBER = r"\d{1,4}(?:[.\s]\d{3}){1,2}(?:-[0-9Xx])?(?!\d)"
 _RG_LABEL = (
     r"(?:c[eéê]dula\s+de\s+)?identidade(?:\s+civil)?\s*"
@@ -32,6 +34,9 @@ _RG_LABEL = (
     r"r\.?\s{0,3}g\.?"
 )
 _PHONE_LABEL = r"(?:Telefone|WhatsApp|Fone|Tel\.?|Cel\.?)"
+# Separador de telefone: espaco, hifen ou ponto (ate dois, "47 - 98473"), ou uma quebra de linha, ou nada.
+_PH_SEP = r"(?:[ \t.\-]{1,2}|\n)?"
+_PH_DDD = r"(?:\([ \t]?[1-9]\d[ \t]?\)|[1-9]\d)"
 _PHONE_LABEL_PREFIX = re.compile(
     rf"(?i)^{_PHONE_LABEL}(?![A-Za-z])[^\n\d(]*"
 )
@@ -345,7 +350,8 @@ class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
                     name="jucesc_registro_formato_cpf",
                     regex=(
                         r"\b(?:JUCESC|Junta\s+Comercial)(?![A-Za-z])"
-                        r"(?:(?!cpf|cnpj|c\.\s*p\.\s*f|\brg\b|identidade)[^\n\d]){0,40}?"
+                        r"(?:(?!cpf|cnpj|c\.\s*p\.\s*f|\brg\b|identidade|protocolo|arquivamento|chancela|autentica)"
+                        r"[^\n\d]){0,40}?"
                         r"(?:registro\s*)?(?:n[.\s]*[oº°]?\s*)?[:;]?\s*" + _JUNTA_REGISTRO
                     ),
                     score=0.85,
@@ -354,7 +360,8 @@ class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
                     name=self._PURO,
                     regex=(
                         r"\b(?:JUCESC|Junta\s+Comercial)(?![A-Za-z])"
-                        r"(?:(?!cpf|cnpj|c\.\s*p\.\s*f|\brg\b|identidade)[^\n\d]){0,40}?"
+                        r"(?:(?!cpf|cnpj|c\.\s*p\.\s*f|\brg\b|identidade|protocolo|arquivamento|chancela|autentica)"
+                        r"[^\n\d]){0,40}?"
                         r"(?:registro\s*)?(?:n[.\s]*[oº°]?\s*)?[:;]?\s*" + _JUNTA_REGISTRO_PURO
                     ),
                     score=0.85,
@@ -486,7 +493,37 @@ class LocalEmailRecognizer(PatternRecognizer):
                 )
             )
         results.extend(self._split_pairs(text, results))
+        results.extend(self._spaced(text, results))
         return results
+
+    @staticmethod
+    def _spaced(text: str, taken: list) -> list:
+        """E-mail digitado com espaco em volta do "@" ("fulano @ provedor.com.br", "fulano@ provedor.com") ou com o
+        arroba por extenso ("fulano (at) provedor.com", "fulano [arroba] provedor.com", "fulano arroba provedor.com").
+        O achado cobre o endereco inteiro e leva como chave o endereco normalizado ("fulano@provedor.com"), o mesmo
+        token da grafia colada. O espaco so antes do "@" ("fulano.silva @provedor.com") so vale se a parte local tem
+        ponto, sublinhado, hifen ou digito (uma palavra solta antes de "@usuario.com" nao e e-mail)."""
+
+        found: list[RecognizerResult] = []
+        for match in _SPACED_EMAIL.finditer(text):
+            local, joint, domain = match.group("local"), match.group("joint"), match.group("domain")
+            if sum(char.isalpha() for char in local) < 2:
+                continue
+            if joint.strip() == "@" and joint[0] in " \t" and joint[-1] not in " \t":
+                if not re.search(r"[._\-\d]", local):
+                    continue
+            if any(item.start < match.end() and match.start() < item.end for item in taken):
+                continue
+            found.append(
+                RecognizerResult(
+                    entity_type="EMAIL_ADDRESS",
+                    start=match.start(),
+                    end=match.end(),
+                    score=0.85,
+                    recognition_metadata={"canonical_key": f"{local}@{domain}".casefold()},
+                )
+            )
+        return found
 
     @staticmethod
     def _split_pairs(text: str, taken: list) -> list:
@@ -525,6 +562,18 @@ _SPLIT_EMAIL = re.compile(
     r"(?P<domain>@[A-Za-z0-9.\-]+\.[A-Za-z]{2,24})\b"
 )
 _SPLIT_GAP_MARK = re.compile(r"[|\n]")
+_SPACED_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+\-@])(?P<local>[A-Za-z0-9][A-Za-z0-9._%+\-]{1,63})"
+    r"(?P<joint>[ \t]+@[ \t]+|[ \t]*@[ \t]+|[ \t]+@|[ \t]*[(\[](?:at|arroba)[)\]][ \t]*|[ \t]+arroba[ \t]+)"
+    r"(?P<domain>(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,24})(?![A-Za-z0-9\-]|\.[A-Za-z0-9])"
+)
+# Matricula de imovel: DE PROPOSITO sem reconhecedor (H9-i). Decisao do Operador: a matricula fica sempre em claro
+# (vazamento controlado); o rotulo "matricula" nunca vira token, com ou sem cartorio, em lista ou sozinha.
+
+# Opcao (decisao do Operador, sujeita a nova decisao): True = matricula nunca e trocada; False = volta a ser trocada
+# (reconhecedor abaixo, mantido de proposito). Sem o cartorio na chave quando religada.
+MATRICULA_EM_CLARO = True
+
 _MATRICULA_NUMERO = re.compile(r"\d{1,7}(?:\.\d{1,3})?")
 
 
@@ -584,6 +633,253 @@ class BrMatriculaImovelRecognizer(ValueGroupPatternRecognizer):
         return split
 
 
+# --- CDA e processo administrativo (H9-i): numeros TROCADOS --------------------------------------------------------
+# CDA da PGFN: "80.6.21.000123-45", "80 2 19 012345-67", "8062100012345" (13 digitos: 80, tributo, ano, sequencial, DV).
+_CDA_PGFN = r"80[ .]?\d[ .]?\d{2}[ .]?\d{6}[ .\-]?\d{2}"
+# Sem rotulo so a forma separada por ponto, espaco ou hifen (13 digitos corridos pedem rotulo).
+_CDA_PGFN_SEPARADA = r"80[ .]\d[ .]\d{2}[ .]\d{6}[ .\-]\d{2}"
+# CDA de outros entes e de FGTS ("FGSC201902345"): numero com 6+ digitos (pontos, hifens, barra) ou letras e digitos.
+_CDA_GENERICO = r"\d{3,}(?:[.\-/]\d+)*|[A-Z]{2,5}\d{8,14}"
+_CDA_LABEL = (
+    r"(?:\bCDAs?\b(?:\s*[/\-]\s*[A-Za-z]{2,4}\b)?"
+    r"|\bcertid(?:[ãa]o|[õo]es)\s+de\s+d[ií]vida\s+ativa(?:\s*\(\s*CDAs?\s*\))?"
+    r"|\binscri[cç](?:[ãa]o|[õo]es)(?:\s+(?:em|na|da|de)\s+(?:d[ií]vida\s+ativa|DA|CDA)(?:\s+da\s+Uni[ãa]o)?)?"
+    r"|\bd[ií]vida\s+ativa\b)"
+)
+_PA_FORTE = (
+    r"\d{5}[.\-\s]{0,2}\d{3}[.\s]?\d{3}\s?/\s?\d{4}[\-\s]{0,2}\d{2}"
+    r"|\d{2}\.\d{3}\.\d{6}/\d{2,4}-\d{2}"
+)
+_PA_GENERICO = (
+    r"(?!\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})(?!\d{5}-\d{3}\b)\d{3,}(?:[.\-/]\d+)*"
+)
+_PA_LABEL = (
+    r"(?:\bprocessos?\s+administrativos?(?:\s+fiscais?)?"
+    r"|\bprocedimentos?\s+administrativos?(?:\s+fiscais?)?"
+    r"|\bP\.?A\.?F\.?(?![A-Za-z])|\bPAs?\b(?=\s*(?:n[ºo°]|:)))"
+)
+# Entre o rotulo e o numero: pontuacao, "sob o", "de", "n", "n.", "nº", "nºs", "nos", "numero(s)", "nrs.".
+_NUM_CONECTOR = (
+    r"[\s:;,|\-–]*"
+    r"(?:(?:sob\s+(?:o\s+)?|com\s+(?:o\s+)?|de\s+|do\s+)?"
+    r"(?:n[úu]meros?|n[ºo°]s?\.?|n\.[ºo°]?|nrs?\.?|nos)(?![A-Za-z])\s*[:\-]?\s*)?"
+)
+_LISTA_SEP = r"(?:\s*[,;|]\s*|\s+e\s+|\s+ou\s+|\s+e/ou\s+|\s+/\s+|\s*\n\s*)(?:n[ºo°]s?\.?\s*)?"
+_FIM_NUMERO = r"(?!\d|[,.\-/]\d)"
+
+
+class _RotuloListaRecognizer(PatternRecognizer):
+    """Numero depois de um rotulo, sozinho ou em lista ("CDAs nº X, Y e Z"): cada numero e um achado (um token por
+    numero, o mesmo numero em outro ponto cai no mesmo token). O rotulo fica fora do token. Alem do rotulo, a forma
+    inconfundivel do numero entra sem rotulo (o padrao do ``PatternRecognizer``)."""
+
+    def __init__(
+        self,
+        *,
+        entity: str,
+        name: str,
+        label: str,
+        forte: str,
+        generico: str,
+        min_digits: int,
+        forte_sem_rotulo: str,
+        flags: int = re.IGNORECASE,
+        guard=None,
+    ) -> None:
+        super().__init__(
+            supported_entity=entity,
+            supported_language="pt",
+            name=name,
+            patterns=[
+                Pattern(
+                    name=f"{name}_forma_forte",
+                    regex=rf"(?<![\d.\-/])(?:{forte_sem_rotulo}){_FIM_NUMERO}",
+                    score=0.8,
+                )
+            ],
+        )
+        self._label = re.compile(label + _NUM_CONECTOR, flags)
+        self._value = re.compile(rf"(?<![\d.])(?:{forte}|{generico}){_FIM_NUMERO}", flags)
+        self._sep = re.compile(_LISTA_SEP, flags)
+        self._min_digits = min_digits
+        self._guard = guard
+
+    def _digits_ok(self, value: str) -> bool:
+        return sum(char.isalnum() for char in value) >= self._min_digits
+
+    def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
+        results = super().analyze(text, entities, nlp_artifacts, regex_flags)
+        taken = [(item.start, item.end) for item in results]
+        for label in self._label.finditer(text):
+            if self._guard is not None and not self._guard(text, label):
+                continue
+            position = label.end()
+            while True:
+                value = self._value.match(text, position)
+                if value is None or not self._digits_ok(value.group()):
+                    break
+                span = value.span()
+                if not any(start < span[1] and span[0] < end for start, end in taken):
+                    results.append(
+                        RecognizerResult(
+                            entity_type=self.supported_entities[0],
+                            start=span[0],
+                            end=span[1],
+                            score=0.85,
+                        )
+                    )
+                    taken.append(span)
+                sep = self._sep.match(text, span[1])
+                if sep is None:
+                    break
+                position = sep.end()
+        return results
+
+
+class BrCdaRecognizer(_RotuloListaRecognizer):
+    """Numero de CDA / inscricao em divida ativa: troca por ``[CDA_n]`` (H9-i). Sem rotulo entra a forma da PGFN com
+    separadores ("80.6.21.000123-45", "80 2 19 012345-67") e a de FGTS; com rotulo ("CDA nº", "CDAs", "inscrição em
+    dívida ativa nº", "inscrições nºs", "Certidão de Dívida Ativa") entra qualquer numero de 6+ digitos, em lista."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            entity="BR_CDA",
+            name="BrCdaRecognizer",
+            label=_CDA_LABEL,
+            forte=_CDA_PGFN,
+            generico=_CDA_GENERICO,
+            min_digits=6,
+            forte_sem_rotulo=rf"{_CDA_PGFN_SEPARADA}|(?:FG|CS)[A-Z]{{2}}\d{{9,12}}",
+        )
+
+
+class BrProcessoAdministrativoRecognizer(_RotuloListaRecognizer):
+    """Numero de processo administrativo (PA, PAF, processo administrativo fiscal): troca por
+    ``[PROCESSO_ADMINISTRATIVO_n]`` (H9-i). Sem rotulo entra a forma da Receita ("10983.720123/2019-11",
+    "10983-720.123/2019-11"); com rotulo, qualquer numero de 6+ digitos, em lista, menos o numero CNJ de processo
+    judicial (esse segue como ``[PROCESSO_n]``)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            entity="BR_PROCESSO_ADMINISTRATIVO",
+            name="BrProcessoAdministrativoRecognizer",
+            label=_PA_LABEL,
+            forte=rf"{_PA_FORTE}|\d{{17}}",
+            generico=_PA_GENERICO,
+            min_digits=6,
+            forte_sem_rotulo=_PA_FORTE,
+        )
+
+
+# --- cadastro rural, registro da Junta, IP e CPF mascarado (H9-i, decisao do Operador): TROCADOS ---------------------
+# CAR: "SC-4202404-" + 32 hexadecimais. CCIR/CIB/NIRF/ITR: numero de 6+ digitos depois do rotulo. Area (ha, m2) e data
+# do ato ficam em claro: o achado e so o numero.
+_CAR_CODIGO = r"[A-Z]{2}-\d{7}-[0-9A-F]{32}"
+_CADASTRO_RURAL_LABEL = r"(?:\bCCIRs?\b|\bCIB\b|\bNIRF\b|\bITR\b|\bCARs?\b|\bCadastro\s+Ambiental\s+Rural\b)"
+_REGISTRO_JUNTA_LABEL = (
+    r"(?:\b(?:protocolo|arquivamento|chancela)\b(?:\s+(?:da\s+)?(?:JUCE[A-Z]{0,3}|Junta\s+Comercial))?)"
+)
+_JUNTA_CONTEXTO = re.compile(r"(?i)\b(?:jucesc|jucerja|jucesp|jucepar|jucergs|junta\s+comercial|chancela)\b")
+
+
+def _protocolo_da_junta(text: str, label: re.Match) -> bool:
+    """Arquivamento e chancela valem sozinhos; "protocolo" so com a Junta Comercial por perto."""
+
+    if not label.group().casefold().startswith("protocolo"):
+        return True
+    return _JUNTA_CONTEXTO.search(text, max(0, label.start() - 200), label.end() + 60) is not None
+
+
+class BrCadastroRuralRecognizer(_RotuloListaRecognizer):
+    """CCIR, CAR, CIB, NIRF e ITR: o numero vira ``[CADASTRO_RURAL_n]``; o codigo do CAR vale sem rotulo."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            entity="BR_CADASTRO_RURAL",
+            name="BrCadastroRuralRecognizer",
+            label=_CADASTRO_RURAL_LABEL,
+            forte=_CAR_CODIGO,
+            generico=r"(?!\d{1,2}/\d{1,2}/\d{2,4})\d[\d.\-/]{4,}\d",
+            min_digits=6,
+            forte_sem_rotulo=_CAR_CODIGO,
+        )
+
+
+class BrRegistroJuntaRecognizer(_RotuloListaRecognizer):
+    """Protocolo, arquivamento e chancela da Junta Comercial (JUCESC): o numero vira ``[REGISTRO_JUNTA_n]``."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            entity="BR_REGISTRO_JUNTA",
+            name="BrRegistroJuntaRecognizer",
+            label=_REGISTRO_JUNTA_LABEL,
+            forte=r"\d{2,}(?:[.\-/]\d+)*",
+            generico=r"\d{2,}(?:[.\-/]\d+)*",
+            min_digits=7,
+            forte_sem_rotulo=r"(?!)",
+            guard=_protocolo_da_junta,
+        )
+
+
+class BrIpRecognizer(PatternRecognizer):
+    """Endereco IPv4 (octetos de 0 a 255). Sem rotulo, so com um octeto de 100 ou mais ou o rotulo "IP" por perto:
+    "item 1.2.3.4" (numeracao de clausula) nao e IP."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_IP",
+            supported_language="pt",
+            name="BrIpRecognizer",
+            patterns=[
+                Pattern(
+                    name="ipv4",
+                    regex=r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)",
+                    score=0.8,
+                )
+            ],
+        )
+
+    def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
+        kept = []
+        for result in super().analyze(text, entities, nlp_artifacts, regex_flags):
+            octets = [int(part) for part in text[result.start : result.end].split(".")]
+            if max(octets) > 255:
+                continue
+            labeled = re.search(r"(?i)\b(?:ip|ipv4|endere[cç]o)\b[^\n\d]{0,25}$", text[max(0, result.start - 40) : result.start])
+            if max(octets) >= 100 or labeled:
+                kept.append(result)
+        return kept
+
+
+class BrCpfMascaradoRecognizer(PatternRecognizer):
+    """CPF mascarado pelo gov.br ("***.123.456-**", "xxx.123.456-xx", "•••.123.456-••"): ``[CPF_n]``. A chave canonica
+    guarda so o miolo de 6 digitos; o ``PseudonymMap`` reaproveita o token de um CPF completo do mapa com o mesmo miolo."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_CPF",
+            supported_language="pt",
+            name="BrCpfMascaradoRecognizer",
+            patterns=[
+                Pattern(
+                    name="cpf_mascarado",
+                    regex=(
+                        r"(?<![\w*])[*xX•●·]{3}[.\s]?(?P<a>\d{3})[.\s]?(?P<b>\d{3})[\-\s]?[*xX•●·]{2}(?![\w*])"
+                    ),
+                    score=0.85,
+                )
+            ],
+        )
+
+    def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
+        results = super().analyze(text, entities, nlp_artifacts, regex_flags)
+        for result in results:
+            core = re.sub(r"\D", "", text[result.start : result.end])
+            result.recognition_metadata = {"canonical_key": f"MASK:{core}"}
+        return results
+
+
+
 class BrBankAccountRecognizer(ValueGroupPatternRecognizer):
     """Agência, conta, Debcad/SIDA e conta SISPAR rotulados: o rótulo fica fora do token e o valor
     inteiro fica dentro ("Banco/Agência: 237/1234-5" -> "Banco/Agência: [CONTA_n]").
@@ -638,9 +934,19 @@ class BrCepRecognizer(ValueGroupPatternRecognizer):
             patterns=[
                 Pattern(
                     name="cep_com_rotulo",
-                    regex=rf"\b{_CEP_LABEL}(?P<valor>\d{{2}}\.?\d{{3}}-?\s*\d{{3}}\d?)(?!\d)",
+                    regex=rf"\b{_CEP_LABEL}(?P<valor>{_CEP_VALOR})",
                     score=0.85,
-                )
+                ),
+                Pattern(
+                    # Sem rotulo, so a forma pontuada completa "88.330-000" depois de virgula, hifen, barra de tabela ou
+                    # inicio de linha (endereco corrido ou celula): "Art. 12.345-678" e "R$ 12.345-678" nao entram.
+                    name="cep_pontuado_sem_rotulo",
+                    regex=(
+                        r"(?:(?<=[,;|–\-])|(?<=[,;|–\-]\s)|(?<![^\n]))[ \t]*"
+                        r"(?P<valor>\d{2}\.\d{3}-\d{3})(?!\d|[.,/\-]\d)"
+                    ),
+                    score=0.7,
+                ),
             ],
         )
 
@@ -688,7 +994,7 @@ class BrCepUfRecognizer(PatternRecognizer):
                     regex=(
                         rf"(?<![A-Z])(?:{_UF_ALT})\b"
                         r"[,\s\-–]{1,4}"
-                        r"\d{2}\.?\d{3}[-\s]*\d{3}(?!\d)"
+                        r"\d{2}[.\s]?\d{3}[\s.\-]{0,3}\d{3}(?!\d)"
                     ),
                     score=0.82,
                 )
@@ -698,7 +1004,7 @@ class BrCepUfRecognizer(PatternRecognizer):
 
     def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
         results = super().analyze(text, entities, nlp_artifacts, regex_flags)
-        body = re.compile(r"\d{2}\.?\d{3}[-\s]*\d{3}(?!\d)")
+        body = re.compile(r"\d{2}[.\s]?\d{3}[\s.\-]{0,3}\d{3}(?!\d)")
         for result in results:
             snippet = text[result.start : result.end]
             match = body.search(snippet)
@@ -716,29 +1022,27 @@ class BrPhoneRecognizer(PatternRecognizer):
             name="BrPhoneRecognizer",
             patterns=[
                 Pattern(
+                    # Telefone digitado de qualquer jeito (H9-i): DDD com ou sem parenteses (e com espaco dentro),
+                    # separador (espaco, hifen, ponto; ate dois) ou nenhum, nono digito colado ou separado:
+                    # "(47)98473-5213", "47 98473-5213", "47 9 8473 5213", "( 47 ) 9.8473 - 5213".
                     name="telefone_br",
                     regex=(
-                        r"(?<!\d)(?:\+?55[\s.\-]?)?"
-                        r"(?:\([1-9]\d\)|[1-9]\d)[\s.\-]?"
-                        r"(?:9\d{4}|[2-5]\d{3})[\s.\-]?\d{4}(?!\d)"
+                        rf"(?<!\d)(?:\+?55{_PH_SEP})?{_PH_DDD}{_PH_SEP}"
+                        rf"(?:9{_PH_SEP}\d{{4}}|[2-5]\d{{3}}){_PH_SEP}\d{{4}}(?!\d)"
                     ),
                     score=0.8,
                 ),
                 Pattern(
-                    # Celular com o nono digito separado por espaco: "47 9 8473-5213".
-                    name="telefone_nono_digito_separado",
-                    regex=(
-                        r"(?<!\d)(?:\+?55[\s.\-]?)?"
-                        r"(?:\([1-9]\d\)|[1-9]\d)[\s.\-]?"
-                        r"9[ \t]\d{4}[\s.\-]?\d{4}(?!\d)"
-                    ),
-                    score=0.8,
+                    # Celular sem DDD, com o separador no meio: "9 8473 5213", "98473-5213".
+                    name="telefone_celular_sem_ddd",
+                    regex=r"(?<![\d.,/\-])9[ \t.\-]?\d{4}[ \t\-]\d{4}(?!\d|[.,/\-]\d)",
+                    score=0.7,
                 ),
                 Pattern(
                     name="telefone_ddd_parenteses",
                     regex=(
-                        r"(?<!\d)(?:\+?55[\s.\-]?)?"
-                        r"\([1-9]\d\)[\s.\-]*"
+                        rf"(?<!\d)(?:\+?55{_PH_SEP})?"
+                        r"\([ \t]?[1-9]\d[ \t]?\)[\s.\-]*"
                         r"(?:\d[\s.\-]*){6,8}\d(?!\d)"
                     ),
                     score=0.8,
@@ -747,9 +1051,9 @@ class BrPhoneRecognizer(PatternRecognizer):
                     name="telefone_rotulado_7_a_9_locais",
                     regex=(
                         rf"\b{_PHONE_LABEL}(?![A-Za-z])[^\n\d(]{{0,20}}?"
-                        r"(?:\+?55[\s.\-]?)?"
-                        r"(?:\([1-9]\d\)|[1-9]\d)[\s.\-]?"
-                        r"\d{3,5}[\s.\-]?\d{4}(?!\d)"
+                        rf"(?:\+?55{_PH_SEP})?"
+                        rf"{_PH_DDD}{_PH_SEP}"
+                        rf"\d{{3,5}}{_PH_SEP}\d{{4}}(?!\d)"
                     ),
                     score=0.85,
                 ),
@@ -834,7 +1138,13 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
         BrCnhRecognizer(),
         BrUrlChaveRecognizer(),
         BrPisRecognizer(),
-        BrMatriculaImovelRecognizer(),
+        *([] if MATRICULA_EM_CLARO else [BrMatriculaImovelRecognizer()]),
+        BrCdaRecognizer(),
+        BrProcessoAdministrativoRecognizer(),
+        BrCadastroRuralRecognizer(),
+        BrRegistroJuntaRecognizer(),
+        BrIpRecognizer(),
+        BrCpfMascaradoRecognizer(),
         BrCepRecognizer(),
         BrCepUfRecognizer(),
         BrCepTabelaRecognizer(),
@@ -851,6 +1161,21 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                         r"(?P<valor>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}"
                         r"-[0-9A-F]{12}|[0-9A-F]{32})\b"
                     ),
+                    score=0.85,
+                ),
+                Pattern(
+                    # Chave aleatoria (EVP) em formato de UUID, mesmo sem rotulo (H9-i, coordenacao).
+                    name="pix_uuid_sem_rotulo",
+                    regex=(
+                        r"(?<![0-9A-Za-z\-])(?P<valor>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})"
+                        r"(?![0-9A-Za-z\-])"
+                    ),
+                    score=0.8,
+                ),
+                Pattern(
+                    # EndToEndId do PIX: "E" + ISPB (8 digitos) + data/hora (12 digitos) + 11 alfanumericos.
+                    name="pix_end_to_end_id",
+                    regex=r"(?<![0-9A-Za-z])(?P<valor>E\d{20}[0-9A-Za-z]{11})(?![0-9A-Za-z])",
                     score=0.85,
                 )
             ],

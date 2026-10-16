@@ -45,6 +45,10 @@ _ROLE_PREFIX = re.compile(
     r"|(?:(?:co-?)?devedor[a]?(?:\s+principal)?|principal)\s*:\s*"
     r")(?=[\w(])"
 )
+_QUALITY_PREFIX = re.compile(r"(?i)^\s*(?:massa\s+falida|esp[óo]lio|em\s+recupera[cç][aã]o\s+judicial)\s+d[eao]s?\s+")
+_QUALITY_SUFFIX = re.compile(
+    r"(?i)\s*[-–—,(]?\s*(?:em\s+recupera[cç][aã]o\s+judicial|massa\s+falida|em\s+fal[êe]ncia)\s*\)?\s*$"
+)
 _GEO_MARKER = re.compile(
     r"(?i)^\s*(?:<!--\s*)?pagina-origem\s*:"
 )
@@ -129,6 +133,18 @@ def _clip(
             value = text[start:end]
             if stats is not None:
                 stats.higiene_rotulo += 1
+
+    if span.entity_type in ("PERSON", "ORGANIZATION"):
+        # H9-i: qualidade processual fica fora do token ("MASSA FALIDA DE [EMPRESA_1]", "[EMPRESA_1] - EM RECUPERACAO
+        # JUDICIAL", "ESPOLIO DE [PESSOA_1]"); so nas pontas, nunca por dentro da razao social.
+        lead = _QUALITY_PREFIX.match(value)
+        if lead is not None and lead.end() < len(value):
+            start += lead.end()
+            value = text[start:end]
+        tail = _QUALITY_SUFFIX.search(value)
+        if tail is not None and tail.start() > 0:
+            end = start + tail.start()
+            value = text[start:end]
 
     if span.entity_type == "LOCATION":
         date = _DATE_IN_VALUE.search(value)

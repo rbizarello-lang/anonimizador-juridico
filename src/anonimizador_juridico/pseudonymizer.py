@@ -35,6 +35,11 @@ _TOKEN_LABELS = {
     "BR_NIRE": "NIRE",
     "BR_CNH": "CNH",
     "BR_URL": "URL",
+    "BR_CDA": "CDA",
+    "BR_CADASTRO_RURAL": "CADASTRO_RURAL",
+    "BR_REGISTRO_JUNTA": "REGISTRO_JUNTA",
+    "BR_IP": "IP",
+    "BR_PROCESSO_ADMINISTRATIVO": "PROCESSO_ADMINISTRATIVO",
     "BR_EPROC": "EPROC",
     "PERSON": "PESSOA",
     "ORGANIZATION": "EMPRESA",
@@ -169,9 +174,16 @@ def canonicalize(entity_type: str, value: str) -> str:
         "BR_PIS",
         "BR_NIRE",
         "BR_CNH",
+        "BR_PROCESSO_ADMINISTRATIVO",
+        "BR_CADASTRO_RURAL",
+        "BR_REGISTRO_JUNTA",
     }:
         return only_digits(value)
+    if entity_type == "BR_CDA":
+        return re.sub(r"[^0-9A-Z]", "", value.upper())
     if entity_type == "BR_PIX":
+        if re.fullmatch(r"E\d{20}[0-9A-Za-z]{11}", value.strip()):
+            return value.strip().upper()  # EndToEndId (alfanumerico)
         return re.sub(r"[^0-9a-f]", "", _PIX_LABEL.sub("", value, count=1).casefold())
     if entity_type == "BR_PLACA":
         compact = re.sub(r"[^A-Z0-9]", "", _PLACA_LABEL.sub("", value, count=1).upper())
@@ -279,6 +291,24 @@ class PseudonymMap:
                 return token
         return None
 
+    def _cpf_mask_alias(self, canonical: str) -> str | None:
+        """CPF mascarado do gov.br ("MASK:123456", o miolo) recebe o token do CPF completo com o mesmo miolo, se for um so;
+        o CPF completo que chega depois de um mascarado com o mesmo miolo reaproveita o token do mascarado."""
+
+        if canonical.startswith("MASK:"):
+            core = canonical[5:]
+            tokens = {
+                token
+                for (kind, other), token in self._index.items()
+                if kind == "BR_CPF" and len(other) == 11 and other[3:9] == core
+            }
+        elif len(canonical) == 11 and canonical.isdigit():
+            token = self._index.get(("BR_CPF", f"MASK:{canonical[3:9]}"))
+            tokens = {token} if token else set()
+        else:
+            return None
+        return next(iter(tokens)) if len(tokens) == 1 else None
+
     def resolve(
         self,
         entity_type: str,
@@ -290,6 +320,8 @@ class PseudonymMap:
         canonical = canonical_key or canonicalize(entity_type, value)
         key = (entity_type, canonical)
         existing = self._index.get(key)
+        if existing is None and entity_type == "BR_CPF":
+            existing = self._cpf_mask_alias(canonical)
         if existing is None and entity_type == "LOCATION" and not canonical_key:
             existing = self._location_alias(canonical)
         if existing:

@@ -51,7 +51,7 @@ _PLACE_DATE_AFTER = re.compile(r"\s*,\s*\d{1,2}\s*(?:de|/)\s*[\wÀ-ÿ]+\s*(?:de|
 # Endereco em volta: CEP perto, ou "Rua X, 10," / "Endereco:" na mesma frase antes da palavra.
 _CEP_NEAR = re.compile(r"(?i)\bcep\b|(?<!\d)\d{5}-?\d{3}(?!\d)")
 _STREET_BEFORE = re.compile(
-    r"(?i)(?:\b(?:rua|r\.|av\.?|avenida|alameda|travessa|rodovia|estrada|pra[cç]a)\s+[^.;\n]{0,70}?\d[^.;\n]{0,30}|"
+    r"(?i)(?:\b(?:rua|r\.|av\.?|avenida|alameda|travessa|rodovia|estrada|pra[cç]a|servid[ãa]o|loteamento)\s+[^.;\n]{0,70}?\d[^.;\n]{0,30}|"
     r"\b(?:endere[cç]o|logradouro|domic[ií]lio)\b[^.;\n]{0,100})$"
 )
 _COURT_HEADER = re.compile(

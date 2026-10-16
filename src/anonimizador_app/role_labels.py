@@ -28,3 +28,26 @@ def is_role_label(value: str) -> bool:
     if not any(word in ROLE_LABEL_WORDS for word in words):
         return False
     return all(word in ROLE_LABEL_WORDS or word in _LINK_WORDS for word in words)
+
+
+# --- rotulos fixos de documento e sufixos societarios soltos (H9-i) ------------------------------------------------
+# "CPF/CNPJ:", "CPF/MF", "CNPJ/MF", "CPF ou CNPJ" sem numero ao lado sao o rotulo do campo, nunca pessoa nem empresa.
+# "LTDA", "EPP", "ME", "S.A.", "S/A", "EIRELI", "MEI" sozinhos tambem nunca sao entidade: o sufixo so entra no token
+# junto da razao social.
+_DOC_WORDS = frozenset({"cpf", "cnpj", "mf", "cic", "rg", "cnh"})
+_DOC_LINKS = frozenset({"e", "ou", "de", "do", "da", "no", "na", "n", "nº", "no.", "numero", "num", "inscricao"})
+_SOCIETARY_ALONE = re.compile(
+    r"(?i)^\s*(?:ltda|epp|eireli|mei|me|ei|slu|spe|s\s*[/.]?\s*[as]|s\.\s*[as]|sa|cia|companhia|sociedade\s+an[oô]nima)\s*[.,;:]*\s*$"
+)
+
+
+def is_fixed_label(value: str) -> bool:
+    """O texto e so o rotulo de documento ("CPF/CNPJ", "CPF ou CNPJ:", "CNPJ/MF") ou so um sufixo societario
+    ("LTDA", "S/A", "ME", "EPP", "EIRELI", "MEI"): nao e entidade."""
+
+    if _SOCIETARY_ALONE.match(value):
+        return True
+    words = _WORD.findall(fold_lexical(value).replace("/", " "))
+    if not words or not any(word in _DOC_WORDS for word in words):
+        return False
+    return all(word in _DOC_WORDS or word in _DOC_LINKS for word in words)

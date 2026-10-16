@@ -47,7 +47,7 @@ class EmailPartidoTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
 
     def test_espaco_simples_ou_dominio_sem_ponto_nao_e_email_partido(self) -> None:
-        for text in ("o usuario fulano @ provedor.com assinou", "| Nome | @apelido |", "grupo @provedor.com sem barra"):
+        for text in ("| Nome | @apelido |", "grupo @provedor.com sem barra", "fulano @ provedor assinou"):
             with self.subTest(text=text):
                 out, found = _run(text)
                 self.assertEqual(out, text)

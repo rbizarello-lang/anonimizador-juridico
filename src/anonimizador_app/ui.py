@@ -325,12 +325,12 @@ _EMPTY_ART = f"""
 # estiver aqui cai em "Outros" (nada some se o catalogo crescer).
 _TAG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Pessoa física", ("BR_CPF", "BR_RG", "BR_CNH", "BR_PIS", "BR_TITULO_ELEITOR", "BR_NASCIMENTO")),
-    ("Empresa e processo", ("BR_CNPJ", "BR_NIRE", "BR_PROCESSO", "BR_OAB", "BR_EPROC")),
-    ("Contato e endereço", ("EMAIL_ADDRESS", "BR_PHONE", "BR_CEP", "BR_URL")),
+    ("Empresa e processo", ("BR_CNPJ", "BR_NIRE", "BR_PROCESSO", "BR_PROCESSO_ADMINISTRATIVO", "BR_CDA", "BR_REGISTRO_JUNTA", "BR_OAB", "BR_EPROC")),
+    ("Contato e endereço", ("EMAIL_ADDRESS", "BR_PHONE", "BR_CEP", "BR_URL", "BR_IP")),
     (
         "Bens e contas",
         (
-            "BR_MATRICULA_IMOVEL",
+            "BR_CADASTRO_RURAL",
             "BR_PIX",
             "BR_CONTA_BANCARIA",
             "BR_RENAVAM",

@@ -40,6 +40,10 @@
   adjacencia sem homonimo, passada final de formas conhecidas (ID do mapa), e-mail partido entre celulas, "familia
   De X", cargo de socio e de cartorio, veiculo em todas as origens, RG "8/C.1.234.567", registro da JUCESC, rua
   numerada.
+  2.10.0 = H9-i lote A: telefone, e-mail e CEP tolerantes, CDA e processo administrativo trocados, matricula sempre em
+  claro, cadastro rural/registro da Junta/IP/CPF mascarado/OAB trocados, PIX (UUID e EndToEndId), sufixos e rotulos soltos,
+  lista protegida em arquivo de dados com padroes (orgao fracionado, sigla com UF, cooperativa, legislacao) e trava da
+  lista do caso, logradouro com nome proprio, qualidade processual fora do token.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -57,7 +61,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.9.2"
+DETECTION_VERSION = "2.10.0"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent

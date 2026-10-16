@@ -462,7 +462,7 @@ class StructureParityTests(unittest.TestCase):
         self.assertTrue((result.job.map_path.parent / "AUDITORIA_PRIVADA.txt").is_file())
         self.assertFalse((result.job.export_dir / "AUDITORIA_PRIVADA.txt").exists())
 
-    def test_registry_number_is_keyed_by_the_office_and_the_office_stays(self) -> None:
+    def test_registry_number_and_the_office_stay_in_clear(self) -> None:
         text = (
             "<!-- pagina-origem: 1 -->\n\n"
             "Imóvel da matrícula nº 12345 do 1º Registro de Imóveis de Joinville.\n"
@@ -473,8 +473,8 @@ class StructureParityTests(unittest.TestCase):
 
         self.assertIn("1º Registro de Imóveis de Joinville", body)
         self.assertIn("2º Registro de Imóveis de Joinville", body)
-        self.assertNotIn("12345", body)
-        self.assertEqual(len(set(re.findall(r"\[MATRICULA_IMOVEL_\d+\]", body))), 2)
+        self.assertEqual(body.count("12345"), 2)  # H9-i: matricula em claro
+        self.assertEqual(re.findall(r"\[MATRICULA_IMOVEL_\d+\]", body), [])
 
 
 PAGE_2_NAMES = [("PERSON", "MARLENE OLIVEIRA SAMPAIO"), ("PERSON", "Olavo Ricardo Teixeira")]

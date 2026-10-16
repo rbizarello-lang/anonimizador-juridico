@@ -71,27 +71,18 @@ class BankAccountLabelTests(unittest.TestCase):
 
 
 class RegistrationLabelTests(unittest.TestCase):
-    def test_matricula_label_stays(self) -> None:
-        text = "imóvel da Matrícula nº 12.345 do 1º CRI"
-        self.assertEqual(_detect(text, "BR_MATRICULA_IMOVEL"), ["12.345"])
-        self.assertEqual(_masked(text), "imóvel da Matrícula nº [MATRICULA_IMOVEL_1] do 1º CRI")
+    """H9-i: a matricula de imovel fica SEMPRE em claro (vazamento controlado, decisao do Operador)."""
 
-    def test_matricula_list_gets_one_token_per_number(self) -> None:
-        text = "matrículas nº 11.111; nº 22.222; 33.333 do cartório"
-        self.assertEqual(
-            _detect(text, "BR_MATRICULA_IMOVEL"), ["11.111", "22.222", "33.333"]
-        )
-        self.assertEqual(
-            _masked(text),
-            "matrículas nº [MATRICULA_IMOVEL_1]; nº [MATRICULA_IMOVEL_2]; "
-            "[MATRICULA_IMOVEL_3] do cartório",
-        )
-
-    def test_same_matricula_alone_and_in_list_share_the_token(self) -> None:
-        text = "Matrícula 11.111. Depois, matrículas 11.111; 22.222."
-        masked = _masked(text)
-        self.assertEqual(masked.count("[MATRICULA_IMOVEL_1]"), 2)
-        self.assertIn("[MATRICULA_IMOVEL_2]", masked)
+    def test_matricula_stays_in_clear_with_any_label(self) -> None:
+        for text in (
+            "imóvel da Matrícula nº 12.345 do 1º CRI",
+            "matrículas nº 11.111; nº 22.222; 33.333 do cartório",
+            "Matrícula 11.111. Depois, matrículas 11.111; 22.222.",
+            "matricula n. 7777",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_detect(text, "BR_MATRICULA_IMOVEL"), [])
+                self.assertEqual(_masked(text), text)
 
     def test_label_without_number_is_not_a_matricula(self) -> None:
         self.assertEqual(_detect("conforme a matrícula do imóvel", "BR_MATRICULA_IMOVEL"), [])

@@ -129,7 +129,8 @@ _ROLE_AFTER = re.compile(
 _STREET_SHARE = 0.6
 _STREET_BEFORE = re.compile(
     r"(?i)(?:endere[çc]o|logradouro)\s*:?\s*$|"
-    r"(?:\brua|\br\.|\bav\.|\bavenida|\balameda|\btravessa|\bpra[çc]a|\brodovia|\bestrada)\s*$"
+    r"(?:\brua|\br\.|\bav\.|\bavenida|\balameda|\btravessa|\bpra[çc]a|\brodovia|\bestrada(?:\s+(?:municipal|estadual|federal|geral|vicinal))?"
+    r"|\bservid[ãa]o|\bloteamento|\blinha|\brio|\bbairro|\bbeco|\bgleba|\blocalidade|\bdistrito|\bacesso)\s*$"
 )
 _HOUSE_NUMBER_AFTER = re.compile(r"(?i)\s*,?\s*(?:nr?\.|n[º°o]\.?|n[uú]mero)\s*\d")
 _COMPE_BEFORE = re.compile(r"^\s*\d{3,5}\s*-\s*$")

@@ -33,7 +33,7 @@ from anonimizador_juridico.pseudonymizer import fold_lexical
 
 from .gemini_detector import KEEP_TERMS, is_registry_office
 from .geo_names import UF_SIGLAS, is_geo_name, is_state_name, place_label_before
-from .role_labels import is_role_label
+from .role_labels import is_fixed_label, is_role_label
 from .vehicle_names import is_vehicle_span
 from .roster import (
     KEEP,
@@ -54,6 +54,7 @@ _VOWEL = re.compile(r"[AEIOUaeiou]")
 _COMPANY_SUFFIX = re.compile(r"(?i)\b(?:ltda|me|epp|eireli|s/?a|s\.a|cia|companhia)\b")
 _DOMAIN = re.compile(r"(?i)[\w-]+\.[a-z]{2,}|@")
 _SIGLA = re.compile(r"^[A-Z]{2,5}$")
+_MATRICULA_MENCAO = re.compile(r"(?i)\bmatr[ií]cula")
 
 # Rotulo de peca seguido de numero ("Pagina 12", "Evento 45", "Tema 1.209") ou sozinho ("Despacho",
 # "Valor Total"): e o rotulo do documento, nao uma pessoa.
@@ -103,9 +104,11 @@ _PREFIXO_SO_ROTULO = frozenset({"lei", "sumula", "decisao", "despacho", "sentenc
 # Termo protegido de uma palavra que, DENTRO de um nome, tambem o descaracteriza (sigla de instituicao).
 # As palavras comuns da lista (uniao, tribunal, evento, comarca...) so valem inteiras: "Uniao Comercial de
 # Graos Ltda" e empresa e tem de ser trocada.
+# Os sistemas da lista ``data/sistemas_protegidos.txt`` valem inteiros em qualquer caso (KEEP_TERMS); aqui entram so as
+# siglas que nao servem de nome proprio dentro de um nome ("Simba", "Regularize" e "Sida" podem ser marca ou sobrenome).
 _SIGLAS_INSTITUCIONAIS = frozenset(
     "pgfn pfn inss stf stj trf4 cnj sisbajud renajud cnib infojud cpc ctn lef mpf dpu agu pgf pge pgm "
-    "sniper censec serasajud".split()
+    "sniper censec serasajud pje ecac eproc".split()
 )
 _UNIAO_FEDERAL = ("uniao", "federal")
 
@@ -736,6 +739,8 @@ def _reject(
     is_street = kind == "endereco"
     if _is_url_mention(kind, value):
         return "url"
+    if _MATRICULA_MENCAO.search(value):
+        return "rotulo_numero"  # matricula de imovel fica sempre em claro, mesmo que o LLM a aponte (H9-i)
     if not is_street:
         letters = any(char.isalpha() for char in value)
         if letters and not _has_initial_capital(value) and not (kind == "empresa" and _DOMAIN.search(value)):
@@ -747,7 +752,11 @@ def _reject(
     if not is_street and _is_ordinal_label(value):
         return "ordinal"
     if not is_street and (
-        _is_form_label(value) or is_role_label(value) or _is_organ(value) or is_registry_office(value)
+        _is_form_label(value)
+        or is_role_label(value)
+        or is_fixed_label(value)
+        or _is_organ(value)
+        or is_registry_office(value)
     ):
         return "rotulo_formulario"
     if not is_street and _is_legal_term(value):

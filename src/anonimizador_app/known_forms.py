@@ -21,7 +21,7 @@ from collections.abc import Iterable, Sequence
 
 from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.pseudonymizer import canonicalize
-from anonimizador_juridico.recognizers import _CNJ_FORMATADO
+from anonimizador_juridico.recognizers import _CDA_PGFN, _CNJ_FORMATADO
 
 from .batch_propagation import _id_pattern
 from .fidelity import drop_protected_spans
@@ -37,14 +37,37 @@ _NUMERIC = {
     "BR_PIS": 11,
     "BR_CNH": 11,
     "BR_RENAVAM": 9,
+    "BR_PROCESSO_ADMINISTRATIVO": 15,
+    "BR_CDA": 9,
 }
-_PATTERN_TYPES = frozenset({"BR_PLACA", "BR_CHASSI", "EMAIL_ADDRESS"})
+_PATTERN_TYPES = frozenset({"BR_PLACA", "BR_CHASSI", "EMAIL_ADDRESS", "BR_OAB"})
 _MIN_DIGITS = 9
 # Digitos com a pontuacao do documento no meio; nunca espaco (dois numeros vizinhos nao viram um).
 _RUN = re.compile(r"(?<!\d)\d(?:[.\-/]?\d){8,24}(?!\d)")
 _CNJ = re.compile(rf"(?<!\d)(?:{_CNJ_FORMATADO})(?!\d)")
 # NIRE escrito com espacos entre os grupos ("42 2 0123456 7").
 _NIRE_SPACED = re.compile(r"(?<!\d)\d(?:[ .\-]?\d){10}(?!\d)")
+# CDA da PGFN escrita com espacos ("80 2 19 012345-67"): o numero conhecido vale em qualquer grafia (H9-i).
+_CDA_SPACED = re.compile(rf"(?<![\d.\-/])(?:{_CDA_PGFN})(?!\d|[.\-/]\d)")
+
+
+def _oab_pattern(canonical: str) -> re.Pattern[str] | None:
+    """Inscricao da OAB ja conhecida ("SC12345B", ou so "12345"): "OAB/SC 12.345", "OAB SC nº 12345-B", "12345/SC"
+    voltam ao mesmo token na passada final (H9-i). Exige "OAB" ou a UF junto, nunca o numero solto."""
+
+    match = re.fullmatch(r"([A-Z]{2})?(\d+)([A-Z]?)", canonical)
+    if match is None:
+        return None
+    uf, digits, letter = match.groups()
+    number = r"\.?".join(digits)
+    suffix = rf"(?:\s*-?\s*{letter})?" if letter else ""
+    parts = []
+    if uf:
+        parts.append(rf"OAB\s*[/\-]?\s*{uf}\s*(?:n[º°o.]*\s*)?:?\s*-?\s*{number}{suffix}")
+        parts.append(rf"(?:OAB\s+)?{number}{suffix}\s*[/\-]\s*{uf}")
+    else:
+        parts.append(rf"OAB\s*(?:n[º°o.]*\s*)?:?\s*{number}{suffix}")
+    return re.compile(r"(?<![\w.])(?:" + "|".join(parts) + r")(?![\w]|\.\d)", re.IGNORECASE)
 
 
 class KnownForms:
@@ -112,7 +135,7 @@ class KnownForms:
                     )
                 )
 
-        for pattern in (_RUN, _CNJ, _NIRE_SPACED):
+        for pattern in (_RUN, _CNJ, _NIRE_SPACED, _CDA_SPACED):
             for match in pattern.finditer(text):
                 digits = re.sub(r"\D", "", match.group())
                 keys = self._digits.get(digits)
@@ -139,7 +162,7 @@ class KnownForms:
 
     def _pattern(self, key: tuple[str, str]) -> re.Pattern[str] | None:
         if key not in self._patterns:
-            self._patterns[key] = _id_pattern(*key)
+            self._patterns[key] = _oab_pattern(key[1]) if key[0] == "BR_OAB" else _id_pattern(*key)
         return self._patterns[key]
 
     def audit_line(self) -> str:

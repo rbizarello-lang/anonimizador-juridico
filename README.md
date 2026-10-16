@@ -95,8 +95,7 @@ Deteccao 2.3: rua com nome de pessoa vira [ENDERECO_n] (nao [PESSOA_n]), e banco
 ou instituicao de pagamento listado no SISBAJUD fica em claro em todo o lote.
 
 Deteccao 2.4: o rotulo fica no texto, fora do token, e o valor inteiro fica dentro
-("Banco/Agencia: [CONTA_n]", "Debcad: [CONTA_n]", "Matricula n [MATRICULA_IMOVEL_n]",
-"CEP: [CEP_n]"; lista de matriculas, um token por numero). O papel da parte fica
+("Banco/Agencia: [CONTA_n]", "Debcad: [CONTA_n]", "CEP: [CEP_n]"). O papel da parte fica
 fora do token ("executada [EMPRESA_n]"). CNPJ com a filial partida pela quebra da
 coluna e CEP de 8 digitos em tabela de enderecos passam a ser detectados.
 
@@ -162,7 +161,7 @@ X", "X/SC", linha de endereco, cabecalho em CAIXA ALTA) fica como estava. Cada l
 `AUDITORIA_PRIVADA.txt` na pasta privada, com as palavras-marca aprovadas e as recusadas
 para voce conferir; a `AUDITORIA.txt` dos textos so tem tokens e contagens.
 
-Deteccao 2.7: o token da matricula distingue o cartorio. A matricula 12.345 do 1o Registro
+Deteccao 2.10 (H9-i): a matricula de imovel fica SEMPRE em claro (decisao do Operador; `MATRICULA_EM_CLARO` em `recognizers.py` religa). CDA, processo administrativo, CAR/CCIR/CIB, registro da Junta, IP, CPF mascarado e OAB sao trocados. Historico, deteccao 2.7: o token da matricula distingue o cartorio. A matricula 12.345 do 1o Registro
 de Imoveis e a do 2o Registro de Imoveis sao tokens diferentes; vale a mencao do cartorio
 mais proxima (numero de ordem e lugar: "2o Oficio", "da Comarca de X"). Sem cartorio por
 perto, o token continua sendo por numero. O nome do cartorio, oficio ou tabelionato fica

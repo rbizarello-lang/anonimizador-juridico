@@ -25,6 +25,12 @@ _VIA_PREFIXES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^pra[cç]a\s+", re.IGNORECASE), "praca "),
     (re.compile(r"^p[cç]\.\s*", re.IGNORECASE), "praca "),
     (re.compile(r"^travessa\s+", re.IGNORECASE), "travessa "),
+    (re.compile(r"^tv\.\s*", re.IGNORECASE), "travessa "),
+    (re.compile(r"^rodovia\s+", re.IGNORECASE), "rodovia "),
+    (re.compile(r"^rod\.\s*", re.IGNORECASE), "rodovia "),
+    (re.compile(r"^estrada\s+", re.IGNORECASE), "estrada "),
+    (re.compile(r"^servid[ãa]o\s+", re.IGNORECASE), "servidao "),
+    (re.compile(r"^loteamento\s+", re.IGNORECASE), "loteamento "),
 )
 
 # (trecho que deve existir na via, forma_origem, forma_destino).

@@ -80,7 +80,7 @@ class DiscardReasonTests(unittest.TestCase):
         values = ["Página 12", "Evento 45", "Despacho:", "Valor Total", "12.345-6", "TRF", "98765 4321"]
         out, stats = run([mention("pessoa", value, text) for value in values], text)
         self.assertEqual(out, [])
-        self.assertEqual(stats.rotulo_numero, len(values))
+        self.assertEqual(stats.descartadas, len(values))  # "TRF" agora e sigla protegida (lista do Operador)
 
     def test_legal_term_including_the_prefix_form(self) -> None:
         text = "Decisão Interlocutória; Embargos de Declaração; Recurso Especial; Petição Inicial."
@@ -211,7 +211,7 @@ Documento eletrônico assinado por LUCIANA MONTEFUSCO DE ALMEIDA, Juíza Federal
 A sócia MARLENE OLIVEIRA SAMPAIO foi citada. A magistrada LUCIANA MONTEFUSCO DE ALMEIDA determinou a penhora.
 
 Instituições da ordem:
-00123 - BANCO ALFA FICTICIO SA
+00123 - BANCO TERRA FICTICIO SA
 """
 
 
@@ -237,14 +237,14 @@ class BatchJudgmentOnLlmMentionsTests(_Pipeline):
     ENTITIES = [
         ("pessoa", "LUCIANA MONTEFUSCO DE ALMEIDA", "parte"),  # o LLM errou o papel
         ("pessoa", "MARLENE OLIVEIRA SAMPAIO", "socio"),
-        ("empresa", "BANCO ALFA FICTICIO SA", "terceiro"),
+        ("empresa", "BANCO TERRA FICTICIO SA", "terceiro"),
     ]
 
     def test_judge_signed_by_stays_clear_and_the_partner_is_still_replaced(self) -> None:
         result, body, audit = self.go(DOC_JUDGE, FakeDiscoverer(self.ENTITIES))
         self.assertEqual(body.count("LUCIANA MONTEFUSCO DE ALMEIDA"), 2)
         self.assertNotIn("MARLENE", body)  # a prova de que a higiene e o juizo nao tiram protecao legitima
-        self.assertIn("00123 - BANCO ALFA FICTICIO SA", body)
+        self.assertIn("00123 - BANCO TERRA FICTICIO SA", body)
         self.assertRegex(audit, r"mantidas por agente publico 1, por instituicao financeira 1, retipadas como rua com nome de pessoa 0")
         self.assertEqual(result.roster.lookup("pessoa", "MARLENE OLIVEIRA SAMPAIO").action, TOKENIZE)
 

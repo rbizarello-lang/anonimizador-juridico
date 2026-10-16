@@ -7,7 +7,6 @@
     "EMAIL_ADDRESS": 1,
     "BR_OAB": 1,
     "BR_RG": 1,
-    "BR_MATRICULA_IMOVEL": 1,
     "BR_CEP": 1
   },
   "expected_values": {
@@ -18,7 +17,6 @@
     "EMAIL_ADDRESS": ["helena.teste@example.org"],
     "BR_OAB": ["SP 123.456"],
     "BR_RG": ["12.345.678-2"],
-    "BR_MATRICULA_IMOVEL": ["45.678"],
     "BR_CEP": ["01310-200"]
   },
   "must_preserve": [

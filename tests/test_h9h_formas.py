@@ -45,12 +45,12 @@ class FormasConhecidasNoLoteTests(_Pipeline):
             "Ato 42.2.0012345-6 foi lavrado.",
         )
         _result, body, audit = self.go(text, FakeDiscoverer([]))
-        self.assertNotIn("42200123456", body)
+        # H9-i: o numero depois de "Arquivamento" (carimbo da Junta) e REGISTRO_JUNTA; o resto leva o mesmo token de NIRE.
         tokens = re.findall(r"\[NIRE_\d+\]", body)
-        self.assertEqual(len(tokens), 3)
+        self.assertEqual(len(tokens), 2)
         self.assertEqual(len(set(tokens)), 1)
-        self.assertIn("Arquivamento: [NIRE_1]", body)
-        self.assertRegex(audit, r"BR_NIRE 2\)")
+        self.assertIn("Arquivamento: [REGISTRO_JUNTA_1]", body)
+        self.assertRegex(audit, r"BR_NIRE 1\)")
 
     def test_numero_maior_que_contem_o_mesmo_valor_nao_e_trocado(self) -> None:
         text = _doc("NIRE 42200123456.", "Protocolo 9942200123456 do balcão.")
@@ -102,9 +102,10 @@ class KnownFormsUnitTests(unittest.TestCase):
         mapping.resolve("BR_NIRE", "42200123456")
         forms = KnownForms()
         forms.add_mapping(mapping)
-        text = "Arquivamento 42200123456."
+        text = "Arquivamento 42200123456 e o NIRE 42200123456."
         found = forms.spans(text, [])
-        self.assertEqual([text[item.start : item.end] for item in found], ["42200123456"])
+        # H9-i: o 1o numero (depois de "Arquivamento") e do carimbo da Junta; so o de depois do NIRE entra aqui? Ambos sao NIRE conhecido.
+        self.assertEqual([(item.start, text[item.start : item.end]) for item in found], [(text.index("42200123456"), "42200123456"), (text.rindex("42200123456"), "42200123456")])
 
 
 if __name__ == "__main__":
