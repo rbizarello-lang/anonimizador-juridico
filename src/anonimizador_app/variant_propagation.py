@@ -70,9 +70,13 @@ _PERSON_CUE = re.compile(
     r"(?i)\b(?:sr|sra|srta|dr|dra)\b\.?|\bs[oó]ci[oa]\b|\bc[oô]njuge\b|\bcompanheir[oa]|\bfilh[oa]|\besposa\b|"
     r"\bmarido\b|\b[oa]\s+executad[oa]\b|\brequerid[oa]"
 )
+# H9-h: o sobrenome da familia pode vir com particula ("familia De Domenico", "familias Silva e da Rosa").
+_PARTICLE = r"(?i:d[aeo]s?)[ \t]+"
 _FAMILY = re.compile(
-    r"\b(?i:fam[ií]lias?)\s+(?P<names>[A-ZÀ-ÖØ-Þ][^\W\d_]*(?:\s*(?:,|\be\b)\s*[A-ZÀ-ÖØ-Þ][^\W\d_]*)*)"
+    r"\b(?i:fam[ií]lias?)\s+(?P<names>(?:" + _PARTICLE + r")?[A-ZÀ-ÖØ-Þ][^\W\d_]*"
+    r"(?:\s*(?:,|\be\b)\s*(?:" + _PARTICLE + r")?[A-ZÀ-ÖØ-Þ][^\W\d_]*)*)"
 )
+_FAMILY_NAME = re.compile(r"(?P<particle>" + _PARTICLE + r")?(?P<name>[A-ZÀ-ÖØ-Þ][^\W\d_]*)")
 # H9-g: pista de pessoa para o sobrenome sozinho (alem das do prenome: "familia" e CPF).
 _SURNAME_CUE = re.compile(r"(?i)\bfam[ií]lia|\bcpf\b")
 _PREVIOUS_WORD = re.compile(r"([^\W\d_]+)[ \t]+\Z")
@@ -291,11 +295,13 @@ class VariantPropagator:
         found: list[EntitySpan] = []
         for match in _FAMILY.finditer(text):
             base = match.start("names")
-            for name in _NAME_WORD.finditer(match.group("names")):
+            for name in _FAMILY_NAME.finditer(match.group("names")):
+                # A particula (de/da/do/De) entra no token junto com o sobrenome.
                 start, end = base + name.start(), base + name.end()
+                word_start = base + name.start("name")
                 if any(start < other_end and other_start < end for other_start, other_end in occupied):
                     continue
-                word = fold_lexical(name.group(0))
+                word = fold_lexical(name.group("name"))
                 owners = self._surnames.get(word)
                 if not owners:
                     continue
@@ -307,7 +313,7 @@ class VariantPropagator:
                     continue
                 # Sobrenome comum a mais de uma entrada da familia: vai para a de mais mencoes (empate: chave).
                 entry = max(owners, key=lambda item: (self.mentions[item.key], item.key))
-                reason = self._refusal(word, entry, surname=True) or self._common_use(text, word, start)
+                reason = self._refusal(word, entry, surname=True) or self._common_use(text, word, word_start)
                 if reason:
                     self.stats[reason] += 1
                     occupied.append((start, end))  # a busca por pista de pessoa nao conta a mesma palavra de novo
