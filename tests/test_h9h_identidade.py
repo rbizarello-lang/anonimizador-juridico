@@ -14,7 +14,7 @@ from anonimizador_juridico import EntitySpan
 
 from anonimizador_app.pipeline_llm import run_llm_job
 from anonimizador_app.roster import KEEP, TOKENIZE, Mention, Roster, RosterEntry
-from anonimizador_app.roster_identity import fuse_identities
+from anonimizador_app.roster_identity import _Cluster, _share_edge, fuse_identities
 
 from test_llm_hygiene import _Pipeline
 from test_pipeline_llm import FakeDiscoverer, FakeLocalEngine
@@ -266,6 +266,83 @@ class SalvaguardaNoLoteTests(_Pipeline):
         result, body, audit = self.go(text, FakeDiscoverer(entities))
         self.assertEqual(len(result.roster), 2)
         self.assertIn("Fusoes so por prefixo de 2 palavras: 0; recusadas por parentesco: 1; recusadas por falta de prova no texto: 0", audit)
+
+def _empresa(*names: str, kind: str = "empresa") -> Roster:
+    roster = Roster()
+    for name in names:
+        roster.add_mention(Mention(kind=kind, text=name, canonical=name, role="parte"), source="llm")
+    return roster
+
+
+class PonteDeFusaoTests(unittest.TestCase):
+    def test_variante_com_duas_pessoas_nao_liga_as_duas_entradas(self) -> None:
+        pessoa = RosterEntry(
+            key="pessoa:fernanda lima rocha", kind="pessoa", name="Fernanda Lima Rocha", roles=["parte"],
+            variants=["Fernanda Lima e Paulo Rocha"],
+        )
+        outro = RosterEntry(key="pessoa:paulo rocha", kind="pessoa", name="Paulo Rocha", roles=["socio"])
+        roster = Roster([pessoa, outro])
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
+
+    def test_variante_com_barra_ou_virgula_entre_nomes_tambem_nao_liga(self) -> None:
+        for variant in ("Fernanda Lima/Paulo Rocha", "Fernanda Lima, Paulo Rocha", "FERNANDA LIMA & PAULO ROCHA"):
+            with self.subTest(variant=variant):
+                pessoa = RosterEntry(key="pessoa:fernanda lima rocha", kind="pessoa", name="Fernanda Lima Rocha", variants=[variant])
+                outro = RosterEntry(key="pessoa:paulo rocha", kind="pessoa", name="Paulo Rocha")
+                roster = Roster([pessoa, outro])
+                fuse_identities(roster)
+                self.assertEqual(len(roster), 2)
+
+    def test_palavra_minuscula_nunca_e_variante_de_pessoa(self) -> None:
+        roster = _roster(("Joana Souza Fatica", "parte"), ("fatica", "terceiro"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
+
+    def test_duas_entradas_de_duas_palavras_sem_prefixo_nem_sufixo_comum_nao_se_juntam(self) -> None:
+        def cluster(name: str) -> _Cluster:
+            return _Cluster(RosterEntry(key=f"pessoa:{name.lower()}", kind="pessoa", name=name))
+
+        self.assertFalse(_share_edge(cluster("Fulano Silva"), cluster("Beltrano Souza")))
+        self.assertTrue(_share_edge(cluster("Joel Martinez"), cluster("Joel Fagundes")))
+        self.assertTrue(_share_edge(cluster("Joel Martinez"), cluster("Ana Martinez")))
+        self.assertTrue(_share_edge(cluster("Joel"), cluster("Beltrano Souza")))
+
+
+class TipoPorSufixoSocietarioTests(unittest.TestCase):
+    def test_pessoa_com_ltda_vira_empresa_e_nao_funde_com_pessoa(self) -> None:
+        roster = _roster(("Adriana Tavernard", "parte"), ("Adriana Tavernard Agroflorestal Ltda", "parte"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
+        kinds = {entry.name: entry.kind for entry in roster.entries}
+        self.assertEqual(kinds["Adriana Tavernard"], "pessoa")
+        self.assertEqual(kinds["Adriana Tavernard Agroflorestal Ltda"], "empresa")
+        self.assertEqual(roster.lookup("empresa", "Adriana Tavernard Agroflorestal Ltda").entity_type, "ORGANIZATION")
+
+    def test_palavra_de_razao_social_sem_sufixo_tambem_e_empresa(self) -> None:
+        roster = _roster(("Santos Agroflorestal", "parte"), ("Rui Santos", "parte"))
+        fuse_identities(roster)
+        self.assertEqual({entry.name: entry.kind for entry in roster.entries}["Santos Agroflorestal"], "empresa")
+
+    def test_na_fusao_o_tipo_da_entrada_com_sufixo_prevalece(self) -> None:
+        roster = _roster(("Santos Comercio de Graos", "parte"))
+        roster.add_mention(Mention(kind="empresa", text="Santos Comercio de Graos Ltda", canonical="Santos Comercio de Graos Ltda", role="parte"))
+        fuse_identities(roster)
+        self.assertEqual([entry.kind for entry in roster.entries], ["empresa"])
+
+
+class EmpresaDivididaTests(unittest.TestCase):
+    NAME = "Eurovidros Importação e Exportação Ltda"
+
+    def test_abreviaturas_acento_e_ocr_sao_a_mesma_razao_social(self) -> None:
+        roster = _empresa(self.NAME, "EUROVIDROS IMP. E EXP.", "Eurovidros Importacao e Exportacao", "Eurovidros lmportacao e Exportacao")
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+
+    def test_razoes_sociais_diferentes_com_a_mesma_marca_seguem_separadas(self) -> None:
+        roster = _empresa(self.NAME, "Eurovidros Comercio de Vidros Ltda")
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
 
 
 class SelectiveLocalEngine(FakeLocalEngine):

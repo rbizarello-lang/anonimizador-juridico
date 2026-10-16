@@ -40,17 +40,27 @@ _PRIVATE_ROLES = frozenset({"socio", "parte", "advogado"})
 _MAX_PASSES = 6
 
 
+_ABBREVIATIONS = {"imp": "importacao", "exp": "exportacao", "ind": "industria", "com": "comercio", "cia": "companhia"}
+_RATIO_COMPANY = 0.9
+
+
+def _expand(kind: str, words: list[str]) -> list[str]:
+    """Razao social: "Imp. e Exp." e "Importacao e Exportacao" sao a mesma razao social (R3)."""
+
+    return [_ABBREVIATIONS.get(word, word) for word in words] if kind == "empresa" else words
+
+
 def content_words(kind: str, value: str) -> list[str]:
     """Palavras de conteudo dobradas (sem titulo, sufixo societario nem conectivo)."""
 
     core = fold_lexical(entity_core(kind, value))
-    return [word for word in _WORD.findall(core) if word not in _CONNECTIVES]
+    return _expand(kind, [word for word in _WORD.findall(core) if word not in _CONNECTIVES])
 
 
 def _folded(kind: str, value: str) -> str:
     """Forma dobrada com os conectivos de dentro (a similaridade conta o nome como foi escrito)."""
 
-    words = _WORD.findall(fold_lexical(entity_core(kind, value)))
+    words = _expand(kind, _WORD.findall(fold_lexical(entity_core(kind, value))))
     while words and words[-1] in _CONNECTIVES:
         words.pop()
     return " ".join(words)
@@ -134,35 +144,104 @@ def company_forms_match(short_words: list[str], long_words: list[str], short_tex
         return True
     if len(short_words) != len(long_words):
         return False
+    if SequenceMatcher(None, short_text, long_text).ratio() >= _RATIO_COMPANY:
+        return True
     diffs = [(a, b) for a, b in zip(short_words, long_words) if a != b]
     if not diffs or not all(_close(a, b, person=False) for a, b in diffs):
         return False
     return SequenceMatcher(None, short_text, long_text).ratio() >= _RATIO
 
 
+_BRIDGE = re.compile(r"\s[eE&]\s|[/&,;]")
+_CORPORATE_TAIL = re.compile(r"(?i)[\s,.\-]+(?:ltda|eireli|epp)\.?\s*$|\bs\s*/\s*a\b|\bs\.a\.?\s*$")
+_CORPORATE_UPPER = re.compile(r"[\s,]+(?:ME|EPP)\.?\s*$")
+_CORPORATE_WORDS = frozenset(
+    "agroflorestal agropecuaria agroindustrial comercio industria industrias importacao exportacao participacoes holding "
+    "transportes construtora incorporadora distribuidora laticinios cooperativa associacao fundacao empreendimentos "
+    "madeireira siderurgica".split()
+)
+
+
+def is_bridge_form(kind: str, value: str) -> bool:
+    """Variante que nao pode ligar identidades (R1): pessoa com "e", "/", "&", virgula ou ponto e virgula no meio
+    (duas pessoas numa grafia) ou escrita toda em minuscula ("fatica": palavra de texto, nao nome)."""
+
+    if kind != "pessoa":
+        return False
+    return bool(_BRIDGE.search(value)) or not any(char.isupper() for char in value)
+
+
+def is_corporate(value: str) -> bool:
+    """Nome com sufixo societario (Ltda, S/A, EIRELI, ME, EPP) ou palavra de razao social (R2): e empresa."""
+
+    if _CORPORATE_TAIL.search(value) or _CORPORATE_UPPER.search(value):
+        return True
+    return any(word in _CORPORATE_WORDS for word in _WORD.findall(fold_lexical(value)))
+
+
 class _Cluster:
-    __slots__ = ("keys", "kind", "forms", "size")
+    __slots__ = ("keys", "kind", "forms", "size", "retyped")
 
     def __init__(self, entry: RosterEntry) -> None:
         self.keys = [entry.key]
         self.kind = entry.kind
+        self.retyped = False
         self.forms: list[tuple[list[str], str]] = []
         self.size = 0
+        if entry.kind == "pessoa" and any(is_corporate(value) for value in (entry.name, *entry.variants)):
+            self.kind = "empresa"
+            self.retyped = True
         for value in (entry.name, *entry.variants):
-            if has_token(value):
+            if has_token(value) or is_bridge_form(self.kind, value):
                 continue
-            words = content_words(entry.kind, value)
+            words = content_words(self.kind, value)
             if words:
-                self.forms.append((words, _folded(entry.kind, value)))
+                self.forms.append((words, _folded(self.kind, value)))
         self.size = max((len(words) for words, _text in self.forms), default=0)
 
     def merge(self, other: "_Cluster") -> None:
+        self.retyped = self.retyped or other.retyped
         self.keys.extend(other.keys)
         self.forms.extend(other.forms)
         self.size = max(self.size, other.size)
 
     def words(self) -> set[str]:
         return {word for form, _text in self.forms for word in form}
+
+
+def _share_edge(left: _Cluster, right: _Cluster) -> bool:
+    """Duas entradas de 2+ palavras so se juntam se alguma forma de uma tem a primeira ou a ultima palavra em comum
+    com alguma forma da outra (R1: nunca "Fulano Silva" com "Beltrano Souza" por uma ponte)."""
+
+    if left.size < 2 or right.size < 2:
+        return True
+    for left_words, _a in left.forms:
+        if len(left_words) < 2:
+            continue
+        for right_words, _b in right.forms:
+            if len(right_words) < 2:
+                continue
+            if left_words[0] == right_words[0] or left_words[-1] == right_words[-1]:
+                return True
+            if _word_match(left_words[0], right_words[0], first=True, person=left.kind == "pessoa") in {"exata", "grafia"}:
+                return True
+            if _word_match(left_words[-1], right_words[-1], first=False, person=left.kind == "pessoa") in {"exata", "grafia"}:
+                return True
+    return False
+
+
+def _same_company(cluster: _Cluster, candidates: Sequence[int], related: dict, clusters: Sequence[_Cluster]) -> bool:
+    """R3: varias entradas candidatas da MESMA razao social (a abreviada, a de OCR, a completa) nao sao ambiguidade:
+    todas casam forte com a curta e entre si. Duas marcas diferentes (Comercio x Textil) continuam ambiguas."""
+
+    if any(related[other][0] != "forte" for other in candidates):
+        return False
+    for position, left in enumerate(candidates):
+        for right in candidates[position + 1 :]:
+            small, big = sorted((left, right), key=lambda item: clusters[item].size)
+            if not (_relation(clusters[small], clusters[big])[0] or _relation(clusters[big], clusters[small])[0]):
+                return False
+    return True
 
 
 def _buckets(words: Sequence[str]) -> set[str]:
@@ -346,7 +425,9 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
                 if clusters[other].size >= cluster.size
             }
             candidates = [other for other, (kind, _pairs) in related.items() if kind]
-            if len(candidates) == 1:
+            if len(candidates) > 1 and cluster.kind == "empresa" and _same_company(cluster, candidates, related, clusters):
+                unions.extend((number, other) for other in candidates)
+            elif len(candidates) == 1:
                 other = candidates[0]
                 kind, pairs = related[other]
                 if kind == "fraca":
@@ -363,6 +444,7 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
         if not unions:
             break
         parent = list(range(len(clusters)))
+        members: dict[int, list[int]] = {number: [number] for number in range(len(clusters))}
 
         def find(item: int) -> int:
             while parent[item] != item:
@@ -373,7 +455,11 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
         for left, right in unions:
             root_left, root_right = find(left), find(right)
             if root_left != root_right:
-                parent[max(root_left, root_right)] = min(root_left, root_right)
+                if not all(_share_edge(clusters[a], clusters[b]) for a in members[root_left] for b in members[root_right]):
+                    continue
+                keep, drop = min(root_left, root_right), max(root_left, root_right)
+                parent[drop] = keep
+                members[keep].extend(members.pop(drop))
         grouped: dict[int, list[int]] = defaultdict(list)
         for number in range(len(clusters)):
             grouped[find(number)].append(number)
@@ -388,21 +474,25 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
     removed: dict[str, str] = {}
     for cluster in clusters:
         if len(cluster.keys) < 2:
+            if cluster.retyped:
+                roster.retype(cluster.keys[0], cluster.kind)
             continue
-        survivor = _survivor(roster, cluster.keys)
+        survivor = _survivor(roster, cluster.keys, cluster.kind)
         absorbed = [key for key in cluster.keys if key != survivor]
         roster.merge(survivor, absorbed)
+        if cluster.retyped:
+            roster.retype(survivor, cluster.kind)
         removed.update({key: survivor for key in absorbed})
     return removed
 
 
-def _survivor(roster: Roster, keys: Sequence[str]) -> str:
+def _survivor(roster: Roster, keys: Sequence[str], kind: str = "") -> str:
     """A entrada de nome mais completo (mais palavras de conteudo, depois mais variantes) fica."""
 
-    def rank(key: str) -> tuple[int, int, int, str]:
+    def rank(key: str) -> tuple[int, int, int, int, str]:
         entry = roster.get(key)
         assert entry is not None
-        return (-len(content_words(entry.kind, entry.name)), -len(entry.variants), -len(entry.name), key)
+        return (0 if not kind or entry.kind == kind else 1, -len(content_words(entry.kind, entry.name)), -len(entry.variants), -len(entry.name), key)
 
     return min(keys, key=rank)
 

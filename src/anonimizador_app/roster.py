@@ -413,6 +413,19 @@ class Roster:
                 self._index_variant(entry, variant)
         return target
 
+    def retype(self, key: str, kind: str) -> None:
+        """H9-h (revisao, R2): a entrada com sufixo societario e empresa, nao pessoa. Troca o tipo e refaz o indice."""
+
+        entry = self._entries.get(key)
+        if entry is None or entry.kind == kind or entry.pinned or kind not in CLASS_TO_ENTITY:
+            return
+        entry.kind = kind
+        self._by_variant = {}
+        for item in self._entries.values():
+            self._index_variant(item, item.name)
+            for variant in item.variants:
+                self._index_variant(item, variant)
+
     def lock_keep(self, key: str) -> bool:
         """Marca a entrada como ``manter`` por juizo do lote; vale mesmo que mencoes novas tragam outro papel.
         Nao mexe em entrada fixada pelo usuario nem na lista de alvos."""
