@@ -278,6 +278,8 @@ class Roster:
         # H9-c: entradas que o juizo do lote mandou manter (so em memoria: nao vai para o ``elenco.json``).
         # Nenhuma mencao posterior (verificacao, motor local) as devolve a ``tokenizar``.
         self._locked_keep: set[str] = set()
+        # H9-h: quantas entradas a fusao por identidade (``merge``) absorveu (AUDITORIA).
+        self.identity_merges = 0
         for entry in entries:
             self._put(entry)
 
@@ -364,6 +366,47 @@ class Roster:
             entry.roles.append(role)
         if not entry.pinned and entry.key not in self._locked_keep:
             entry.action = policy_action(entry.roles)
+
+    def merge(self, survivor: str, absorbed: Iterable[str]) -> RosterEntry | None:
+        """H9-h: absorve as entradas ``absorbed`` em ``survivor`` (mesma entidade, ver ``roster_identity``): um
+        token so, os nomes todos viram variantes, os papeis se somam. Acao: "manter" vence com cargo publico
+        confirmado ou quando todas eram "manter"; senao, tokenizar. A entrada que fica trava o "manter" (memoria)."""
+
+        from .roster_identity import merged_action
+
+        target = self._entries.get(survivor)
+        if target is None:
+            return None
+        members = [target]
+        locks = [survivor in self._locked_keep]
+        for key in absorbed:
+            other = self._entries.pop(key, None)
+            if other is None or other is target:
+                continue
+            members.append(other)
+            locks.append(key in self._locked_keep)
+            self._locked_keep.discard(key)
+            for value in (other.name, *other.variants):
+                if value and value != target.name and value not in target.variants:
+                    target.variants.append(value)
+            for role in other.roles:
+                if role not in target.roles:
+                    target.roles.append(role)
+            self.identity_merges += 1
+        if len(members) == 1:
+            return target
+        action = merged_action(members, locks)
+        target.action = action
+        if action == KEEP:
+            self._locked_keep.add(survivor)
+        else:
+            self._locked_keep.discard(survivor)
+        self._by_variant = {}
+        for entry in self._entries.values():
+            self._index_variant(entry, entry.name)
+            for variant in entry.variants:
+                self._index_variant(entry, variant)
+        return target
 
     def lock_keep(self, key: str) -> bool:
         """Marca a entrada como ``manter`` por juizo do lote; vale mesmo que mencoes novas tragam outro papel.

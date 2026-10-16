@@ -52,6 +52,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from anonimizador_juridico import (
     EntitySpan,
@@ -99,6 +100,7 @@ from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
 from .roster import KEEP, TOKENIZE, UNKNOWN_ROLE, Mention, Roster
+from .roster_identity import fuse_identities
 from .variant_propagation import RECOGNIZER as VARIANT_RECOGNIZER
 from .variant_propagation import VariantPropagator
 from .rules import build_recognizers
@@ -373,6 +375,7 @@ def _run_llm_job(
                 rounds=verification_rounds,
                 batch=batch,
                 hygiene=hygiene,
+                fuse=lambda: fuse_roster_identities(roster, states),
             ),
         )
 
@@ -847,8 +850,10 @@ def _verify_file(
     rounds: int,
     batch: BatchRoster | None = None,
     hygiene: LlmHygieneStats | None = None,
+    fuse: Callable[[], int] | None = None,
 ) -> None:
-    """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco."""
+    """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco. ``fuse`` (H9-h): funde as
+    entradas novas que sao a mesma pessoa ou empresa de uma que ja existe, antes de tokenizar de novo."""
 
     _entities, result, offsets, _refused = _tokenize(
         state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
@@ -870,6 +875,8 @@ def _verify_file(
             return
         state.report.new_in_verification += changed + len(extra)
         state.anchored.extend(extra)
+        if fuse is not None:
+            fuse()
         _entities, result, offsets, _refused = _tokenize(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
         )
@@ -975,6 +982,9 @@ def _review_local_names(
     do motor local, mesmo quando o motor local nao rodou em nenhuma folha.
     """
 
+    # H9-h: as entradas do LLM que sao a mesma pessoa ou empresa viram uma so ANTES do juizo (uma acao so, pelos
+    # papeis e pelo juizo de todas as grafias juntas) e de novo depois dos nomes do motor local.
+    fuse_roster_identities(roster, states)
     _judge_llm_entries(states, roster, exclusions, hygiene)
     ran = [state for state in states if state.local_ran]
     if not ran:
@@ -1030,7 +1040,19 @@ def _review_local_names(
         treated = real_failure | (state.suspect_pages & state.local_pages)
         report.fallback_pages = sorted(treated)
         report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
+    fuse_roster_identities(roster, states)
     return batch
+
+
+def fuse_roster_identities(roster: Roster, states: Sequence[_FileState]) -> int:
+    """H9-h: funde as entradas do mesmo nome (``roster_identity``) e leva as ancoras de todos os arquivos para a
+    chave que ficou. Devolve quantas entradas foram absorvidas."""
+
+    removed = fuse_identities(roster)
+    if removed:
+        for state in states:
+            state.anchored[:] = [(start, end, removed.get(key, key)) for start, end, key in state.anchored]
+    return len(removed)
 
 
 def _suspect_zone(state: _FileState) -> Callable[[int], bool]:
@@ -1406,11 +1428,7 @@ def _judge_llm_entries(
     judged = {entity.key: entity for entity in judge.entities()}
     for entry in candidates:
         entity_type = _JUDGED_TYPES[entry.kind]
-        entity = None
-        for value in (entry.name, *entry.variants):
-            entity = judged.get(judge.key_for(entity_type, value))
-            if entity is not None:
-                break
+        entity = _joint_verdict(judged, judge, entity_type, entry)
         if entity is None:
             continue
         if _local_engine_tokenizes(entry, local_judge, local_entities):
@@ -1457,6 +1475,24 @@ _PRIVATE_QUALIFICATION_AFTER = re.compile(
     r"portador(?:a)?)\b"
 )
 _EVIDENCE_REACH = 40
+
+
+def _joint_verdict(judged: dict, judge: BatchRoster, entity_type: str, entry) -> SimpleNamespace | None:
+    """H9-h: o veredito do juizo sobre TODAS as grafias da entrada (nome e variantes) juntas: agente publico,
+    instituicao financeira ou rua em qualquer uma vale para a entrada. ``None`` se nenhuma grafia foi julgada."""
+
+    found = []
+    for value in (entry.name, *entry.variants):
+        entity = judged.get(judge.key_for(entity_type, value))
+        if entity is not None and entity not in found:
+            found.append(entity)
+    if not found:
+        return None
+    return SimpleNamespace(
+        public_agent=any(item.public_agent for item in found),
+        financial=any(item.financial for item in found),
+        is_street=any(item.is_street for item in found),
+    )
 
 
 def _local_verdicts(states: Sequence[_FileState], exclusions: Sequence[str]):
@@ -1554,6 +1590,7 @@ def roster_summary(roster: Roster) -> list[str]:
     ]
     if pinned:
         lines.append(f"Decisoes do usuario aplicadas: {pinned}")
+    lines.append(f"Entradas fundidas por identidade: {roster.identity_merges}")
     return lines
 
 
