@@ -62,7 +62,7 @@ from anonimizador_juridico import (
     pseudonymize,
     resolve_overlaps,
 )
-from anonimizador_juridico.pseudonymizer import PseudonymizationResult
+from anonimizador_juridico.pseudonymizer import PseudonymizationResult, fold_lexical
 
 from .audit import audit_map_records, audit_markdown, write_audit_report
 from .batch_propagation import BatchRoster
@@ -101,7 +101,7 @@ from .file_names import export_stem, write_name_map
 from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
 from .propagation import FoldedText, fold_with_index, spans_for_roster
-from .roster import KEEP, TOKENIZE, UNKNOWN_ROLE, Mention, Roster
+from .roster import KEEP, TOKENIZE, UNKNOWN_ROLE, Mention, Roster, entity_core
 from .roster_identity import fuse_identities
 from .variant_propagation import RECOGNIZER as VARIANT_RECOGNIZER
 from .variant_propagation import VariantPropagator
@@ -1252,6 +1252,7 @@ def _tokenize(
         # H9-g: a marca curta ligada a uma razao social leva o token dela.
         merged = variants.relink(merged)
     entities = resolve_overlaps(merged)
+    entities = split_person_company_overlap(text, entities, roster)
     if variants is not None:
         # H9-g: palavra de nome colada no token da pessoa (``[PESSOA_2] Domenico``) entra no mesmo token.
         entities = variants.extend_adjacent(text, entities)
@@ -1271,6 +1272,82 @@ def _tokenize(
         )
     result, offsets = pseudonymize_with_offsets(text, entities, mapping)
     return entities, result, offsets, refused
+
+
+_WORD_TOKEN = re.compile(r"[^\W\d_]+")
+_NEXT_WORD_TOKEN = re.compile(r"[ 	]+([^\W\d_]+)")
+_SOCIETARY_WORDS = frozenset({"ltda", "me", "epp", "eireli", "sa"})
+
+
+def split_person_company_overlap(
+    text: str, chosen: Sequence[EntitySpan], roster: Roster
+) -> list[EntitySpan]:
+    """H9-h (revisao, R4): o sobrenome da pessoa e a primeira palavra da razao social do elenco ("Joel Martinez
+    Tavernard Agroflorestal"). O span da pessoa leva o sobrenome e a razao social, que nao acha onde comecar, ficava em
+    claro. Quando as ultimas palavras do span da pessoa sao as primeiras da razao social de uma empresa do elenco e o
+    resto da razao social vem logo depois no texto, a empresa leva o proprio token e a pessoa fica com o que sobra
+    antes dela (se sobrar nome)."""
+
+    firsts: dict[str, list[tuple[str, list[str]]]] = {}
+    for entry in roster.entries:
+        if entry.kind != "empresa" or entry.action != TOKENIZE:
+            continue
+        for value in (entry.name, *entry.variants):
+            words = _WORD_TOKEN.findall(fold_lexical(entity_core("empresa", value)))
+            words = [word for word in words if word not in _SOCIETARY_WORDS]
+            if len(words) >= 2:
+                firsts.setdefault(words[0], []).append((entry.key, words))
+    if not firsts:
+        return list(chosen)
+    result = list(chosen)
+    for span in list(result):
+        if span.entity_type != "PERSON" or not span.canonical_key:
+            continue
+        person = roster.get(span.canonical_key)
+        if person is None or person.kind != "pessoa" or person.action != TOKENIZE:
+            continue
+        tokens = [(m.start(), m.end(), fold_lexical(m.group())) for m in _WORD_TOKEN.finditer(text, span.start, span.end)]
+        for index in range(1, len(tokens)):
+            options = firsts.get(tokens[index][2])
+            if not options:
+                continue
+            tail = [word for _s, _e, word in tokens[index:]]
+            for key, words in options:
+                if tail != words[: len(tail)] or len(words) == len(tail):
+                    continue
+                cursor = span.end
+                for expected in words[len(tail) :]:
+                    match = _NEXT_WORD_TOKEN.match(text, cursor)
+                    if match is None or fold_lexical(match.group(1)) != expected:
+                        break
+                    cursor = match.end()
+                else:
+                    match = _NEXT_WORD_TOKEN.match(text, cursor)
+                    if match is not None and fold_lexical(match.group(1)) in _SOCIETARY_WORDS:
+                        cursor = match.end()
+                    start = tokens[index][0]
+                    others = [item for item in result if item is not span and item.start < cursor and start < item.end]
+                    person_end = span.start + len(text[span.start : start].rstrip())
+                    if others or person_end <= span.start:
+                        continue
+                    result[result.index(span)] = replace(span, end=person_end)
+                    company = roster.get(key)
+                    result.append(
+                        EntitySpan(
+                            start=start,
+                            end=cursor,
+                            entity_type=company.entity_type,
+                            score=span.score,
+                            recognizer=span.recognizer,
+                            canonical_key=key,
+                            alvo=company.name,
+                        )
+                    )
+                    break
+            else:
+                continue
+            break
+    return sorted(result, key=lambda item: (item.start, item.end, item.entity_type))
 
 
 def _roster_keys(batch: BatchRoster, roster: Roster) -> dict[str, str]:

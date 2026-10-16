@@ -79,6 +79,26 @@ class SobrenomeComHomonimoTests(_Pipeline):
         self.assertIn("família Tavernard", body)
 
 
+class RazaoSocialDoElencoAposSobrenomeTests(_Pipeline):
+    FULL = "Joel Martinez Tavernard"
+
+    def _run(self, *lines: str):
+        text = _doc(f"O sócio {self.FULL} foi citado e {self.FULL} apresentou defesa; {self.FULL} recorreu.", *lines)
+        discoverer = FakeDiscoverer([("pessoa", self.FULL, "socio"), ("empresa", "Tavernard Agroflorestal", "parte")])
+        return self.go(text, discoverer)
+
+    def test_razao_social_do_elenco_depois_do_nome_leva_o_proprio_token(self) -> None:
+        _result, body, _audit = self._run("A Tavernard Agroflorestal foi intimada.", "O sócio Joel Martinez Tavernard Agroflorestal assinou.")
+        self.assertNotIn("Agroflorestal", body)
+        self.assertNotIn("Tavernard", body)
+        self.assertNotIn("Joel", body)
+        self.assertRegex(body, r"\[PESSOA_1\] \[EMPRESA_1\] assinou")
+
+    def test_razao_social_em_caixa_alta_depois_do_nome_leva_o_proprio_token(self) -> None:
+        _result, body, _audit = self._run("A Tavernard Agroflorestal foi intimada.", "O sócio Joel Martinez TAVERNARD AGROFLORESTAL assinou.")
+        self.assertNotRegex(body, r"(?i)agroflorestal|tavernard|joel")
+
+
 class CompanyNameFollowsTests(unittest.TestCase):
     def test_sufixo_societario_depois_de_nomes_proprios(self) -> None:
         for text in (
