@@ -49,3 +49,9 @@ dados do imovel
 dados do requerente
 espaco reservado
 campo obrigatorio
+socio administrador
+socia administradora
+socios administradores
+administrador
+administradora
+administradores

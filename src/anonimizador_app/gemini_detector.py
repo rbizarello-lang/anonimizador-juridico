@@ -8,6 +8,8 @@ from typing import Protocol
 from anonimizador_juridico import EntitySpan, resolve_overlaps
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
+from .role_labels import is_role_label
+
 KEEP_TERMS = frozenset(
     {
         "uniao",
@@ -371,6 +373,8 @@ def is_too_generic(entity_type: str, value: str) -> bool:
 
     if _looks_like_furniture(value):
         return True
+    if entity_type in {"PERSON", "ORGANIZATION"} and is_role_label(value):
+        return True  # "SOCIO ADMINISTRADOR", "ADMINISTRADOR(ES)": cargo, nao nome (H9-h)
     if len(value.strip()) < 5:
         return True
     compact = re.sub(r"\s+", " ", value).strip().casefold()

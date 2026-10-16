@@ -1,0 +1,30 @@
+"""Cargo e rotulo de qualificacao que nunca e nome (H9-h): "SOCIO ADMINISTRADOR", "SOCIA ADMINISTRADORA",
+"ADMINISTRADOR(ES)", "socio-administrador".
+
+Medido no lote IDPJ real depois da H9-g: "SOCIO ADMINISTRADOR", a qualificacao que o contrato social escreve ao lado do
+nome, virou [PESSOA_n]. O texto formado so por palavras de cargo de sociedade (socio, administrador, no singular, plural
+ou feminino, com "(es)" e "(a)" e hifen) e o rotulo da qualificacao, nunca o nome de alguem. Com uma palavra de nome junto
+("Maria Socia"), deixa de ser so rotulo e a regra nao vale.
+"""
+
+from __future__ import annotations
+
+import re
+
+from anonimizador_juridico.pseudonymizer import fold_lexical
+
+ROLE_LABEL_WORDS = frozenset(
+    "socio socia socios socias administrador administradora administradores administradoras".split()
+)
+_LINK_WORDS = frozenset({"e", "de", "da", "do", "das", "dos"})
+_PLURAL_MARK = re.compile(r"\((?:a|as|es|s|is|o|os)\)")
+_WORD = re.compile(r"[^\W\d_]+")
+
+
+def is_role_label(value: str) -> bool:
+    """O texto e so cargo de socio ou administrador (com conectivos), sem nenhuma palavra de nome."""
+
+    words = _WORD.findall(_PLURAL_MARK.sub("", fold_lexical(value)))
+    if not any(word in ROLE_LABEL_WORDS for word in words):
+        return False
+    return all(word in ROLE_LABEL_WORDS or word in _LINK_WORDS for word in words)

@@ -33,6 +33,7 @@ from anonimizador_juridico.pseudonymizer import fold_lexical
 
 from .gemini_detector import KEEP_TERMS, is_registry_office
 from .geo_names import UF_SIGLAS, is_geo_name, is_state_name, place_label_before
+from .role_labels import is_role_label
 from .roster import (
     KEEP,
     ROLE_POLICY,
@@ -773,7 +774,9 @@ def _reject(
         return "rotulo_numero"
     if not is_street and _is_ordinal_label(value):
         return "ordinal"
-    if not is_street and (_is_form_label(value) or _is_organ(value) or is_registry_office(value)):
+    if not is_street and (
+        _is_form_label(value) or is_role_label(value) or _is_organ(value) or is_registry_office(value)
+    ):
         return "rotulo_formulario"
     if not is_street and _is_legal_term(value):
         return "juridico"

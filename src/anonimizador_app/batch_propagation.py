@@ -78,6 +78,9 @@ _LABEL_WORDS = frozenset(
         # Estrutura juridica: "pessoa juridica de direito privado" nao e empresa de ninguem.
         "pessoa", "juridica", "fisica", "natural", "direito", "privado", "publico",
         "sociedade", "empresaria", "empresario", "limitada", "ltda", "individual",
+        # Cargo de socio e administrador: "SOCIO ADMINISTRADOR" e o rotulo do cargo, nao uma pessoa (H9-h).
+        "socio", "socia", "socios", "socias", "administrador", "administradora", "administradores",
+        "administradoras",
         "microempresa", "pequeno", "porte", "responsabilidade", "eireli", "unipessoal",
     }
 )
@@ -96,20 +99,28 @@ _ROLE_BEFORE_CUES = (
     r"|diretor(?:a)?\s+de\s+secretaria|servidor(?:a)?|oficial(?:a)?\s+de\s+justi[cç]a"
     r"|analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]"
     r"|usu[aá]rio|protocolad[oa]\s+por"
-    r"|procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal)"
+    r"|procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal"
+    # H9-h: cargo de cartorio, como juiz: tabeliao, escrevente, registrador, oficial de registro, oficial substituto.
+    r"|tabeli[aã]o?(?:\s+substitut[oa])?|escrevente(?:\s+(?:substitut[oa]|autorizad[oa]))?"
+    r"|registrador(?:a)?(?:\s+civil)?"
+    r"|oficial(?:a)?\s+(?:de\s+registro(?:\s+(?:civil|de\s+im[oó]veis))?|substitut[oa]))"
     r"\s*(?:\([^)]{{0,12}}\))?\s*[:|\-–—(]?\s*$"
 )
 _ROLE_BEFORE = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=_SIGNATURE_CUES))
 # H9-f: juizo das entradas do LLM. "Assinado por" so basta com o cargo publico colado DEPOIS do nome
 # (``_ROLE_AFTER``); socio assina contrato digitalmente e nao e agente publico por isso.
 _ROLE_BEFORE_STRICT = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=r"(?!x)x"))
+# H9-h: ate duas palavras de nome proprio (capitalizadas, com de/da/do) podem vir entre o fim do trecho e o cargo:
+# o trecho achado pode parar antes do ultimo sobrenome ("Maria Silva" | " Souza, Tabeliã Substituta").
 _ROLE_AFTER = re.compile(
-    r"(?i)^\s*[,–—\-(]?\s*(?:ju[ií]z(?:a|\(a\))?\s+(?:federal|de\s+direito|substitut[oa])|"
+    r"(?i)^(?:\s+(?:(?i:d[aeo]s?)\s+)?(?-i:[A-ZÀ-Ý][^\W\d_]*)){0,2}"
+    r"\s*[,–—\-(]?\s*(?:ju[ií]z(?:a|\(a\))?\s+(?:federal|de\s+direito|substitut[oa])|"
     r"desembargador(?:a|\(a\))?|diretor(?:a)?\s+de\s+secretaria|"
     r"procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal|"
     r"oficial(?:a)?\s+de\s+justi[cç]a|servidor(?:a)?|secret[aá]ri[oa][-\s]+geral|"
     r"analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]|"
-    r"registrador(?:a)?|tabeli[aã]o?|escrevente)\b"
+    r"registrador(?:a)?|tabeli[aã]o?|escrevente|"
+    r"oficial(?:a)?\s+(?:de\s+registro|substitut[oa]))\b"
 )
 
 
