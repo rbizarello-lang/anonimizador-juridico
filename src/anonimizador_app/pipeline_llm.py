@@ -73,6 +73,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
 from .contextual import build_contextual_engine
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .known_forms import KnownForms
+from .vehicle_names import is_vehicle_span
 from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges, split_chunks
@@ -393,6 +394,7 @@ def _run_llm_job(
     variants = VariantPropagator(roster, exclusions)
     variants.prepare((item.text, item.folded, item.anchored) for item in states)
     # H9-h: IDs que o mapa e os arquivos do lote ja conhecem, trocados em toda ocorrencia (passada final).
+    final_drops: Counter[str] = Counter()
     forms = KnownForms()
     forms.add_mapping(mapping)
     for item in states:
@@ -405,7 +407,7 @@ def _run_llm_job(
         # Troca final com o elenco completo do lote (so acrescenta tokens).
         entities, result, _offsets, refused = _tokenize(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch, variants,
-            forms, source.name,
+            forms, source.name, final_drops,
         )
         refused_brands.update(refused)
         state.report.unread_pages = [
@@ -506,6 +508,13 @@ def _run_llm_job(
         notes.insert(2, ("elenco do lote: marca de uma palavra (so tokens e contagens)", batch.brand_report(mapping)))
     notes.insert(1, ("variantes do elenco (so contagens)", variants.audit_lines()))
     notes.insert(2, ("formas conhecidas (so contagens)", [forms.audit_line()]))
+    notes.insert(
+        3,
+        (
+            "higiene final da troca (so contagens)",
+            [f"Marca, modelo ou implemento de veiculo retirado da troca final (nao e empresa): {final_drops['veiculo']}"],
+        ),
+    )
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
@@ -1214,6 +1223,7 @@ def _tokenize(
     variants: VariantPropagator | None = None,
     forms: KnownForms | None = None,
     source_name: str = "",
+    vehicle_drops: Counter[str] | None = None,
 ) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap, list[tuple[str, str]]]:
     spans = spans_for_roster(
         text,
@@ -1245,6 +1255,15 @@ def _tokenize(
     if variants is not None:
         # H9-g: palavra de nome colada no token da pessoa (``[PESSOA_2] Domenico``) entra no mesmo token.
         entities = variants.extend_adjacent(text, entities)
+    # H9-h: marca, modelo ou implemento de veiculo nao e empresa, venha o span de onde vier (motor local, propagacao
+    # do elenco, variante): a ultima higiene antes da troca.
+    vehicles = [
+        item for item in entities if item.entity_type == "ORGANIZATION" and is_vehicle_span(text, item.start, item.end)
+    ]
+    if vehicles:
+        entities = [item for item in entities if item not in vehicles]
+        if vehicle_drops is not None:
+            vehicle_drops["veiculo"] += len(vehicles)
     if forms is not None:
         # H9-h: passada final de formas conhecidas (ID que o mapa ja tem, em toda ocorrencia fora dos spans).
         entities = sorted(

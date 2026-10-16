@@ -14,6 +14,7 @@ from anonimizador_juridico import EntitySpan, resolve_overlaps
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
 from .fidelity import FidelityDropStats
+from .vehicle_names import is_vehicle_span
 
 _TARGET = "ListaDeAlvos"
 _CONTEXTUAL = frozenset({"PERSON", "ORGANIZATION", "LOCATION"})
@@ -96,6 +97,8 @@ def _clip(
         if stats is not None:
             stats.higiene_html += 1
         return None
+    if span.entity_type == "ORGANIZATION" and is_vehicle_span(text, start, end):
+        return None  # marca, modelo ou implemento de veiculo (RENAJUD, penhora): nao e empresa (H9-h)
 
     html = value.find("<!--")
     if html == 0:
