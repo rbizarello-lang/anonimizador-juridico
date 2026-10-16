@@ -36,6 +36,10 @@
   propagacao contadas por motivo, sobrenome de municipio com pista de pessoa, marca curta ligada a razao social,
   dicionario em uso comum, veiculo so com modelo ou numero, "socio" fora da prova de nome particular, cargos de
   magistrado, cache de extracao do docx com versao propria.
+  2.9.2 = H9-h: fusao de identidade no elenco, "manter negado" com o veredito pos-juizo do motor local, sobrenome e
+  adjacencia sem homonimo, passada final de formas conhecidas (ID do mapa), e-mail partido entre celulas, "familia
+  De X", cargo de socio e de cartorio, veiculo em todas as origens, RG "8/C.1.234.567", registro da JUCESC, rua
+  numerada.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -53,7 +57,7 @@ from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
 APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.9.1"
+DETECTION_VERSION = "2.9.2"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent
