@@ -422,9 +422,44 @@ class LocalEmailRecognizer(PatternRecognizer):
                     score=0.85,
                 )
             )
+        results.extend(self._split_pairs(text, results))
         return results
 
+    @staticmethod
+    def _split_pairs(text: str, taken: list) -> list:
+        """E-mail partido entre celulas (H9-h): a parte local e o dominio viram dois achados com a MESMA chave
+        (o endereco inteiro), ou seja, dois tokens iguais; a barra da tabela e a quebra de linha ficam de fora."""
 
+        pairs: list[RecognizerResult] = []
+        for match in _SPLIT_EMAIL.finditer(text):
+            if not _SPLIT_GAP_MARK.search(match.group("gap")):
+                continue
+            if any(item.start < match.end() and match.start() < item.end for item in taken):
+                continue
+            canonical = (match.group("local") + match.group("domain")).casefold()
+            for group in ("local", "domain"):
+                start, end = match.span(group)
+                pairs.append(
+                    RecognizerResult(
+                        entity_type="EMAIL_ADDRESS",
+                        start=start,
+                        end=end,
+                        score=0.85,
+                        recognition_metadata={"canonical_key": canonical},
+                    )
+                )
+        return pairs
+
+
+# E-mail partido entre duas celulas de tabela ou duas linhas ("fulano.silva |" + quebra + "| @provedor.com"): parte
+# local, vao so de espaco, barra de tabela e uma quebra de linha, e o dominio comecando em "@". O vao tem de ter
+# barra ou quebra: espaco simples entre a palavra e o "@" nao e e-mail partido.
+_SPLIT_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+\-@])(?P<local>[A-Za-z0-9][A-Za-z0-9._%+\-]{1,63})"
+    r"(?P<gap>[ \t|]*(?:\r?\n[ \t|]*)?)"
+    r"(?P<domain>@[A-Za-z0-9.\-]+\.[A-Za-z]{2,24})\b"
+)
+_SPLIT_GAP_MARK = re.compile(r"[|\n]")
 _MATRICULA_NUMERO = re.compile(r"\d{1,7}(?:\.\d{1,3})?")
 
 

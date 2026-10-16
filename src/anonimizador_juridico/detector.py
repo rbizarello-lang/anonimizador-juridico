@@ -92,6 +92,7 @@ class StructuredDetector:
                             entity_type=result.entity_type,
                             score=result.score,
                             recognizer=recognizer.name,
+                            canonical_key=str((result.recognition_metadata or {}).get("canonical_key") or ""),
                         )
                     )
         return [_matricula_with_office(text, span) for span in resolve_overlaps(candidates)]
