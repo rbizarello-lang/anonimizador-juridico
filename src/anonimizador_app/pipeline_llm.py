@@ -982,17 +982,19 @@ def _review_local_names(
     do motor local, mesmo quando o motor local nao rodou em nenhuma folha.
     """
 
+    ran = [state for state in states if state.local_ran]
+    batch = None
+    if ran:
+        batch = BatchRoster(exclusions)
+        for state in ran:
+            batch.add(state.text, [*state.ids, *state.local_names])
+        batch.review(state.text for state in ran)
     # H9-h: as entradas do LLM que sao a mesma pessoa ou empresa viram uma so ANTES do juizo (uma acao so, pelos
     # papeis e pelo juizo de todas as grafias juntas) e de novo depois dos nomes do motor local.
     fuse_roster_identities(roster, states)
-    _judge_llm_entries(states, roster, exclusions, hygiene)
-    ran = [state for state in states if state.local_ran]
-    if not ran:
+    _judge_llm_entries(states, roster, exclusions, hygiene, local_batch=batch)
+    if batch is None:
         return None
-    batch = BatchRoster(exclusions)
-    for state in ran:
-        batch.add(state.text, [*state.ids, *state.local_names])
-    batch.review(state.text for state in ran)
     judged = {entity.key: entity for entity in batch.entities()}
 
     # Agrupamento do lote (H8): a entidade do BatchRoster, nao a grafia, e a unidade do elenco. Toda grafia
@@ -1389,12 +1391,17 @@ def _judge_llm_entries(
     roster: Roster,
     exclusions: Sequence[str],
     stats: LlmHygieneStats | None,
+    local_batch: BatchRoster | None = None,
 ) -> None:
     """H9-c: o juizo do lote (``BatchRoster.review``: agente publico por contexto de "assinado por"/cargo,
     instituicao do SISBAJUD, rua com nome de pessoa) tambem sobre as entradas que o LLM pos no elenco.
     Antes so o NER passava por ele. Entrada julgada agente publico ou instituicao financeira vira ``manter``
     (``Roster.lock_keep``: "entrada manter vence", nenhuma mencao posterior a desfaz); rua com nome de pessoa
     passa a endereco. Entrada fixada pelo usuario e lista de alvos nao mudam.
+
+    H9-h: o veredito do motor local e o do juizo DEPOIS da revisao do lote dele (``local_batch``: todos os textos
+    em que o motor rodou, nao so os que tiveram deteccao), e vale para todas as grafias da entrada: se alguma
+    delas o motor local manteria (cargo, instituicao), o "manter negado por o motor local trocar" nao se aplica.
 
     Usa um ``BatchRoster`` so para julgar (nao o do pipeline): as entidades do LLM nao entram na marca de uma
     palavra nem na propagacao de IDs do lote, que seguem sendo do motor local."""
@@ -1413,7 +1420,7 @@ def _judge_llm_entries(
         return
     # H9-f: juizo estrito da assinatura (socio assina contrato digitalmente) e verdicto do motor local sozinho.
     judge = BatchRoster(exclusions, strict_signature=True)
-    local_judge, local_entities = _local_verdicts(states, exclusions)
+    local_entities = {item.key: item for item in local_batch.entities()} if local_batch is not None else {}
     for state in states:
         spans = list(state.local_names)
         for start, end, key in state.anchored:
@@ -1431,7 +1438,7 @@ def _judge_llm_entries(
         entity = _joint_verdict(judged, judge, entity_type, entry)
         if entity is None:
             continue
-        if _local_engine_tokenizes(entry, local_judge, local_entities):
+        if _local_engine_tokenizes(entry, local_batch, local_entities):
             # O LLM so acrescenta protecao: o que o motor local tambem achou e vai trocar nao vira "manter".
             if stats is not None:
                 stats.lote_motor_local += 1
@@ -1495,28 +1502,22 @@ def _joint_verdict(judged: dict, judge: BatchRoster, entity_type: str, entry) ->
     )
 
 
-def _local_verdicts(states: Sequence[_FileState], exclusions: Sequence[str]):
-    """Juizo do lote so sobre o que o motor local achou (nao o das entradas do LLM): o que ele vai trocar."""
+def _local_engine_tokenizes(entry, batch: BatchRoster | None, local: dict) -> bool:
+    """O motor local, DEPOIS do juizo do lote dele (``batch.review`` em ``_review_local_names``: o mesmo que
+    decide o que o modo so local deixa em claro), de fato trocaria este nome? Se o motor local nao o achou, ou
+    o juizo o manteria (agente publico, instituicao financeira) ou o retiparia como rua, nao troca (H9-h)."""
 
-    local = [state for state in states if state.local_names]
-    if not local:
-        return None, {}
-    judge = BatchRoster(exclusions)
-    for state in local:
-        judge.add(state.text, list(state.local_names))
-    judge.review(state.text for state in local)
-    return judge, {entity.key: entity for entity in judge.entities()}
-
-
-def _local_engine_tokenizes(entry, judge, entities) -> bool:
-    if judge is None:
+    if batch is None:
         return False
     entity_type = _JUDGED_TYPES[entry.kind]
+    found = []
     for value in (entry.name, *entry.variants):
-        entity = entities.get(judge.key_for(entity_type, value))
+        entity = local.get(batch.key_for(entity_type, value))
         if entity is not None:
-            return not (entity.public_agent or entity.financial or entity.is_street)
-    return False
+            found.append(entity)
+    if not found:
+        return False
+    return not any(item.public_agent or item.financial or item.is_street for item in found)
 
 
 _SENTENCE_END = re.compile(r"\n|[.;]\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])")

@@ -1,4 +1,4 @@
-"""H9-h, item A: fusao de identidade no elenco.
+"""H9-h, itens A e B: fusao de identidade no elenco e regra (c) com o veredito pos-juizo do motor local.
 
 Textos e nomes inventados; sem rede, sem modelo.
 """
@@ -6,13 +6,18 @@ Textos e nomes inventados; sem rede, sem modelo.
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
+from anonimizador_juridico import EntitySpan
+
+from anonimizador_app.pipeline_llm import run_llm_job
 from anonimizador_app.roster import KEEP, TOKENIZE, Mention, Roster
 from anonimizador_app.roster_identity import fuse_identities
 
 from test_llm_hygiene import _Pipeline
-from test_pipeline_llm import FakeDiscoverer
+from test_pipeline_llm import FakeDiscoverer, FakeLocalEngine
 
 
 def _doc(*lines: str) -> str:
@@ -161,6 +166,68 @@ class FusaoNoLoteTests(_Pipeline):
         self.assertIn("Rogerio Mattos Tavares", body)
         self.assertEqual(len(result.roster), 1)
         self.assertEqual(result.roster.entries[0].action, KEEP)
+
+
+class SelectiveLocalEngine(FakeLocalEngine):
+    """Motor local que so acha o nome nos textos que contem a marca; os outros ele nao detecta (o juizo do lote
+    dele, porem, le todos os textos em que rodou)."""
+
+    def __init__(self, names, marker: str) -> None:
+        super().__init__(names)
+        self.marker = marker
+
+    def detect(self, text: str) -> list[EntitySpan]:
+        return super().detect(text) if self.marker in text else []
+
+
+class VeredictoPosJuizoTests(unittest.TestCase):
+    NAME = "ZULEIDE ANTUNES FICTICIA"
+
+    def _run(self, texts: list[str], *, engine, discoverer):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        sources = []
+        for number, text in enumerate(texts, start=1):
+            source = base / f"autos{number}.md"
+            source.write_text(text, encoding="utf-8")
+            sources.append(source)
+        result = run_llm_job(
+            sources, export_root=base / "exportaveis", private_root=base / "privados", discoverer=discoverer,
+            use_cache=False, local_floor=True, verification_rounds=0, fallback_engine=engine,
+        )
+        bodies = [outcome.markdown_path.read_text(encoding="utf-8") for outcome in result.job.outcomes]
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        return result, bodies, audit
+
+    def test_nome_que_o_juizo_local_mantem_nao_e_negado_mesmo_com_papel_terceiro(self) -> None:
+        # O motor local acha o nome so no arquivo 1 (sem cargo); o cargo esta no arquivo 2, onde ele nao detecta.
+        # O juizo do lote dele le os dois textos: o nome e de servidor, e fica em claro.
+        first = _doc(f"Consta na lista de presença AUDIENCIA {self.NAME} e outros.")
+        second = _doc(f"{self.NAME}, Analista Judiciário, certificou o ato.")
+        engine = SelectiveLocalEngine([("PERSON", self.NAME)], "AUDIENCIA")
+        discoverer = FakeDiscoverer([("pessoa", self.NAME, "terceiro")])
+        result, bodies, audit = self._run([first, second], engine=engine, discoverer=discoverer)
+        self.assertEqual(result.roster.lookup("pessoa", self.NAME).action, KEEP)
+        self.assertIn(self.NAME, bodies[1])
+        self.assertIn("manter negado por o motor local tambem a ter achado e trocar 0", audit)
+
+    def test_nome_que_o_motor_local_troca_continua_com_o_manter_negado(self) -> None:
+        first = _doc(f"Consta na lista de presença AUDIENCIA {self.NAME} e outros.")
+        second = _doc(f"{self.NAME}, Analista Judiciário, certificou o ato.")
+        # Aqui o motor local acha o nome nos dois arquivos: o juizo dele o mantem (cargo), entao nao ha negacao.
+        engine = FakeLocalEngine([("PERSON", self.NAME)])
+        discoverer = FakeDiscoverer([("pessoa", self.NAME, "terceiro")])
+        result, bodies, _audit = self._run([first, second], engine=engine, discoverer=discoverer)
+        self.assertEqual(result.roster.lookup("pessoa", self.NAME).action, KEEP)
+
+    def test_nome_particular_que_o_motor_local_troca_nao_vira_manter(self) -> None:
+        text = _doc(f"O sócio {self.NAME} foi citado em 5 de março.")
+        engine = FakeLocalEngine([("PERSON", self.NAME)])
+        discoverer = FakeDiscoverer([("pessoa", self.NAME, "socio")])
+        result, bodies, audit = self._run([text], engine=engine, discoverer=discoverer)
+        self.assertEqual(result.roster.lookup("pessoa", self.NAME).action, TOKENIZE)
+        self.assertNotIn(self.NAME, bodies[0])
 
 
 if __name__ == "__main__":
