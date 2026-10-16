@@ -248,7 +248,7 @@ class OllamaNetworkBlockTests(unittest.TestCase):
         self.assertIsNone(discoverer.attempts_live)
         for expected in (
             "Canal: ollama-local",
-            "Modelo: qwen3:4b",
+            "Modelo: gemma4:e4b",
             "num_ctx): 4096",
             "LLM local (Ollama, loopback), nada enviado",
             "Tentativas de rede fora de loopback bloqueadas: 0",

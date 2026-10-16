@@ -239,7 +239,7 @@ def ollama_model_refusal(model_id: str) -> str:
 
     name = (model_id or "").strip()
     if not _OLLAMA_MODEL.match(name):
-        return "Nome de modelo do Ollama invalido (use, por exemplo, qwen3:4b)."
+        return "Nome de modelo do Ollama invalido (use, por exemplo, gemma4:e4b)."
     if "cloud" in name.casefold():
         return (
             "Modelo com 'cloud' no nome e recusado: o Ollama roda esse modelo na nuvem dele, e o canal "

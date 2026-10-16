@@ -235,7 +235,7 @@ class OllamaLocalChannelTests(unittest.TestCase):
         self.assertTrue(decision.allowed, decision.reasons)
         self.assertEqual(decision.engine_id, "ollama-local")
         self.assertEqual(decision.config.provider, "ollama")
-        self.assertEqual(decision.config.model_id, "qwen3:4b")
+        self.assertEqual(decision.config.model_id, "gemma4:e4b")
         self.assertEqual(decision.config.max_workers, 1)
         self.assertEqual(decision.config.chunk_chars, 2000)
         self.assertIsNone(decision.key)
@@ -321,7 +321,7 @@ class OllamaLocalChannelTests(unittest.TestCase):
         audit = "\n".join(audit_lines(decision))
         self.assertIn("LLM local (Ollama, loopback), nada enviado", audit)
         self.assertIn("num_ctx", audit)
-        self.assertIn("qwen3:4b", audit)
+        self.assertIn("gemma4:e4b", audit)
         self.assertNotIn("enviado ao provedor", audit)
         self.assertNotIn("Aviso (versao", audit)
 

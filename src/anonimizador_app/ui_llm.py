@@ -133,7 +133,7 @@ def build_engine_section(session, *, on_change: Callable[[], None] = lambda: Non
 
 def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
     engine: EngineSession = session.engine
-    draft = {"choice": engine.choice if engine.choice.channel else EngineChoice(channel="gemini-pago")}
+    draft = {"choice": engine.choice if engine.choice.channel else EngineChoice(channel="ollama-local")}
 
     def current() -> EngineChoice:
         return draft["choice"]
@@ -250,7 +250,7 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
             with project_box:
                 ui.label("Modelo do Ollama").classes("aj-label")
                 ui.input(
-                    "Modelo já baixado no Ollama (padrão qwen3:4b; nunca ':cloud')",
+                    "Modelo já baixado no Ollama (padrão gemma4:e4b; reserva qwen3:4b; nunca ':cloud')",
                     value=choice.model_id if choice.model_id != DEFAULT_MODEL else "",
                     on_change=lambda event: on_field(model_id=(event.value or "").strip()),
                 ).classes("w-full")

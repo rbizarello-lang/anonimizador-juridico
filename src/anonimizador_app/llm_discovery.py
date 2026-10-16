@@ -52,7 +52,7 @@ from .roster import Mention
 PROMPT_VERSION = "2026-10-01.1"
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
 # H9-b: canal local (Ollama em loopback). Modelo padrao e janela de contexto do pedido.
-OLLAMA_DEFAULT_MODEL = "qwen3:4b"
+OLLAMA_DEFAULT_MODEL = "gemma4:e4b"
 OLLAMA_DEFAULT_NUM_CTX = 4096
 OLLAMA_CHUNK_CHARS = 2000
 # Teto de saida por chamada no canal local. Sem ele o provedor manda num_predict = 8192, maior que a propria
