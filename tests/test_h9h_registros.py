@@ -63,6 +63,18 @@ class RegistroDaJuntaTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual([item for item in _found(text) if item[0] == "BR_NIRE"], [])
 
+    def test_jucesc_com_11_digitos_puros(self) -> None:
+        # 12345678901 nao fecha como CPF; 11144477735 fecha (e CPF, nao registro da junta).
+        text = "Arquivado na JUCESC sob o nº 12345678901 e na Junta Comercial, registro 55566677788."
+        found = [value for kind, value in _found(text) if kind == "BR_NIRE"]
+        self.assertEqual(found, ["12345678901", "55566677788"])
+        self.assertEqual(_out("JUCESC registro 12345678901. NIRE 12345678901."), "JUCESC registro [NIRE_1]. NIRE [NIRE_1].")
+
+    def test_jucesc_com_11_digitos_que_fecham_como_cpf_ou_cpf_rotulado_seguem_cpf(self) -> None:
+        for text in ("JUCESC 11144477735", "Junta Comercial, CPF 12345678901", "O CPF 12345678909 consta na JUCESC."):
+            with self.subTest(text=text):
+                self.assertEqual([item for item in _found(text) if item[0] == "BR_NIRE"], [])
+
     def test_numero_no_formato_de_cpf_sem_junta_nem_registro_nao_vira_nire(self) -> None:
         self.assertEqual([item for item in _found("Anotação 123.456.789-01 da folha.") if item[0] == "BR_NIRE"], [])
 

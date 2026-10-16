@@ -34,6 +34,7 @@ from .roster import KEEP, TOKENIZE, Roster, RosterEntry, entity_core, has_token
 _WORD = re.compile(r"[^\W\d_]+")
 _RATIO = 0.85
 _PUBLIC_ROLES = frozenset({"magistrado", "servidor_publico", "procurador_publico", "orgao_publico"})
+_PRIVATE_ROLES = frozenset({"socio", "parte", "advogado"})
 _MAX_PASSES = 6
 
 
@@ -271,11 +272,16 @@ def _survivor(roster: Roster, keys: Sequence[str]) -> str:
 
 
 def merged_action(entries: Sequence[RosterEntry], locked: Sequence[bool]) -> str:
-    """"manter" vence com cargo publico confirmado (juizo do lote ou papel publico) ou quando todos ja eram "manter"."""
+    """"manter" so com (a) membro travado pelo juizo do lote, (b) todos ja "manter", ou (c) papel publico em algum
+    membro e nenhum papel privado especifico (socio, parte, advogado) em nenhum; "terceiro" e "desconhecido" nao
+    vetam. Um socio com uma grafia rotulada de procurador fica tokenizado, como a ``policy_action`` faria."""
 
+    if any(locked):
+        return KEEP
     if all(entry.action == KEEP for entry in entries):
         return KEEP
-    for entry, is_locked in zip(entries, locked):
-        if entry.action == KEEP and (is_locked or _PUBLIC_ROLES & set(entry.roles)):
+    roles = {role for entry in entries for role in entry.roles}
+    if roles & _PUBLIC_ROLES and not roles & _PRIVATE_ROLES:
+        if any(entry.action == KEEP and _PUBLIC_ROLES & set(entry.roles) for entry in entries):
             return KEEP
     return TOKENIZE

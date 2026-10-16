@@ -53,6 +53,13 @@ class EmailPartidoTests(unittest.TestCase):
                 self.assertEqual(out, text)
                 self.assertEqual(found, [])
 
+    def test_parte_local_curta_ou_numerica_nao_e_email_partido(self) -> None:
+        for text in ("Ver fls. 12 |\n| @dominio.com.br", "| 12 |\n| @dominio.com.br", "| ab |\n| @dominio.com.br"):
+            with self.subTest(text=text):
+                out, found = _run(text)
+                self.assertEqual(out, text)
+                self.assertEqual(found, [])
+
 
 if __name__ == "__main__":
     unittest.main()

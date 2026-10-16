@@ -320,6 +320,8 @@ class BrNireRecognizer(ValueGroupPatternRecognizer):
 _JUNTA_REGISTRO = (
     r"(?<!\d)(?P<valor>\d{3}\.\d{3}\.\d{3}-\d{2})(?![\d-])"
 )
+# Os mesmos 11 digitos sem pontuacao (so depois de JUCESC / Junta Comercial); CPF valido nao entra.
+_JUNTA_REGISTRO_PURO = r"(?<!\d)(?P<valor>\d{11})(?![\d]|-\d)"
 
 
 class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
@@ -331,6 +333,7 @@ class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
     fecha como CPF (digito verificador errado): se fecha, e CPF e segue o reconhecedor de CPF."""
 
     _SOLO = "registro_n_formato_cpf"
+    _PURO = "jucesc_registro_11_digitos"
 
     def __init__(self) -> None:
         super().__init__(
@@ -348,6 +351,15 @@ class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
                     score=0.85,
                 ),
                 Pattern(
+                    name=self._PURO,
+                    regex=(
+                        r"\b(?:JUCESC|Junta\s+Comercial)(?![A-Za-z])"
+                        r"(?:(?!cpf|cnpj|c\.\s*p\.\s*f|\brg\b|identidade)[^\n\d]){0,40}?"
+                        r"(?:registro\s*)?(?:n[.\s]*[oº°]?\s*)?[:;]?\s*" + _JUNTA_REGISTRO_PURO
+                    ),
+                    score=0.85,
+                ),
+                Pattern(
                     name=self._SOLO,
                     regex=r"\bregistro\s+n[.\s]*[oº°]?\s*[:;]?\s*" + _JUNTA_REGISTRO,
                     score=0.8,
@@ -361,7 +373,7 @@ class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
         for result in results:
             explanation = result.analysis_explanation
             name = explanation.pattern_name if explanation is not None else ""
-            if name == self._SOLO and is_valid_cpf(text[result.start : result.end]):
+            if name in (self._SOLO, self._PURO) and is_valid_cpf(text[result.start : result.end]):
                 continue
             kept.append(result)
         return kept
@@ -486,6 +498,8 @@ class LocalEmailRecognizer(PatternRecognizer):
             if not _SPLIT_GAP_MARK.search(match.group("gap")):
                 continue
             if any(item.start < match.end() and match.start() < item.end for item in taken):
+                continue
+            if sum(char.isalpha() for char in match.group("local")) < 3:
                 continue
             canonical = (match.group("local") + match.group("domain")).casefold()
             for group in ("local", "domain"):
