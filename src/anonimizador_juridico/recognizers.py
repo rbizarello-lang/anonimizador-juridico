@@ -287,9 +287,10 @@ class BrRgRecognizer(ValueGroupPatternRecognizer):
                     score=0.75,
                 ),
                 Pattern(
-                    # RG de Santa Catarina: "8/R.1.964.808" (digito, barra, R, grupos pontuados).
+                    # RG de Santa Catarina: "8/R.1.964.808" e a variante "8/C.1.234.567" (digito, barra, R ou C, grupos
+                    # pontuados).
                     name="rg_sc_barra_r",
-                    regex=r"(?<![\w/.])(?P<valor>\d{1,2}/R\.\d{1,3}(?:\.\d{3}){1,2})(?!\d)",
+                    regex=r"(?<![\w/.])(?P<valor>\d{1,2}/[RC]\.\d{1,3}(?:\.\d{3}){1,2})(?!\d)",
                     score=0.8,
                 ),
             ],
@@ -314,6 +315,56 @@ class BrNireRecognizer(ValueGroupPatternRecognizer):
                 )
             ],
         )
+
+
+_JUNTA_REGISTRO = (
+    r"(?<!\d)(?P<valor>\d{3}\.\d{3}\.\d{3}-\d{2})(?![\d-])"
+)
+
+
+class BrJuntaRegistroRecognizer(ValueGroupPatternRecognizer):
+    """Registro da Junta Comercial com 11 digitos escritos como CPF ("123.456.789-01"), depois de "JUCESC", "Junta
+    Comercial" ou "registro nº". E o NIRE (a Junta o numera com 11 digitos), so que sem o rotulo "NIRE": entra na
+    mesma categoria ``BR_NIRE`` (token ``[NIRE_n]``), com os mesmos digitos como chave, para a mesma inscricao ter um
+    token so em qualquer formato. O rotulo fica fora do token. Depois de "JUCESC" ou "Junta Comercial" (ate 40 letras
+    de vao, sem quebra de linha nem digito) vale o formato; depois de "registro nº" sozinho so vale se o numero NAO
+    fecha como CPF (digito verificador errado): se fecha, e CPF e segue o reconhecedor de CPF."""
+
+    _SOLO = "registro_n_formato_cpf"
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_NIRE",
+            supported_language="pt",
+            name="BrJuntaRegistroRecognizer",
+            patterns=[
+                Pattern(
+                    name="jucesc_registro_formato_cpf",
+                    regex=(
+                        r"\b(?:JUCESC|Junta\s+Comercial)(?![A-Za-z])"
+                        r"(?:(?!cpf|cnpj|c\.\s*p\.\s*f|\brg\b|identidade)[^\n\d]){0,40}?"
+                        r"(?:registro\s*)?(?:n[.\s]*[oº°]?\s*)?[:;]?\s*" + _JUNTA_REGISTRO
+                    ),
+                    score=0.85,
+                ),
+                Pattern(
+                    name=self._SOLO,
+                    regex=r"\bregistro\s+n[.\s]*[oº°]?\s*[:;]?\s*" + _JUNTA_REGISTRO,
+                    score=0.8,
+                ),
+            ],
+        )
+
+    def analyze(self, text, entities, nlp_artifacts=None, regex_flags=None):
+        results = super().analyze(text, entities, nlp_artifacts, regex_flags)
+        kept = []
+        for result in results:
+            explanation = result.analysis_explanation
+            name = explanation.pattern_name if explanation is not None else ""
+            if name == self._SOLO and is_valid_cpf(text[result.start : result.end]):
+                continue
+            kept.append(result)
+        return kept
 
 
 class BrCnhRecognizer(ValueGroupPatternRecognizer):
@@ -765,6 +816,7 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
         ),
         BrRgRecognizer(),
         BrNireRecognizer(),
+        BrJuntaRegistroRecognizer(),
         BrCnhRecognizer(),
         BrUrlChaveRecognizer(),
         BrPisRecognizer(),
