@@ -41,6 +41,21 @@ _VIA_NUMBER = re.compile(
     r")\b"
 )
 
+# H9-h: logradouro cujo NOME e um numero ("Rua 2070, 235, Centro", "Rua 1500, nº 10", "Avenida 3, 45"): via, numero do
+# logradouro, virgula (ou ponto e virgula) e o numero predial. Sem o segundo numero nao e endereco ("Rua 12").
+_VIA_NUMERADA = re.compile(
+    r"(?ix)"
+    r"(?:(?<=^)|(?<=[\s,;:(]))"
+    r"("
+    rf"{_VIA}"
+    r"\s*\d{1,5}"
+    r"\s*[,;]\s*"
+    rf"{_NUMBER_MARK}"
+    r"(?<![A-Za-z0-9/])"
+    rf"{_PREDIAL}"
+    r")\b"
+)
+
 _VIA_ONLY = re.compile(
     rf"(?imx)"
     r"(?:(?<=^)|(?<=[\s,;:(]))"
@@ -154,11 +169,12 @@ def _make_span(start: int, end: int) -> EntitySpan:
 
 def _spans_via_number(text: str, extra_keep: Iterable[str]) -> list[EntitySpan]:
     found: list[EntitySpan] = []
-    for match in _VIA_NUMBER.finditer(text):
-        start, end = match.start(1), match.end(1)
-        if not _ok_span(text, start, end, extra_keep):
-            continue
-        found.append(_make_span(start, end))
+    for pattern in (_VIA_NUMBER, _VIA_NUMERADA):
+        for match in pattern.finditer(text):
+            start, end = match.start(1), match.end(1)
+            if not _ok_span(text, start, end, extra_keep):
+                continue
+            found.append(_make_span(start, end))
     return found
 
 
