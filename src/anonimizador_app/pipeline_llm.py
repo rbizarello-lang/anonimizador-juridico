@@ -1067,7 +1067,7 @@ def fuse_roster_identities(roster: Roster, states: Sequence[_FileState]) -> int:
     """H9-h: funde as entradas do mesmo nome (``roster_identity``) e leva as ancoras de todos os arquivos para a
     chave que ficou. Devolve quantas entradas foram absorvidas."""
 
-    removed = fuse_identities(roster)
+    removed = fuse_identities(roster, [state.text for state in states])
     if removed:
         for state in states:
             state.anchored[:] = [(start, end, removed.get(key, key)) for start, end, key in state.anchored]
@@ -1626,6 +1626,10 @@ def roster_summary(roster: Roster) -> list[str]:
     if pinned:
         lines.append(f"Decisoes do usuario aplicadas: {pinned}")
     lines.append(f"Entradas fundidas por identidade: {roster.identity_merges}")
+    lines.append(
+        f"Fusoes so por prefixo de 2 palavras: {len(roster.prefix2_merges)}; recusadas por parentesco: "
+        f"{len(roster.kinship_refused)}; recusadas por falta de prova no texto: {len(roster.proof_refused)}"
+    )
     return lines
 
 

@@ -22,6 +22,8 @@ ou da lista de alvos nao entra. Acao da entrada fundida: "manter" vence se algum
 from __future__ import annotations
 
 import re
+import unicodedata
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Sequence
 from difflib import SequenceMatcher
@@ -92,22 +94,33 @@ def _aligned(short: Sequence[str], long: Sequence[str], person: bool) -> tuple[b
     return True, "grafia" in kinds
 
 
+def person_match_kind(short_words: list[str], long_words: list[str], short_text: str, long_text: str) -> str:
+    """"" (nao e a mesma pessoa), "forte" ou "fraca". Fraca = a curta tem so 2 palavras de conteudo e casa por
+    prefixo, sufixo, iniciais ou palavra do meio omitida (nao por igualdade nem por grafia de OCR): mae e filha, pai
+    e filho com o mesmo prenome e um sobrenome comum casam assim, e isso exige prova no texto (``_Evidence``)."""
+
+    if len(short_words) < 2 or len(short_words) > len(long_words):
+        return ""
+    if _generation(short_words) != _generation(long_words):
+        return ""
+    if short_words == long_words:
+        return "forte"
+    size = len(short_words)
+    weak = "fraca" if size == 2 else "forte"
+    if long_words[:size] == short_words or long_words[-size:] == short_words:
+        return weak
+    matched, spelled = _aligned(short_words, long_words, True)
+    if not matched:
+        return ""
+    if not spelled:
+        return weak
+    return "forte" if SequenceMatcher(None, short_text, long_text).ratio() >= _RATIO else ""
+
+
 def person_forms_match(short_words: list[str], long_words: list[str], short_text: str, long_text: str) -> bool:
     """A forma ``short`` (de 2+ palavras de conteudo, nao maior que ``long``) e a mesma pessoa que ``long``?"""
 
-    if len(short_words) < 2 or len(short_words) > len(long_words):
-        return False
-    if _generation(short_words) != _generation(long_words):
-        return False
-    if short_words == long_words:
-        return True
-    size = len(short_words)
-    if long_words[:size] == short_words or long_words[-size:] == short_words:
-        return True
-    matched, spelled = _aligned(short_words, long_words, True)
-    if not matched:
-        return False
-    return not spelled or SequenceMatcher(None, short_text, long_text).ratio() >= _RATIO
+    return bool(person_match_kind(short_words, long_words, short_text, long_text))
 
 
 def company_forms_match(short_words: list[str], long_words: list[str], short_text: str, long_text: str) -> bool:
@@ -162,32 +175,138 @@ def _buckets(words: Sequence[str]) -> set[str]:
     return out
 
 
-def _related(short: _Cluster, long: _Cluster) -> bool:
-    """``short`` cabe em ``long`` como a mesma entidade (tamanho de ``short`` <= tamanho de ``long``)."""
+def _relation(short: _Cluster, long: _Cluster) -> tuple[str, list[tuple[str, str]]]:
+    """("", []) se ``short`` nao cabe em ``long`` como a mesma entidade (tamanho de ``short`` <= tamanho de
+    ``long``); ("forte", []) ou ("fraca", pares) se cabe. Os pares sao os (texto curto, texto longo) so fracos."""
 
     person = short.kind == "pessoa"
-    match = person_forms_match if person else company_forms_match
     if short.size >= 2:
+        strong = False
+        weak: list[tuple[str, str]] = []
         for short_words, short_text in short.forms:
             if len(short_words) < 2:
                 continue
             for long_words, long_text in long.forms:
-                if match(short_words, long_words, short_text, long_text):
-                    return True
-        return False
+                if person:
+                    kind = person_match_kind(short_words, long_words, short_text, long_text)
+                else:
+                    kind = "forte" if company_forms_match(short_words, long_words, short_text, long_text) else ""
+                if kind == "forte":
+                    strong = True
+                elif kind == "fraca":
+                    weak.append((short_text, long_text))
+        if strong:
+            return "forte", []
+        return ("fraca", weak) if weak else ("", [])
     if not person:
-        return False
+        return "", []
     # Pessoa de uma palavra so: a primeira ou a ultima palavra de uma entrada de 2+ palavras.
     word = short.forms[0][0][0] if short.forms else ""
     if len(word) < 3:
-        return False
+        return "", []
     for long_words, _text in long.forms:
         if len(long_words) < 2:
             continue
         for edge, first in ((long_words[0], True), (long_words[-1], False)):
             if _word_match(word, edge, first=first, person=True) in {"exata", "grafia"}:
-                return True
-    return False
+                return "forte", []
+    return "", []
+
+
+_LETTER = r"[^\W\d_]"
+_KINSHIP = re.compile(
+    r"(?<!" + _LETTER + r")(?:mae|filh[oa]|pai|irma|irmao|esposa|marido|conjuge|companheir[oa]|neto|neta|avo|tio|tia"
+    r"|sobrinh[oa]|genro|nora)s?(?!" + _LETTER + r")"
+)
+_KINSHIP_WINDOW = 60
+_SENTENCE_END = re.compile(r"[.!?;\n]")
+_APOSTROPHES = "'\u2019`\u00b4\u02bc\u2032"
+
+
+def _fold_keep_layout(text: str) -> str:
+    """Dobra como ``fold_lexical`` mas sem colapsar espacos nem quebras (a frase importa)."""
+
+    stripped = "".join(char for char in unicodedata.normalize("NFKD", text) if not unicodedata.combining(char))
+    return "".join(char for char in stripped.casefold() if char not in _APOSTROPHES)
+
+
+class _Evidence:
+    """Prova no texto para a fusao fraca (``person_match_kind`` == "fraca"): parentesco perto e a forma curta
+    sozinha. Dobra os textos so quando a primeira fusao fraca aparece."""
+
+    def __init__(self, texts: Sequence[str]) -> None:
+        self._raw = list(texts)
+        self._folded: list[str] | None = None
+        self._ends: dict[int, list[int]] = {}
+        self._found: dict[str, list[tuple[int, int, int]]] = {}
+
+    def _docs(self) -> list[str]:
+        if self._folded is None:
+            self._folded = [_fold_keep_layout(text) for text in self._raw]
+        return self._folded
+
+    def occurrences(self, form: str) -> list[tuple[int, int, int]]:
+        """(documento, inicio, fim) de cada ocorrencia da forma (palavras inteiras, dobradas)."""
+
+        found = self._found.get(form)
+        if found is None:
+            words = form.split()
+            found = []
+            if words:
+                pattern = re.compile(
+                    r"(?<!" + _LETTER + r")" + r"[\s\-]+".join(re.escape(word) for word in words) + r"(?!" + _LETTER + r")"
+                )
+                for number, doc in enumerate(self._docs()):
+                    found.extend((number, match.start(), match.end()) for match in pattern.finditer(doc))
+            self._found[form] = found
+        return found
+
+    def _sentence(self, number: int, position: int) -> int:
+        ends = self._ends.get(number)
+        if ends is None:
+            ends = [match.start() for match in _SENTENCE_END.finditer(self._docs()[number])]
+            self._ends[number] = ends
+        return bisect_right(ends, position - 1)
+
+    def kinship_near(self, forms: Sequence[str]) -> bool:
+        """Termo de parentesco a ate 60 caracteres (fora da propria ocorrencia) de qualquer ocorrencia das formas."""
+
+        docs = self._docs()
+        for form in forms:
+            for number, start, end in self.occurrences(form):
+                doc = docs[number]
+                before = doc[max(0, start - _KINSHIP_WINDOW) : start]
+                after = doc[end : end + _KINSHIP_WINDOW]
+                if _KINSHIP.search(before) or _KINSHIP.search(after):
+                    return True
+        return False
+
+    def short_stands_alone(self, short_forms: Sequence[str], long_forms: Sequence[str]) -> bool:
+        """A forma curta aparece ao menos uma vez fora de qualquer ocorrencia da longa, e nunca na mesma frase que
+        uma ocorrencia separada da longa."""
+
+        longs = [item for form in long_forms for item in self.occurrences(form)]
+        alone = 0
+        for form in short_forms:
+            for number, start, end in self.occurrences(form):
+                if any(n == number and ls < end and start < le for n, ls, le in longs):
+                    continue
+                sentence = self._sentence(number, start)
+                if any(n == number and self._sentence(n, ls) == sentence for n, ls, _le in longs):
+                    return False
+                alone += 1
+        return alone > 0
+
+    def verdict(self, long: "_Cluster", pairs: Sequence[tuple[str, str]]) -> str:
+        """"" (pode fundir), "parentesco" ou "prova"."""
+
+        short_forms = sorted({text for text, _long in pairs})
+        long_forms = sorted({text for _short, text in pairs} | {text for words, text in long.forms if len(words) > 2})
+        if self.kinship_near([*short_forms, *long_forms]):
+            return "parentesco"
+        if not self.short_stands_alone(short_forms, long_forms):
+            return "prova"
+        return ""
 
 
 def _eligible(entry: RosterEntry) -> bool:
@@ -199,9 +318,13 @@ def _eligible(entry: RosterEntry) -> bool:
     )
 
 
-def fuse_identities(roster: Roster) -> dict[str, str]:
-    """Funde no ``roster`` as entradas da mesma entidade; devolve ``{chave removida: chave que ficou}``."""
+def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[str, str]:
+    """Funde no ``roster`` as entradas da mesma entidade; devolve ``{chave removida: chave que ficou}``.
 
+    ``texts`` (os textos do lote) liga as salvaguardas da fusao so por prefixo/sufixo de 2 palavras: sem parentesco
+    perto e com a forma curta sozinha no texto. Sem ``texts`` elas ficam desligadas."""
+
+    evidence = _Evidence(texts) if texts is not None else None
     clusters = [_Cluster(entry) for entry in roster.entries if _eligible(entry)]
     clusters = [cluster for cluster in clusters if cluster.size >= 1]
     for _ in range(_MAX_PASSES):
@@ -217,13 +340,26 @@ def fuse_identities(roster: Roster) -> dict[str, str]:
                 for other in index.get((cluster.kind, bucket), ())
                 if other != number
             }
-            candidates = [
-                other
+            related = {
+                other: _relation(cluster, clusters[other])
                 for other in sorted(near)
-                if clusters[other].size >= cluster.size and _related(cluster, clusters[other])
-            ]
+                if clusters[other].size >= cluster.size
+            }
+            candidates = [other for other, (kind, _pairs) in related.items() if kind]
             if len(candidates) == 1:
-                unions.append((number, candidates[0]))
+                other = candidates[0]
+                kind, pairs = related[other]
+                if kind == "fraca":
+                    pair_id = (cluster.keys[0], clusters[other].keys[0])
+                    verdict = evidence.verdict(clusters[other], pairs) if evidence is not None else ""
+                    if verdict == "parentesco":
+                        roster.kinship_refused.add(pair_id)
+                        continue
+                    if verdict == "prova":
+                        roster.proof_refused.add(pair_id)
+                        continue
+                    roster.prefix2_merges.add(pair_id)
+                unions.append((number, other))
         if not unions:
             break
         parent = list(range(len(clusters)))

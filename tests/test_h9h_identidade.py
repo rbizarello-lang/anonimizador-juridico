@@ -13,7 +13,7 @@ from pathlib import Path
 from anonimizador_juridico import EntitySpan
 
 from anonimizador_app.pipeline_llm import run_llm_job
-from anonimizador_app.roster import KEEP, TOKENIZE, Mention, Roster
+from anonimizador_app.roster import KEEP, TOKENIZE, Mention, Roster, RosterEntry
 from anonimizador_app.roster_identity import fuse_identities
 
 from test_llm_hygiene import _Pipeline
@@ -166,6 +166,106 @@ class FusaoNoLoteTests(_Pipeline):
         self.assertIn("Rogerio Mattos Tavares", body)
         self.assertEqual(len(result.roster), 1)
         self.assertEqual(result.roster.entries[0].action, KEEP)
+
+class AcaoDaEntradaFundidaTests(unittest.TestCase):
+    def test_socio_com_grafia_rotulada_procurador_tokeniza_a_entrada_toda(self) -> None:
+        roster = _roster(("Rogerio Matos Tavares", "socio"), ("ROGERIO MATOS", "procurador_publico"))
+        self.assertEqual(roster.lookup("pessoa", "ROGERIO MATOS").action, KEEP)
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.entries[0].action, TOKENIZE)
+
+    def test_servidor_com_variante_terceiro_ou_desconhecido_fica_manter(self) -> None:
+        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("ROGERIO MATOS", "terceiro"), ("Rogerio Matos", "inventado"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.entries[0].action, KEEP)
+
+    def test_juiz_travado_pelo_juizo_do_lote_com_variante_terceiro_fica_manter(self) -> None:
+        roster = _roster(("Rogerio Matos Tavares", "magistrado"), ("ROGERIO MATOS", "terceiro"))
+        self.assertTrue(roster.lock_keep("pessoa:rogerio matos tavares"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.entries[0].action, KEEP)
+
+    def test_travado_vence_ate_com_papel_privado_em_outro_membro(self) -> None:
+        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("ROGERIO MATOS", "socio"))
+        self.assertTrue(roster.lock_keep("pessoa:rogerio matos tavares"))
+        fuse_identities(roster)
+        self.assertEqual(roster.entries[0].action, KEEP)
+
+
+class FusaoPorPrefixoDeDuasPalavrasTests(unittest.TestCase):
+    def test_mae_e_filha_nao_fundem_e_a_recusa_e_contada(self) -> None:
+        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"))
+        text = "Maria Silva, mãe de Maria Silva Souza, compareceu. Depois, Maria Silva assinou sozinha."
+        fuse_identities(roster, [text])
+        self.assertEqual(len(roster), 2)
+        self.assertEqual(len(roster.kinship_refused), 1)
+        self.assertEqual(len(roster.prefix2_merges), 0)
+
+    def test_parentesco_perto_de_qualquer_ocorrencia_veta_mesmo_em_outra_frase(self) -> None:
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundes", "parte"))
+        fuse_identities(roster, ["Joel Fagundes assinou.\n\nJoel Martinez Fagundes, filho do requerente, recorreu."])
+        self.assertEqual(len(roster), 2)
+        self.assertEqual(len(roster.kinship_refused), 1)
+
+    def test_sem_parentesco_e_com_a_curta_sozinha_funde(self) -> None:
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundes", "parte"))
+        text = "Joel Martinez Fagundes assinou o contrato. Na outra folha, Joel Fagundes pagou o preço."
+        fuse_identities(roster, [text])
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(len(roster.prefix2_merges), 1)
+        self.assertEqual((len(roster.kinship_refused), len(roster.proof_refused)), (0, 0))
+
+    def test_curta_que_so_aparece_dentro_da_longa_ou_na_mesma_frase_nao_funde(self) -> None:
+        for text in (
+            "Joel Martinez Fagundes assinou o contrato.",
+            "Joel Fagundes e Joel Martinez Fagundes assinaram o contrato.",
+            "Joel Fagundes assinou. Joel Martinez Fagundes pagou. Joel Fagundes e Joel Martinez Fagundes saíram.",
+        ):
+            with self.subTest(text=text):
+                roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundes", "parte"))
+                fuse_identities(roster, [text])
+                self.assertEqual(len(roster), 2)
+                self.assertEqual(len(roster.proof_refused), 1)
+
+    def test_nome_igual_do_llm_funde_sem_exigir_prova(self) -> None:
+        # A entrada curta carrega o nome da longa como variante (o nome canonico do LLM): igualdade, nao prefixo.
+        longa = RosterEntry(key="pessoa:maria silva souza", kind="pessoa", name="Maria Silva Souza", roles=["parte"])
+        curta = RosterEntry(
+            key="pessoa:maria silva", kind="pessoa", name="Maria Silva", roles=["parte"], variants=["Maria Silva Souza"]
+        )
+        roster = Roster([longa, curta])
+        fuse_identities(roster, ["Maria Silva, mãe de Maria Silva Souza, compareceu."])
+        self.assertEqual(len(roster), 1)
+        self.assertEqual((len(roster.kinship_refused), len(roster.proof_refused)), (0, 0))
+
+    def test_cadeia_com_parentesco_nao_colapsa(self) -> None:
+        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"), ("Maria Souza", "parte"))
+        text = "Maria Silva, mãe de Maria Silva Souza, e Maria Souza compareceram. Depois Maria Souza saiu."
+        fuse_identities(roster, [text])
+        self.assertEqual(len(roster), 3)
+        self.assertEqual(len(roster.kinship_refused), 2)
+
+    def test_cadeia_sem_parentesco_com_prova_funde_as_duas(self) -> None:
+        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"), ("Maria Souza", "parte"))
+        text = "Maria Silva Souza assinou. Em outra folha, Maria Silva pagou. Noutra, Maria Souza recebeu."
+        fuse_identities(roster, [text])
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(len(roster.prefix2_merges), 2)
+
+
+class SalvaguardaNoLoteTests(_Pipeline):
+    def test_mae_e_filha_seguem_com_tokens_diferentes_e_a_auditoria_conta(self) -> None:
+        text = _doc(
+            "Maria Silva, mãe de Maria Silva Souza, compareceu.",
+            "Depois Maria Silva assinou sozinha e Maria Silva Souza saiu.",
+        )
+        entities = [("pessoa", "Maria Silva Souza", "parte"), ("pessoa", "Maria Silva", "parte")]
+        result, body, audit = self.go(text, FakeDiscoverer(entities))
+        self.assertEqual(len(result.roster), 2)
+        self.assertIn("Fusoes so por prefixo de 2 palavras: 0; recusadas por parentesco: 1; recusadas por falta de prova no texto: 0", audit)
 
 
 class SelectiveLocalEngine(FakeLocalEngine):
