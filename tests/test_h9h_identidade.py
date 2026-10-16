@@ -280,15 +280,24 @@ class PessoaEEmpresaNuncaFundemTests(unittest.TestCase):
         self.assertEqual(len(roster), 2)
         self.assertEqual({entry.name: entry.kind for entry in roster.entries}, {"Joana Prado": "pessoa", "Joana Prado ME": "empresa"})
 
-    def test_mesma_forma_curta_como_pessoa_e_como_empresa_vira_uma_entrada_empresa(self) -> None:
-        roster = _roster(("Vale Verde Gestao", "parte"))
-        roster.add_mention(Mention(kind="empresa", text="Vale Verde Gestao", canonical="Vale Verde Gestao", role="parte"))
+    def test_mesma_forma_sem_sufixo_nem_palavra_de_razao_social_fica_separada(self) -> None:
+        roster = _roster(("Fulano de Tal", "advogado"))
+        roster.add_mention(Mention(kind="empresa", text="Fulano de Tal", canonical="Fulano de Tal", role="parte"))
         self.assertEqual(len(roster), 2)
-        removed = fuse_identities(roster)
-        self.assertEqual(len(removed), 1)
-        self.assertEqual([(entry.kind, entry.name) for entry in roster.entries], [("empresa", "Vale Verde Gestao")])
-        self.assertEqual(roster.lookup("empresa", "Vale Verde Gestao").entity_type, "ORGANIZATION")
-        self.assertIsNone(roster.lookup("pessoa", "Vale Verde Gestao"))
+        self.assertEqual(fuse_identities(roster), {})
+        self.assertEqual(sorted((entry.kind, entry.name) for entry in roster.entries), [("empresa", "Fulano de Tal"), ("pessoa", "Fulano de Tal")])
+
+    def test_pessoa_com_papel_de_pessoa_nao_vira_empresa_nem_com_forma_igual(self) -> None:
+        roster = _roster(("Vale Verde Gestao", "socio"))
+        roster.add_mention(Mention(kind="empresa", text="Vale Verde Gestao", canonical="Vale Verde Gestao", role="parte"))
+        self.assertEqual(fuse_identities(roster), {})
+        self.assertEqual(sorted(entry.kind for entry in roster.entries), ["empresa", "pessoa"])
+
+    def test_forma_com_palavra_de_razao_social_vira_empresa_e_funde(self) -> None:
+        roster = _roster(("Alfa Comercio", "parte"))
+        roster.add_mention(Mention(kind="empresa", text="Alfa Comercio Ltda", canonical="Alfa Comercio Ltda", role="parte"))
+        self.assertEqual(len(fuse_identities(roster)), 1)
+        self.assertEqual([entry.kind for entry in roster.entries], ["empresa"])
 
     def test_forma_curta_da_pessoa_nao_absorve_a_razao_social_inteira(self) -> None:
         roster = _roster(("Vale Verde", "parte"))
@@ -430,3 +439,25 @@ class VeredictoPosJuizoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AjustesDaConferenciaDoLoteTests(unittest.TestCase):
+    def test_razao_social_sem_palavra_distintiva_nao_funde_por_igual(self) -> None:
+        roster = _empresa("Camboriu Imp. e Exp.", "Camboriu Importacao e Exportacao")
+        self.assertEqual(fuse_identities(roster), {})
+        self.assertEqual(len(roster), 2)
+
+    def test_razao_social_com_palavra_distintiva_segue_fundindo(self) -> None:
+        roster = _empresa("Lima Importacao e Exportacao Ltda", "Lima Imp. e Exp. Ltda")
+        self.assertEqual(len(fuse_identities(roster)), 1)
+
+    def test_nome_canonico_nao_liga_sobrenome_sozinho(self) -> None:
+        roster = _roster(("Fagundes", "parte"), ("Maria Fagundes Lima", "parte"))
+        _with_variant(roster, "Fagundes", "Maria Fagundes Lima")
+        self.assertEqual(fuse_identities(roster), {})
+        self.assertEqual(len(roster), 2)
+
+    def test_nome_canonico_liga_forma_com_duas_palavras_de_conteudo(self) -> None:
+        roster = _roster(("Maria F. Lima", "parte"), ("Maria Fagundes Lima", "parte"))
+        _with_variant(roster, "Maria F. Lima", "Maria Fagundes Lima")
+        self.assertEqual(len(fuse_identities(roster)), 1)

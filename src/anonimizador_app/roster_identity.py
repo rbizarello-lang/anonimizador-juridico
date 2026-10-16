@@ -38,12 +38,18 @@ from difflib import SequenceMatcher
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
 from .batch_propagation import _CONNECTIVES, _close
+from .geo_names import UF_SIGLAS, is_geo_word
 from .roster import KEEP, TOKENIZE, Roster, RosterEntry, entity_core, has_token
 
 _WORD = re.compile(r"[^\W\d_]+")
 _LINE_HYPHEN = re.compile(r"(?<=\w)-\s+(?=\w)")
 _PUBLIC_ROLES = frozenset({"magistrado", "servidor_publico", "procurador_publico", "orgao_publico"})
 _PRIVATE_ROLES = frozenset({"socio", "parte", "advogado"})
+_UF_WORDS = frozenset(sigla.lower() for sigla in UF_SIGLAS.split("|"))
+# Palavras de ramo que nao distinguem uma razao social de outra (ajuste 2).
+_GENERIC_BRANCH = frozenset(
+    "importacao exportacao comercio industria industrias servicos transportes participacoes".split()
+) | _CONNECTIVES
 
 _ABBREVIATIONS = {"imp": "importacao", "exp": "exportacao", "ind": "industria", "com": "comercio", "cia": "companhia"}
 _RATIO_PERSON = 0.85
@@ -131,6 +137,14 @@ def is_corporate(value: str) -> bool:
     return any(word in _CORPORATE_WORDS for word in _WORD.findall(fold_lexical(value)))
 
 
+def _distinctive(words: tuple[str, ...]) -> list[str]:
+    """Palavras que sobram da razao social sem municipio/UF, conectivo nem palavra generica de ramo (ajuste 2)."""
+
+    return [
+        word for word in words if word not in _GENERIC_BRANCH and word not in _UF_WORDS and not is_geo_word(word)
+    ]
+
+
 def _contains_two_names(words: tuple[str, ...], names: Sequence[tuple[str, ...]]) -> bool:
     """A forma contem, inteiros e sem sobreposicao, os nomes (2+ palavras) de duas entradas do elenco?"""
 
@@ -188,6 +202,41 @@ class _Cluster:
         self._build(entry, names)
 
 
+def _may_retype(cluster: _Cluster, clusters: Sequence[_Cluster], roster: Roster, by_key: dict[str, RosterEntry]) -> bool:
+    """Ajuste 1: a forma escrita como pessoa e como empresa so vira EMPRESA com sufixo societario ou palavra de razao
+    social E sem papel de pessoa (socio, parte, advogado) em nenhum membro; senao as duas entradas ficam separadas."""
+
+    shared = cluster.written & {
+        _written(value)
+        for other in clusters
+        if other.kind == "empresa"
+        for value in other.values
+    } | cluster.written & {
+        _written(value)
+        for entry in roster.entries
+        if entry.kind == "empresa" and not _eligible(entry)
+        for value in (entry.name, *entry.variants)
+    }
+    holders = [by_key[cluster.key]]
+    for other in clusters:
+        if other is not cluster and other.kind == "empresa" and other.written & shared:
+            holders.append(by_key[other.key])
+    holders += [
+        entry for entry in roster.entries
+        if entry.kind == "empresa" and not _eligible(entry)
+        and any(_written(value) in shared for value in (entry.name, *entry.variants))
+    ]
+    forms = [
+        value for entry in holders for value in (entry.name, *entry.variants) if _written(value) in shared
+    ]
+    if not any(is_corporate(value) for value in forms):
+        return False
+    # Pessoa: qualquer papel privado veta. Empresa: "parte" e o papel normal dela; so socio e advogado vetam.
+    if set(holders[0].roles) & _PRIVATE_ROLES:
+        return False
+    return not any(set(entry.roles) & {"socio", "advogado"} for entry in holders[1:])
+
+
 def _eligible(entry: RosterEntry) -> bool:
     return (
         entry.kind in {"pessoa", "empresa"}
@@ -205,8 +254,14 @@ def _relation(left: _Cluster, right: _Cluster) -> str:
     if left.kind != right.kind or not left.name_form or not right.name_form:
         return ""
     if left.name_form == right.name_form:
+        # Ajuste 2: razao social sem palavra distintiva (so municipio, ramo e conectivo) nao funde por "igual".
+        if left.kind == "empresa" and not _distinctive(left.name_form):
+            return ""
         return "igual"
     if left.name_form in right.forms or right.name_form in left.forms:
+        # Ajuste 3: o nome canonico so liga formas com 2+ palavras de conteudo (nunca um sobrenome sozinho).
+        if min(len(content_words(left.kind, " ".join(left.name_form))), len(content_words(right.kind, " ".join(right.name_form)))) < 2:
+            return ""
         return "canonico"
     if any(_ocr_match(left.name_form, form, left.kind) for form in right.forms) or any(
         _ocr_match(form, right.name_form, left.kind) for form in left.forms
@@ -239,7 +294,8 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
     }
     for cluster in clusters:
         if cluster.kind == "pessoa" and cluster.written & company_written:
-            cluster.retype_company(by_key[cluster.key], names)
+            if _may_retype(cluster, clusters, roster, by_key):
+                cluster.retype_company(by_key[cluster.key], names)
     clusters = [cluster for cluster in clusters if cluster.forms]
     # Arestas: nome canonico e igualdade primeiro, OCR depois (grafia de OCR nao disputa com a identidade exata).
     matches: dict[tuple[int, int], str] = {}
