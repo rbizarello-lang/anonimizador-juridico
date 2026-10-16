@@ -1,6 +1,7 @@
-"""H9-h, itens A e B: fusao de identidade no elenco e regra (c) com o veredito pos-juizo do motor local.
+"""H9-h (fusao restrita), itens A e B: fusao de identidade no elenco e regra (c) com o veredito pos-juizo do motor local.
 
-Textos e nomes inventados; sem rede, sem modelo.
+Politica "na duvida, separado": pessoa e empresa so fundem por forma igual, grafia de OCR com o mesmo numero de palavras
+ou nome canonico do LLM. Textos e nomes inventados; sem rede, sem modelo.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from anonimizador_juridico import EntitySpan
 
 from anonimizador_app.pipeline_llm import run_llm_job
 from anonimizador_app.roster import KEEP, TOKENIZE, Mention, Roster, RosterEntry
-from anonimizador_app.roster_identity import _Cluster, _share_edge, fuse_identities
+from anonimizador_app.roster_identity import fuse_identities
 
 from test_llm_hygiene import _Pipeline
 from test_pipeline_llm import FakeDiscoverer, FakeLocalEngine
@@ -31,40 +32,36 @@ def _roster(*items: tuple[str, str]) -> Roster:
     return roster
 
 
+def _empresa(*names: str, kind: str = "empresa") -> Roster:
+    roster = Roster()
+    for name in names:
+        roster.add_mention(Mention(kind=kind, text=name, canonical=name, role="parte"), source="llm")
+    return roster
+
+
+def _with_variant(roster: Roster, name: str, variant: str, kind: str = "pessoa") -> None:
+    entry = roster.lookup(kind, name)
+    assert entry is not None
+    entry.variants.append(variant)
+
+
 class FusaoNoElencoTests(unittest.TestCase):
     FULL = "Alessandro Luiz de Domenico"
 
-    def test_quatro_grafias_viram_uma_entrada(self) -> None:
+    def test_prefixo_sufixo_iniciais_e_nome_curto_nao_fundem(self) -> None:
         roster = _roster(
-            (self.FULL, "socio"), ("ALESSANDRO LUIZ DE", "socio"), ("Alessandro de Domenica", "socio"), ("Alessandro", "socio")
+            (self.FULL, "socio"), ("ALESSANDRO LUIZ DE", "socio"), ("A. L. de Domenico", "socio"),
+            ("Luiz de Domenico", "socio"), ("Alessandro de Domenico", "socio"), ("Alessandro", "socio"),
         )
-        self.assertEqual(len(roster), 4)
-        removed = fuse_identities(roster)
-        self.assertEqual(len(roster), 1)
-        self.assertEqual(len(removed), 3)
-        self.assertEqual(roster.identity_merges, 3)
-        entry = roster.entries[0]
-        self.assertEqual(entry.name, self.FULL)
-        for value in ("ALESSANDRO LUIZ DE", "Alessandro de Domenica", "Alessandro"):
-            self.assertIn(value, entry.variants)
-            self.assertIs(roster.lookup("pessoa", value), entry)
+        self.assertEqual(fuse_identities(roster), {})
+        self.assertEqual(len(roster), 6)
 
-    def test_iniciais_sufixo_e_prefixo(self) -> None:
-        roster = _roster((self.FULL, "parte"), ("A. L. de Domenico", "parte"), ("Luiz de Domenico", "parte"))
+    def test_nome_do_meio_da_magistrada_nao_funde_com_a_ponta_da_variante_de_uma_parte(self) -> None:
+        roster = _roster(("Ana Paula Ferreira Lima", "magistrado"), ("Paula Lima", "parte"), ("Ana Lima", "parte"))
+        _with_variant(roster, "Paula Lima", "Paula Ferreira Lima")
         fuse_identities(roster)
-        self.assertEqual(len(roster), 1)
-
-    def test_homonimos_de_sobrenome_nao_se_fundem(self) -> None:
-        roster = _roster(
-            ("Alessandro Luiz Domenico", "socio"), ("Beatriz Helena Domenico", "socio"), ("Domenico", "socio"),
-            ("Alessandro", "socio"),
-        )
-        fuse_identities(roster)
-        # "Domenico" cabe nas duas; "Alessandro" cabe so numa (e funde).
         self.assertEqual(len(roster), 3)
-        self.assertIsNot(roster.lookup("pessoa", "Alessandro Luiz Domenico"), roster.lookup("pessoa", "Beatriz Helena Domenico"))
-        self.assertIs(roster.lookup("pessoa", "Alessandro"), roster.lookup("pessoa", "Alessandro Luiz Domenico"))
-        self.assertIsNot(roster.lookup("pessoa", "Domenico"), roster.lookup("pessoa", "Alessandro Luiz Domenico"))
+        self.assertEqual(roster.lookup("pessoa", "Ana Paula Ferreira Lima").action, KEEP)
 
     def test_mesmo_prenome_ou_so_o_sobrenome_em_comum_nao_funde(self) -> None:
         roster = _roster(
@@ -78,12 +75,35 @@ class FusaoNoElencoTests(unittest.TestCase):
         fuse_identities(roster)
         self.assertEqual(len(roster), 2)
 
+    def test_grafia_de_ocr_no_mesmo_nome_de_tres_palavras_funde(self) -> None:
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Martinez Fagundcs", "parte"))
+        removed = fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(roster.identity_reasons, {"igual": 0, "ocr": 1, "canonico": 0})
+        self.assertIs(roster.lookup("pessoa", "Joel Martinez Fagundcs"), roster.entries[0])
+
+    def test_ocr_com_numero_de_palavras_diferente_nao_funde(self) -> None:
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundcs", "parte"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
+
+    def test_forma_igual_depois_de_normalizar_funde_inclusive_hifen_de_quebra_de_linha(self) -> None:
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Martinez Fagun-\ndes", "parte"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.identity_reasons, {"igual": 1, "ocr": 0, "canonico": 0})
+
+    def test_mesmo_nome_canonico_do_llm_funde(self) -> None:
+        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"))
+        _with_variant(roster, "Maria Silva", "Maria Silva Souza")
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.identity_reasons, {"igual": 0, "ocr": 0, "canonico": 1})
+
     def test_servidor_manter_e_variantes_herdam_manter(self) -> None:
-        roster = _roster(
-            ("Rogerio Matos Tavares", "servidor"), ("ROGERIO MATOS", "terceiro"), ("Rogerio Mattos Tavares", "terceiro")
-        )
-        self.assertEqual(roster.lookup("pessoa", "Rogerio Matos Tavares").action, KEEP)
-        self.assertEqual(roster.lookup("pessoa", "ROGERIO MATOS").action, TOKENIZE)
+        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("Rogerio Mattos Tavares", "terceiro"))
+        self.assertEqual(roster.lookup("pessoa", "Rogerio Mattos Tavares").action, TOKENIZE)
         fuse_identities(roster)
         self.assertEqual(len(roster), 1)
         self.assertEqual(roster.entries[0].action, KEEP)
@@ -92,28 +112,19 @@ class FusaoNoElencoTests(unittest.TestCase):
         self.assertEqual(roster.entries[0].action, KEEP)
 
     def test_sem_cargo_publico_confirmado_tokeniza(self) -> None:
-        roster = _roster(("Rogerio Matos Tavares", "autor_citado"), ("ROGERIO MATOS", "parte"))
+        roster = _roster(("Rogerio Matos Tavares", "autor_citado"), ("Rogerio Mattos Tavares", "parte"))
         fuse_identities(roster)
         self.assertEqual(len(roster), 1)
         self.assertEqual(roster.entries[0].action, TOKENIZE)
 
-    def test_empresa_prefixo_ate_o_sufixo_societario(self) -> None:
-        roster = Roster()
-        for name in ("Agroflorestal Vale Setentrional Industria Ltda", "AGROFLORESTAL VALE SETENTRIONAL", "Agroflorestal Vale Setentrionel Industria"):
-            roster.add_mention(Mention(kind="empresa", text=name, canonical=name, role="parte"), source="llm")
-        fuse_identities(roster)
-        self.assertEqual(len(roster), 1)
-
     def test_empresas_diferentes_com_a_mesma_marca_nao_fundem(self) -> None:
-        roster = Roster()
-        for name in ("Alfa Comercio de Alimentos Ltda", "Alfa Textil Ltda", "Alfa Participacoes SA"):
-            roster.add_mention(Mention(kind="empresa", text=name, canonical=name, role="parte"), source="llm")
+        roster = _empresa("Alfa Comercio de Alimentos Ltda", "Alfa Textil Ltda", "Alfa Participacoes SA", "Alfa")
         fuse_identities(roster)
-        self.assertEqual(len(roster), 3)
+        self.assertEqual(len(roster), 4)
 
     def test_entrada_da_lista_de_alvos_e_a_fixada_pelo_usuario_ficam_como_estao(self) -> None:
-        roster = _roster((self.FULL, "socio"))
-        roster.add_listed("pessoa", "ALESSANDRO LUIZ DE")
+        roster = _roster((self.FULL, "socio"), ("Alessandro Luiz de Domenica", "socio"))
+        roster.add_listed("pessoa", "Alessandro Luiz de Domenicp")
         fuse_identities(roster)
         self.assertEqual(len(roster), 2)
 
@@ -121,23 +132,17 @@ class FusaoNoElencoTests(unittest.TestCase):
 class FusaoNoLoteTests(_Pipeline):
     FULL = "Alessandro Luiz de Domenico"
 
-    def test_um_nome_em_quatro_grafias_vira_um_token_e_a_auditoria_conta(self) -> None:
+    def test_grafia_de_ocr_vira_um_token_e_a_auditoria_conta_o_motivo(self) -> None:
         text = _doc(
-            "Consta ALESSANDRO LUIZ DE na lista de presença.",
-            "Falou Alessandro de Domenica no ato. O Sr. Alessandro concordou.",
+            "Consta Alessandro Luiz de Domenica na lista de presença.",
             f"O sócio {self.FULL} foi citado e {self.FULL} apresentou defesa.",
         )
-        entities = [
-            ("pessoa", self.FULL, "socio"),
-            ("pessoa", "ALESSANDRO LUIZ DE", "socio"),
-            ("pessoa", "Alessandro de Domenica", "socio"),
-            ("pessoa", "Alessandro", "socio"),
-        ]
+        entities = [("pessoa", self.FULL, "socio"), ("pessoa", "Alessandro Luiz de Domenica", "socio")]
         result, body, audit = self.go(text, FakeDiscoverer(entities))
         tokens = set(re.findall(r"\[PESSOA_\d+\]", body))
         self.assertEqual(len(tokens), 1, body)
         self.assertNotRegex(body, r"(?i)alessandro|domenic")
-        self.assertIn("Entradas fundidas por identidade: 3", audit)
+        self.assertIn("Entradas fundidas por identidade: 1 (igual normalizado 0, OCR 1, nome canonico do LLM 0)", audit)
         self.assertEqual(len(result.roster), 1)
 
     def test_dois_homonimos_de_sobrenome_seguem_com_tokens_diferentes(self) -> None:
@@ -148,149 +153,95 @@ class FusaoNoLoteTests(_Pipeline):
         entities = [("pessoa", "Alessandro Luiz Domenico", "socio"), ("pessoa", "Beatriz Helena Domenico", "socio")]
         _result, body, audit = self.go(text, FakeDiscoverer(entities))
         self.assertEqual(len(set(re.findall(r"\[PESSOA_\d+\]", body))), 2)
-        self.assertIn("Entradas fundidas por identidade: 0", audit)
+        self.assertIn("Entradas fundidas por identidade: 0 (igual normalizado 0, OCR 0, nome canonico do LLM 0)", audit)
 
-    def test_servidor_manter_com_variantes_terceiro_fica_inteiro_em_claro(self) -> None:
+    def test_servidor_manter_com_grafia_de_ocr_terceiro_fica_inteiro_em_claro(self) -> None:
         text = _doc(
             "Certificado por Rogerio Matos Tavares, servidor da Vara.",
-            "Depois ROGERIO MATOS juntou o termo e Rogerio Mattos Tavares assinou.",
+            "Depois Rogerio Mattos Tavares assinou.",
         )
-        entities = [
-            ("pessoa", "Rogerio Matos Tavares", "servidor"),
-            ("pessoa", "ROGERIO MATOS", "terceiro"),
-            ("pessoa", "Rogerio Mattos Tavares", "terceiro"),
-        ]
+        entities = [("pessoa", "Rogerio Matos Tavares", "servidor"), ("pessoa", "Rogerio Mattos Tavares", "terceiro")]
         result, body, _audit = self.go(text, FakeDiscoverer(entities))
         self.assertIn("Rogerio Matos Tavares", body)
-        self.assertIn("ROGERIO MATOS", body)
         self.assertIn("Rogerio Mattos Tavares", body)
         self.assertEqual(len(result.roster), 1)
         self.assertEqual(result.roster.entries[0].action, KEEP)
 
+
 class AcaoDaEntradaFundidaTests(unittest.TestCase):
     def test_socio_com_grafia_rotulada_procurador_tokeniza_a_entrada_toda(self) -> None:
-        roster = _roster(("Rogerio Matos Tavares", "socio"), ("ROGERIO MATOS", "procurador_publico"))
-        self.assertEqual(roster.lookup("pessoa", "ROGERIO MATOS").action, KEEP)
+        roster = _roster(("Rogerio Matos Tavares", "socio"), ("Rogerio Mattos Tavares", "procurador_publico"))
+        self.assertEqual(roster.lookup("pessoa", "Rogerio Mattos Tavares").action, KEEP)
         fuse_identities(roster)
         self.assertEqual(len(roster), 1)
         self.assertEqual(roster.entries[0].action, TOKENIZE)
 
     def test_servidor_com_variante_terceiro_ou_desconhecido_fica_manter(self) -> None:
-        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("ROGERIO MATOS", "terceiro"), ("Rogerio Matos", "inventado"))
+        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("Rogerio Mattos Tavares", "terceiro"), ("Rogerio Matos Tavarez", "inventado"))
         fuse_identities(roster)
         self.assertEqual(len(roster), 1)
         self.assertEqual(roster.entries[0].action, KEEP)
 
     def test_juiz_travado_pelo_juizo_do_lote_com_variante_terceiro_fica_manter(self) -> None:
-        roster = _roster(("Rogerio Matos Tavares", "magistrado"), ("ROGERIO MATOS", "terceiro"))
+        roster = _roster(("Rogerio Matos Tavares", "magistrado"), ("Rogerio Mattos Tavares", "terceiro"))
         self.assertTrue(roster.lock_keep("pessoa:rogerio matos tavares"))
         fuse_identities(roster)
         self.assertEqual(len(roster), 1)
         self.assertEqual(roster.entries[0].action, KEEP)
 
     def test_travado_vence_ate_com_papel_privado_em_outro_membro(self) -> None:
-        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("ROGERIO MATOS", "socio"))
+        roster = _roster(("Rogerio Matos Tavares", "servidor"), ("Rogerio Mattos Tavares", "socio"))
         self.assertTrue(roster.lock_keep("pessoa:rogerio matos tavares"))
         fuse_identities(roster)
         self.assertEqual(roster.entries[0].action, KEEP)
 
 
-class FusaoPorPrefixoDeDuasPalavrasTests(unittest.TestCase):
-    def test_mae_e_filha_nao_fundem_e_a_recusa_e_contada(self) -> None:
-        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"))
-        text = "Maria Silva, mãe de Maria Silva Souza, compareceu. Depois, Maria Silva assinou sozinha."
-        fuse_identities(roster, [text])
-        self.assertEqual(len(roster), 2)
-        self.assertEqual(len(roster.kinship_refused), 1)
-        self.assertEqual(len(roster.prefix2_merges), 0)
+class NomesJustapostosTests(unittest.TestCase):
+    """Nome colado ao outro numa celula ou num bloco de assinaturas nunca liga duas pessoas."""
 
-    def test_parentesco_perto_de_qualquer_ocorrencia_veta_mesmo_em_outra_frase(self) -> None:
-        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundes", "parte"))
-        fuse_identities(roster, ["Joel Fagundes assinou.\n\nJoel Martinez Fagundes, filho do requerente, recorreu."])
-        self.assertEqual(len(roster), 2)
-        self.assertEqual(len(roster.kinship_refused), 1)
-
-    def test_sem_parentesco_e_com_a_curta_sozinha_funde(self) -> None:
-        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundes", "parte"))
-        text = "Joel Martinez Fagundes assinou o contrato. Na outra folha, Joel Fagundes pagou o preço."
-        fuse_identities(roster, [text])
-        self.assertEqual(len(roster), 1)
-        self.assertEqual(len(roster.prefix2_merges), 1)
-        self.assertEqual((len(roster.kinship_refused), len(roster.proof_refused)), (0, 0))
-
-    def test_curta_que_so_aparece_dentro_da_longa_ou_na_mesma_frase_nao_funde(self) -> None:
-        for text in (
-            "Joel Martinez Fagundes assinou o contrato.",
-            "Joel Fagundes e Joel Martinez Fagundes assinaram o contrato.",
-            "Joel Fagundes assinou. Joel Martinez Fagundes pagou. Joel Fagundes e Joel Martinez Fagundes saíram.",
-        ):
-            with self.subTest(text=text):
-                roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Fagundes", "parte"))
-                fuse_identities(roster, [text])
+    def test_ex_companheira_e_outro_socio_colados_na_celula_nao_fundem(self) -> None:
+        cell = "MARIA CLARA SOUZA LIMA PEDRO HENRIQUE COSTA"
+        for both in (False, True):
+            with self.subTest(variante_nas_duas=both):
+                roster = _roster(("Maria Clara Souza Lima", "parte"), ("Pedro Henrique Costa", "socio"))
+                _with_variant(roster, "Maria Clara Souza Lima", cell)
+                if both:
+                    _with_variant(roster, "Pedro Henrique Costa", cell)
+                fuse_identities(roster)
                 self.assertEqual(len(roster), 2)
-                self.assertEqual(len(roster.proof_refused), 1)
 
-    def test_nome_igual_do_llm_funde_sem_exigir_prova(self) -> None:
-        # A entrada curta carrega o nome da longa como variante (o nome canonico do LLM): igualdade, nao prefixo.
-        longa = RosterEntry(key="pessoa:maria silva souza", kind="pessoa", name="Maria Silva Souza", roles=["parte"])
-        curta = RosterEntry(
-            key="pessoa:maria silva", kind="pessoa", name="Maria Silva", roles=["parte"], variants=["Maria Silva Souza"]
-        )
-        roster = Roster([longa, curta])
-        fuse_identities(roster, ["Maria Silva, mãe de Maria Silva Souza, compareceu."])
-        self.assertEqual(len(roster), 1)
-        self.assertEqual((len(roster.kinship_refused), len(roster.proof_refused)), (0, 0))
-
-    def test_cadeia_com_parentesco_nao_colapsa(self) -> None:
-        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"), ("Maria Souza", "parte"))
-        text = "Maria Silva, mãe de Maria Silva Souza, e Maria Souza compareceram. Depois Maria Souza saiu."
-        fuse_identities(roster, [text])
-        self.assertEqual(len(roster), 3)
-        self.assertEqual(len(roster.kinship_refused), 2)
-
-    def test_cadeia_sem_parentesco_com_prova_funde_as_duas(self) -> None:
-        roster = _roster(("Maria Silva Souza", "parte"), ("Maria Silva", "parte"), ("Maria Souza", "parte"))
-        text = "Maria Silva Souza assinou. Em outra folha, Maria Silva pagou. Noutra, Maria Souza recebeu."
-        fuse_identities(roster, [text])
-        self.assertEqual(len(roster), 1)
-        self.assertEqual(len(roster.prefix2_merges), 2)
-
-
-class SalvaguardaNoLoteTests(_Pipeline):
-    def test_mae_e_filha_seguem_com_tokens_diferentes_e_a_auditoria_conta(self) -> None:
-        text = _doc(
-            "Maria Silva, mãe de Maria Silva Souza, compareceu.",
-            "Depois Maria Silva assinou sozinha e Maria Silva Souza saiu.",
-        )
-        entities = [("pessoa", "Maria Silva Souza", "parte"), ("pessoa", "Maria Silva", "parte")]
-        result, body, audit = self.go(text, FakeDiscoverer(entities))
-        self.assertEqual(len(result.roster), 2)
-        self.assertIn("Fusoes so por prefixo de 2 palavras: 0; recusadas por parentesco: 1; recusadas por falta de prova no texto: 0", audit)
-
-def _empresa(*names: str, kind: str = "empresa") -> Roster:
-    roster = Roster()
-    for name in names:
-        roster.add_mention(Mention(kind=kind, text=name, canonical=name, role="parte"), source="llm")
-    return roster
-
-
-class PonteDeFusaoTests(unittest.TestCase):
-    def test_variante_com_duas_pessoas_nao_liga_as_duas_entradas(self) -> None:
-        pessoa = RosterEntry(
-            key="pessoa:fernanda lima rocha", kind="pessoa", name="Fernanda Lima Rocha", roles=["parte"],
-            variants=["Fernanda Lima e Paulo Rocha"],
-        )
-        outro = RosterEntry(key="pessoa:paulo rocha", kind="pessoa", name="Paulo Rocha", roles=["socio"])
-        roster = Roster([pessoa, outro])
+    def test_a_mesma_variante_repetida_em_duas_entradas_nao_liga_as_duas(self) -> None:
+        roster = _roster(("Helena Mendes", "parte"), ("Clara Prado Mendes", "parte"))
+        for name in ("Helena Mendes", "Clara Prado Mendes"):
+            _with_variant(roster, name, "Mendes Pereira")
         fuse_identities(roster)
         self.assertEqual(len(roster), 2)
 
-    def test_variante_com_barra_ou_virgula_entre_nomes_tambem_nao_liga(self) -> None:
-        for variant in ("Fernanda Lima/Paulo Rocha", "Fernanda Lima, Paulo Rocha", "FERNANDA LIMA & PAULO ROCHA"):
+    def test_mae_e_filha_com_o_prenome_da_mae_colado_ao_nome_da_filha_nao_fundem(self) -> None:
+        block = "Helena Clara Prado Mendes"
+        for both in (False, True):
+            with self.subTest(variante_nas_duas=both):
+                roster = _roster(("Helena Mendes", "parte"), ("Clara Prado Mendes", "parte"))
+                _with_variant(roster, "Clara Prado Mendes", block)
+                if both:
+                    _with_variant(roster, "Helena Mendes", block)
+                fuse_identities(roster)
+                self.assertEqual(len(roster), 2)
+
+    def test_forma_que_contem_dois_nomes_do_elenco_nunca_serve_de_ponte(self) -> None:
+        roster = _roster(("Helena Prado", "parte"), ("Clara Prado Mendes", "parte"))
+        glued = "Helena Prado Clara Prado Mendes"
+        _with_variant(roster, "Helena Prado", glued)
+        _with_variant(roster, "Clara Prado Mendes", glued)
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
+
+    def test_variante_com_duas_pessoas_nao_liga_as_duas_entradas(self) -> None:
+        for variant in ("Fernanda Lima e Paulo Rocha", "Fernanda Lima/Paulo Rocha", "Fernanda Lima, Paulo Rocha", "FERNANDA LIMA & PAULO ROCHA"):
             with self.subTest(variant=variant):
-                pessoa = RosterEntry(key="pessoa:fernanda lima rocha", kind="pessoa", name="Fernanda Lima Rocha", variants=[variant])
-                outro = RosterEntry(key="pessoa:paulo rocha", kind="pessoa", name="Paulo Rocha")
-                roster = Roster([pessoa, outro])
+                roster = _roster(("Fernanda Lima Rocha", "parte"), ("Paulo Rocha", "socio"))
+                _with_variant(roster, "Fernanda Lima Rocha", variant)
+                _with_variant(roster, "Paulo Rocha", variant)
                 fuse_identities(roster)
                 self.assertEqual(len(roster), 2)
 
@@ -298,15 +249,6 @@ class PonteDeFusaoTests(unittest.TestCase):
         roster = _roster(("Joana Souza Fatica", "parte"), ("fatica", "terceiro"))
         fuse_identities(roster)
         self.assertEqual(len(roster), 2)
-
-    def test_duas_entradas_de_duas_palavras_sem_prefixo_nem_sufixo_comum_nao_se_juntam(self) -> None:
-        def cluster(name: str) -> _Cluster:
-            return _Cluster(RosterEntry(key=f"pessoa:{name.lower()}", kind="pessoa", name=name))
-
-        self.assertFalse(_share_edge(cluster("Fulano Silva"), cluster("Beltrano Souza")))
-        self.assertTrue(_share_edge(cluster("Joel Martinez"), cluster("Joel Fagundes")))
-        self.assertTrue(_share_edge(cluster("Joel Martinez"), cluster("Ana Martinez")))
-        self.assertTrue(_share_edge(cluster("Joel"), cluster("Beltrano Souza")))
 
 
 class TipoPorSufixoSocietarioTests(unittest.TestCase):
@@ -331,7 +273,31 @@ class TipoPorSufixoSocietarioTests(unittest.TestCase):
         self.assertEqual([entry.kind for entry in roster.entries], ["empresa"])
 
 
-class EmpresaDivididaTests(unittest.TestCase):
+class PessoaEEmpresaNuncaFundemTests(unittest.TestCase):
+    def test_pessoa_e_firma_individual_me_do_mesmo_nome_nao_fundem(self) -> None:
+        roster = _roster(("Joana Prado", "parte"), ("Joana Prado ME", "parte"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 2)
+        self.assertEqual({entry.name: entry.kind for entry in roster.entries}, {"Joana Prado": "pessoa", "Joana Prado ME": "empresa"})
+
+    def test_mesma_forma_curta_como_pessoa_e_como_empresa_vira_uma_entrada_empresa(self) -> None:
+        roster = _roster(("Vale Verde Gestao", "parte"))
+        roster.add_mention(Mention(kind="empresa", text="Vale Verde Gestao", canonical="Vale Verde Gestao", role="parte"))
+        self.assertEqual(len(roster), 2)
+        removed = fuse_identities(roster)
+        self.assertEqual(len(removed), 1)
+        self.assertEqual([(entry.kind, entry.name) for entry in roster.entries], [("empresa", "Vale Verde Gestao")])
+        self.assertEqual(roster.lookup("empresa", "Vale Verde Gestao").entity_type, "ORGANIZATION")
+        self.assertIsNone(roster.lookup("pessoa", "Vale Verde Gestao"))
+
+    def test_forma_curta_da_pessoa_nao_absorve_a_razao_social_inteira(self) -> None:
+        roster = _roster(("Vale Verde", "parte"))
+        roster.add_mention(Mention(kind="empresa", text="Vale Verde Gestao Ltda", canonical="Vale Verde Gestao Ltda", role="parte"))
+        fuse_identities(roster)
+        self.assertEqual(sorted((entry.kind, entry.name) for entry in roster.entries), [("empresa", "Vale Verde Gestao Ltda"), ("pessoa", "Vale Verde")])
+
+
+class EmpresaDividida(unittest.TestCase):
     NAME = "Eurovidros Importação e Exportação Ltda"
 
     def test_abreviaturas_acento_e_ocr_sao_a_mesma_razao_social(self) -> None:
@@ -339,10 +305,65 @@ class EmpresaDivididaTests(unittest.TestCase):
         fuse_identities(roster)
         self.assertEqual(len(roster), 1)
 
+    def test_caixa_alta_com_acento_e_abreviada_com_ponto_sao_a_mesma(self) -> None:
+        roster = _empresa("LIMA IMPORTAÇÃO E EXPORTAÇÃO LTDA", "Lima Imp. e Exp. Ltda")
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.identity_reasons["igual"], 1)
+
     def test_razoes_sociais_diferentes_com_a_mesma_marca_seguem_separadas(self) -> None:
-        roster = _empresa(self.NAME, "Eurovidros Comercio de Vidros Ltda")
+        roster = _empresa(self.NAME, "Eurovidros Comercio de Vidros Ltda", "Eurovidros")
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 3)
+
+    def test_siglas_diferentes_com_o_resto_igual_nao_fundem(self) -> None:
+        roster = _empresa("Alfa Importadora Ltda", "Beta Importadora Ltda", "Alfa Importadora Ltda.", "BETA IMPORTADORA LTDA")
+        fuse_identities(roster)
+        self.assertEqual(sorted(entry.name for entry in roster.entries), ["Alfa Importadora Ltda", "Beta Importadora Ltda"])
+
+    def test_forma_com_barra_ou_e_entre_duas_razoes_sociais_nao_funde(self) -> None:
+        for variant in ("Alfa Ltda/Beta Ltda", "Alfa Ltda e Beta Ltda", "Alfa Ltda & Beta Ltda"):
+            with self.subTest(variant=variant):
+                roster = _empresa("Alfa Ltda", "Beta Ltda")
+                _with_variant(roster, "Alfa Ltda", variant, "empresa")
+                _with_variant(roster, "Beta Ltda", variant, "empresa")
+                fuse_identities(roster)
+                self.assertEqual(len(roster), 2)
+
+    def test_sufixo_s_barra_a_nao_e_ponte(self) -> None:
+        roster = _empresa("Gama Alimentos S/A", "GAMA ALIMENTOS S.A.")
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+
+    def test_forma_que_contem_duas_razoes_sociais_do_elenco_nao_funde(self) -> None:
+        roster = _empresa("Alfa Importadora Ltda", "Beta Exportadora Ltda")
+        glued = "Alfa Importadora Beta Exportadora"
+        _with_variant(roster, "Alfa Importadora Ltda", glued, "empresa")
+        _with_variant(roster, "Beta Exportadora Ltda", glued, "empresa")
         fuse_identities(roster)
         self.assertEqual(len(roster), 2)
+
+
+class NaoTransitivaTests(unittest.TestCase):
+    def test_grupo_nao_herda_a_forma_do_outro_para_casar_com_um_terceiro(self) -> None:
+        # X e Y se fundem (nome canonico). Z e grafia de OCR de X, mas nao de Y: fica de fora.
+        roster = _roster(("Ana Luz Fagundes", "parte"), ("Ana Luz Fagundes Melo", "parte"), ("Ana Luz Fagundcs", "parte"))
+        _with_variant(roster, "Ana Luz Fagundes", "Ana Luz Fagundes Melo")
+        fuse_identities(roster)
+        self.assertEqual(sorted(entry.name for entry in roster.entries), ["Ana Luz Fagundcs", "Ana Luz Fagundes Melo"])
+        self.assertEqual(roster.identity_merges, 1)
+
+    def test_corrente_de_grafias_de_ocr_fica_toda_separada(self) -> None:
+        # A~B e B~C, mas A distinto de C: nenhuma se junta (na duvida, separado).
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Martinez Fagundcs", "parte"), ("Joel Martinez Fagundcz", "parte"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 3)
+
+    def test_tres_grafias_de_ocr_que_casam_entre_si_viram_uma(self) -> None:
+        roster = _roster(("Joel Martinez Fagundes", "parte"), ("Joel Martinez Fagundas", "parte"), ("Joel Martinez Fagundcs", "parte"))
+        fuse_identities(roster)
+        self.assertEqual(len(roster), 1)
+        self.assertEqual(roster.identity_reasons["ocr"], 2)
 
 
 class SelectiveLocalEngine(FakeLocalEngine):

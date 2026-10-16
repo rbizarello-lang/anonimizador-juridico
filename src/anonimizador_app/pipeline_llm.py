@@ -1702,10 +1702,10 @@ def roster_summary(roster: Roster) -> list[str]:
     ]
     if pinned:
         lines.append(f"Decisoes do usuario aplicadas: {pinned}")
-    lines.append(f"Entradas fundidas por identidade: {roster.identity_merges}")
+    reasons = roster.identity_reasons
     lines.append(
-        f"Fusoes so por prefixo de 2 palavras: {len(roster.prefix2_merges)}; recusadas por parentesco: "
-        f"{len(roster.kinship_refused)}; recusadas por falta de prova no texto: {len(roster.proof_refused)}"
+        f"Entradas fundidas por identidade: {roster.identity_merges} (igual normalizado {reasons.get('igual', 0)}, "
+        f"OCR {reasons.get('ocr', 0)}, nome canonico do LLM {reasons.get('canonico', 0)})"
     )
     return lines
 

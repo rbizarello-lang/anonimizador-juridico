@@ -280,11 +280,8 @@ class Roster:
         self._locked_keep: set[str] = set()
         # H9-h: quantas entradas a fusao por identidade (``merge``) absorveu (AUDITORIA).
         self.identity_merges = 0
-        # H9-h (revisao): pares (chave curta, chave longa) da fusao so por prefixo/sufixo de 2 palavras: feitas,
-        # recusadas por parentesco perto e recusadas por falta de prova no texto. Conjuntos: a fusao roda varias vezes.
-        self.prefix2_merges: set[tuple[str, str]] = set()
-        self.kinship_refused: set[tuple[str, str]] = set()
-        self.proof_refused: set[tuple[str, str]] = set()
+        # H9-h (restrita): por que cada fusao aconteceu (AUDITORIA): igual normalizado, OCR ou nome canonico do LLM.
+        self.identity_reasons: dict[str, int] = {"igual": 0, "ocr": 0, "canonico": 0}
         for entry in entries:
             self._put(entry)
 
