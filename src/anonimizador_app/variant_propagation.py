@@ -43,7 +43,7 @@ from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
 from .batch_propagation import _LABEL_WORDS, _brand_hits, _capitalized
-from .geo_names import is_geo_word
+from .geo_names import geo_context, is_geo_word
 from .llm_hygiene import _label_vocabulary
 from .propagation import FoldedText, fold_value, fold_with_index, is_protected, protected_forms, spans_for_roster
 from .roster import TOKENIZE, Roster, RosterEntry, entity_core
@@ -85,6 +85,10 @@ _NOT_A_NAME_BEFORE = frozenset(
 )
 _NAME_WORD = re.compile(r"[A-ZÀ-ÖØ-Þ][^\W\d_]*")
 _NEXT_WORD = re.compile(r"\s+([^\W\d_]+)")
+# H9-h: razao social escrita por extenso ("SANTOS AGROFLORESTAL LTDA"): depois da palavra vem, em ate 3 palavras de
+# nome proprio (com de/da/do/e no meio), o sufixo societario. Ali o sobrenome e da empresa, nao da pessoa.
+_NEXT_TOKEN = re.compile(r"[ \t]+([^\s,;:()\[\]|]+)")
+_SOCIETARY_SUFFIXES = frozenset({"ltda", "s/a", "s.a", "sa", "me", "epp", "eireli", "cia"})
 
 
 # H9-g: extensao do token por adjacencia. Cargo publico: nunca vira parte do nome ("[PESSOA_2] Juiza Federal").
@@ -295,6 +299,12 @@ class VariantPropagator:
                 owners = self._surnames.get(word)
                 if not owners:
                     continue
+                if self._shared_surname(word, owners) or company_name_follows(text, end):
+                    # H9-h: homonimo de sobrenome (outra entrada do elenco, pessoa ou empresa, mantida ou nao) e
+                    # razao social nao recebem o token da familia.
+                    self.stats["ambiguo"] += 1
+                    occupied.append((start, end))
+                    continue
                 # Sobrenome comum a mais de uma entrada da familia: vai para a de mais mencoes (empate: chave).
                 entry = max(owners, key=lambda item: (self.mentions[item.key], item.key))
                 reason = self._refusal(word, entry, surname=True) or self._common_use(text, word, start)
@@ -323,8 +333,11 @@ class VariantPropagator:
                 window = _cue_window(text, start)
                 if not (_PERSON_CUE.search(window) or _SURNAME_CUE.search(window)):
                     continue
-                if len(owners) > 1:
+                if len(owners) > 1 or self._shared_surname(word, list(owners.values())):
                     self.stats["ambiguo"] += 1
+                    continue
+                if company_name_follows(text, end):
+                    self.stats["contexto"] += 1
                     continue
                 entry = next(iter(owners.values()))
                 reason = self._refusal(word, entry, surname=True) or self._common_use(text, word, start)
@@ -338,6 +351,13 @@ class VariantPropagator:
                 found.append(self._span(entry, start, end))
                 occupied.append((start, end))
         return found
+
+    def _shared_surname(self, word: str, owners: Sequence[RosterEntry]) -> bool:
+        """H9-h: alguma OUTRA entrada do elenco (pessoa ou empresa, inclusive "manter") traz esta palavra no nome?
+        Entao o sobrenome sozinho nao prova de quem e, e nao propaga (homonimo)."""
+
+        mine = {entry.key for entry in owners}
+        return bool(self._word_owners().get(word, set()) - mine)
 
     def _refusal(self, word: str, entry: RosterEntry, surname: bool = False) -> str:
         """Motivo para a palavra nao propagar, ou "" se pode. ``surname``: ha pista de pessoa colada no
@@ -416,8 +436,8 @@ class VariantPropagator:
             if not parts:
                 continue
             others = [(other.start, other.end) for j, other in enumerate(result) if j != index]
-            start = self._reach_left(text, span.start, parts, owners, others)
-            end = self._reach_right(text, span.end, parts, owners, others)
+            start = self._reach_left(text, span.start, parts, owners, others, entry.key)
+            end = self._reach_right(text, span.end, parts, owners, others, entry.key)
             if (start, end) != (span.start, span.end):
                 result[index] = replace(span, start=start, end=end)
                 self.stats["adjacencia"] += 1
@@ -469,7 +489,23 @@ class VariantPropagator:
             return "conectivo"
         return "nome" if self._qualifies(word, parts, owners) else ""
 
-    def _reach_right(self, text, end, parts, owners, others) -> int:
+    def _blocked(self, text: str, start: int, end: int, parts: frozenset[str], owners: dict[str, set[str]], key: str) -> bool:
+        """H9-h: a palavra de nome que a extensao ia levar, mas que nao pode: pertence ao nome de OUTRA entrada
+        (pessoa ou empresa), e municipio fora do nome da propria entrada ou esta em contexto de endereco/foro
+        (bairro, rodape), ou e palavra em caixa alta de razao social ("AGROFLORESTAL LTDA")."""
+
+        word = _BREAK.sub("", text[start:end])
+        folded = fold_lexical(word)
+        if owners.get(folded, set()) - {key}:
+            return True
+        if folded not in parts:
+            if is_geo_word(folded) or geo_context(text, start, end):
+                return True
+        elif is_geo_word(folded) and geo_context(text, start, end):
+            return True
+        return word.isupper() and len(word) >= 2 and company_name_follows(text, end, max_words=0)
+
+    def _reach_right(self, text, end, parts, owners, others, key="") -> int:
         reach = end
         cursor = end
         for _ in range(8):
@@ -484,6 +520,8 @@ class VariantPropagator:
                     break
             if not kind:
                 break
+            if kind == "nome" and self._blocked(text, gap.end(), word_end, parts, owners, key):
+                break
             cursor = word_end
             if kind == "nome":
                 if _overlaps(reach, cursor, others):
@@ -491,7 +529,7 @@ class VariantPropagator:
                 reach = cursor
         return reach
 
-    def _reach_left(self, text, start, parts, owners, others) -> int:
+    def _reach_left(self, text, start, parts, owners, others, key="") -> int:
         reach = start
         cursor = start
         for _ in range(8):
@@ -506,6 +544,8 @@ class VariantPropagator:
                     word_start = cursor - len(window) + match.start("joined")
                     break
             if not kind:
+                break
+            if kind == "nome" and self._blocked(text, word_start, word_start + len(match.group("joined")), parts, owners, key):
                 break
             cursor = word_start
             if kind == "nome":
@@ -553,6 +593,25 @@ def _word_after(text: str, position: int) -> list[tuple[str, int]]:
         forms.append((joined, joined_end))
     forms.append((first.group(0), first.end()))
     return forms
+
+
+def company_name_follows(text: str, end: int, max_words: int = 3) -> bool:
+    """H9-h: a palavra que termina em ``end`` esta dentro de uma razao social (nomes proprios e o sufixo societario)."""
+
+    cursor = end
+    for _ in range(max_words + 1):
+        match = _NEXT_TOKEN.match(text, cursor)
+        if match is None:
+            return False
+        token = match.group(1)
+        bare = token.rstrip(".").casefold()
+        if bare in _SOCIETARY_SUFFIXES:
+            return True
+        if fold_lexical(token) in _CONNECTIVES or token[:1].isupper():
+            cursor = match.end()
+            continue
+        return False
+    return False
 
 
 def _after_other_name(text: str, start: int) -> bool:
