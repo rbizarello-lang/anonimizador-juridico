@@ -27,6 +27,12 @@ da placa que roda a geração atual de modelos locais de 30 B.
 
 **Ampliar a RAM:** sim, em qualquer cenário, mas como segunda etapa (seção 7).
 
+**Capacidade, comparada aos modelos online (seção 12):**
+- o melhor modelo que roda inteiro na 5060 Ti marca **~21** no índice da Artificial Analysis;
+- na 3090, **~34** (Qwen3.8 27B), ou **~40** com 64 GB de RAM;
+- o topo online atual (Claude Opus 5.5) marca **58**, e o Claude Haiku 5.5 marca **43**;
+- o modelo atual do anonimizador (Gemma 4 E4B) marca **9**.
+
 ## 2. O que foi possível ler deste PC (sem instalar nada)
 
 | Item | Leitura | Consequência |
@@ -228,6 +234,83 @@ O prefill (ler o prompt) é limitado pela capacidade de cálculo.
 - `ollama run gemma4:e4b --verbose` num trecho real, e um lote de 130 folhas com e sem `OLLAMA_NUM_PARALLEL`.
 - Isso confirma ou corrige a estimativa da seção 6.
 
+## 12. Comparativo de capacidade: melhores modelos de 16 GB × 24 GB × modelos online
+
+**Régua usada:** o **Artificial Analysis Intelligence Index v4.3.2**, consultado em 17/10/2026.
+É um índice independente que aplica as mesmas 10 avaliações a modelos abertos e fechados:
+- agentes (30 %), conhecimento geral (30 %), programação (20 %) e raciocínio científico (20 %);
+- inclui HLE, Terminal-Bench 4.0, SciCode, GDPval, AA-LCR (contexto longo) e **AA-Omniscience** (conhecimento factual e alucinação).
+
+O índice ficou mais difícil na versão 4.3: hoje o melhor modelo do mundo marca 58. Por isso, modelos que eram topo de linha há um ano aparecem com 20–30.
+
+**Limites da régua:**
+- não mede português nem trabalho jurídico;
+- o índice dos modelos abertos foi medido **em precisão cheia, na nuvem**. Rodando localmente quantizado (Q4), espere perder um pouco; em Q3 ou 2 bits, perder mais.
+
+### 12.1 A escada
+
+| Índice | Modelo | Onde roda | Velocidade de geração (tok/s, 1 usuário) |
+|---|---|---|---|
+| **58** | Claude Opus 5.5 (max) | Online | — |
+| 56 | Claude Sonnet 5.5 (max) | Online | — |
+| 53 | Claude Fable 5.1 / GPT-6 Astra / Gemini 4 Argon | Online | — |
+| 46 | MiMo-V2.6-Pro (melhor aberto, centenas de B) | Servidor; nem a 3090 nem a 5060 Ti rodam | — |
+| 45 | GLM-5.3 / Qwen3.8 Max | Servidor | — |
+| 43 | Claude Haiku 5.5 (max) | Online | — |
+| 42 | GPT-5.6 Terra (max) | Online | — |
+| 41 | Gemini 3.8 Flash (high) | Online | — |
+| 40 | Qwen3.8-Flash-Next (125B-A6B, aberto) | 3090 **+ 64 GB de RAM** com offload; a 5060 Ti não roda | ~35–40 na 3090 |
+| **34** | **Qwen3.8 27B (xhigh, denso)** | **3090 em Q4_K_M (~16,8 GB)**. Na 5060 Ti, só em Q3/IQ3 (~11–13 GB), com perda de qualidade e contexto curto | **3090: ~36–41** (llama.cpp); até ~127 em vLLM otimizado · **5060 Ti (Q3): ~20–25** (estimado pela banda) |
+| 30 | Gemini 3.1 Pro Preview (geração anterior) | Online | — |
+| 26 | GPT-5.5 Instant (06/2026) | Online | — |
+| 26 | Nemotron 3.5 Super VL (120B-A12B, visão) | Nenhuma das duas | — |
+| 25 | K2 Horizon MoVA 36B-A4B | 3090 em Q4 (~20–23 GB, apertado); software imaturo (sem Ollama, llama.cpp em fork) | rápido (4 B ativos), sem medição |
+| **21** | **K2 Horizon 7B (denso)** | **Cabe com folga nas duas** (Q8 ~8 GB) | 5060 Ti: ~50–60 · 3090: ~85–100 (estimado) |
+| 21 | Nemotron 3.5 Bolt 74B-A9B | 3090 (2 bits, ocupa tudo) | ~80 (ExLlamaV3) |
+| 20 | o3 (topo da OpenAI em 2025) | Online | — |
+| 18 | Qwen3.6 35B-A3B | 3090 inteiro · 5060 Ti com especialistas na RAM | 3090: ~107–111 · 5060 Ti: ~40 |
+| 17 | Gemma 4 26B-A4B | 3090 inteiro · 5060 Ti no limite ou com offload | 3090: ~119 |
+| 16 | K2 Horizon 3.7B | As duas, com folga | muito rápido |
+| 14 | Gemma 4 12B | As duas | — |
+| 12 | gpt-oss-120b | 3090 + 64 GB de RAM | — |
+| 11 | Qwen3.5 9B | As duas | — |
+| 9 | gpt-oss-20b | As duas | 3090: ~148 · 5060 Ti: ~92 |
+| **9** | **Gemma 4 E4B (modelo atual do anonimizador)** | As duas, e a RX 580 | — |
+
+### 12.2 Leitura para a decisão
+
+**Teto de cada placa (modelo inteiro na VRAM, sem depender da RAM):**
+
+| Placa | Melhor opção limpa | Índice | Opção com concessão | Distância do topo online (58) |
+|---|---|---|---|---|
+| RTX 5060 Ti 16 GB | K2 Horizon 7B | **~21** | Qwen3.8 27B em Q3: provavelmente **~28–32** (estimado; a perda do Q3 não foi medida), lento e com contexto curto | ~26–37 pontos |
+| RTX 3090 24 GB | Qwen3.8 27B em Q4 | **~33–34** | Com 64 GB de RAM, o Qwen3.8-Flash-Next (**40**), a ~35–40 tok/s | ~18–24 pontos |
+| Hoje (RX 580 8 GB) | Gemma 4 E4B | **9** | — | 49 pontos |
+
+**Como ler esses números:**
+1. **A 3090 sobe um degrau inteiro.** O melhor modelo que ela roda bem (Qwen3.8 27B, 34) fica acima do Gemini 3.1 Pro Preview (30) e do GPT-5.5 Instant (26), e muito acima do o3 (20), que era o topo da OpenAI em 2025.
+   Em 16 GB, o teto limpo é ~21 (K2 Horizon 7B), no nível do o3.
+   Para o mesmo modelo de 27B, a 5060 Ti obriga a cortar a quantização e o contexto.
+2. **Nenhuma das duas chega perto do topo online atual.** Opus 5.5 e Sonnet 5.5 (56–58) e mesmo o Haiku 5.5 (43) ficam fora de alcance.
+   O melhor que este PC pode chegar, com 3090 e 64 GB de RAM, é ~40 (Qwen3.8-Flash-Next), no nível do Gemini 3.8 Flash e do GPT-5.6 Terra.
+   A tendência é o modelo local de 24 GB alcançar, com cerca de um ano de atraso, o nível dos modelos online "médios". Isso é tendência, não garantia.
+3. **O raciocínio cobra tempo.** O Qwen3.8 27B no modo xhigh é muito verboso: gastou ~200 milhões de tokens para rodar o índice, contra 82 milhões na mediana.
+   Uma pergunta difícil pode gerar 5–10 mil tokens de raciocínio:
+   - **na 3090 (~40 tok/s): 2–4 min por resposta;**
+   - **na 5060 Ti em Q3 (~22 tok/s): 4–8 min.**
+   Em lote (triagem de fatos de dezenas de documentos), essa diferença se acumula. É aqui que a banda de 936 GB/s da 3090 faz diferença prática.
+4. **Para o anonimizador, o índice importa pouco.** A Gemma 4 E4B tem índice 9, mas a tarefa é estreita e medida pelo gabarito do projeto, não pelo índice geral.
+   Trocar o modelo do anonimizador por um maior só se justifica se o gabarito melhorar.
+   Para triagem de fatos e relatórios, o salto de 9 para 34 é o que importa.
+5. **Visão e OCR:** os melhores modelos de visão abertos de porte médio (Nemotron 3.5 Super VL, 26) não cabem em nenhuma das duas.
+   Os OCR dedicados de 1–4 B (GLM-OCR, LightOnOCR) rodam bem nas duas.
+   Os VLMs de 30–36 B (MiniCPM-V 4.7 35B-A3B) só cabem inteiros na 3090.
+
+**Conclusão do comparativo:** a 3090 sobe o teto local de ~21 para ~34 no índice (ou ~40, com 64 GB de RAM).
+Em relação aos modelos online atuais, isso fecha cerca de metade da distância, sem chegar ao topo.
+O teste que decide é rodar o Qwen3.8 27B (3090) e o K2 Horizon 7B (5060 Ti) em 15–20 tarefas reais de triagem já gabaritadas,
+e comparar a qualidade com um modelo online usado em material não sigiloso.
+
 ## Fontes
 
 - Card oficial do Bolt: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB
@@ -246,3 +329,7 @@ O prefill (ler o prompt) é limitado pela capacidade de cálculo.
 - Preços da 5070 Ti: https://gpuprix.com/pt/brazil/gpus/geforce-rtx-5070-ti
 - Riscos da 3090 usada: https://techenclave.com/t/fair-price-to-pay-for-dead-rtx-3090/422046 · https://www.igorslab.de/en/?p=292628
 - Adiamento das RTX 50 Super: https://hardvance.co.uk/rtx-50-super-release-date/ · https://tech-insider.org/nvidia-rtx-50-super-delay-2026/
+- Artificial Analysis, índice v4.3.2: https://artificialanalysis.ai/leaderboards/models · https://artificialanalysis.ai/models/open-source/small · https://artificialanalysis.ai/models/open-source/medium · https://artificialanalysis.ai/models/open-source/tiny · https://artificialanalysis.ai/articles/artificial-analysis-intelligence-index-v4-3 · https://artificialanalysis.ai/models/qwen3-8-27b
+- Qwen3.8 27B na 3090: https://openclawdc.com/blog/qwen-3-8-27b-rtx-3090/ · https://zjshen14.github.io/en/blog/local-qwen-opencode-3090/ · https://github.com/syv-ai/qwen38-27b-rtx3090 · https://willitrunai.com/models/qwen-3.8-27b
+- K2 Horizon: https://rits.shanghai.nyu.edu/ai/ifm-releases-k2-horizon-six-open-models/ · https://runaihome.com/blog/ifm-k2-horizon-consumer-gpu-hardware-guide-2026/ · https://www.mindstudio.ai/blog/k2-horizon-mova-36b-a4b-run-locally
+- Guias de modelos por VRAM: https://localllm.in/blog/best-local-llms-24gb-vram · https://localllm.in/blog/best-local-llms-16gb-vram · https://runaihome.com/blog/best-local-llm-24gb-vram-2026/
