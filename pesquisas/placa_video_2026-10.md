@@ -3,7 +3,25 @@
 Data: 17/10/2026. Trabalho só de pesquisa; nenhum código do anonimizador foi alterado.
 Preços e números de terceiros mudam rápido: confira-os no dia da compra.
 
-## 1. Conclusão em uma página
+## 0. Decisão final (18/10/2026), que substitui a recomendação da seção 1
+
+Dois fatos novos mudaram a conclusão:
+- a 3090 encontrada custa **R$ 7.000**, acima da faixa de R$ 4.800–6.000, e **não pode ser testada antes da compra**;
+- o Operador avalia que **não vai usar modelos grandes, com frequência, para além do anonimizador**.
+
+**Recomendação: RTX 5060 Ti 16 GB (~R$ 4.600) + troca do pente de 8 GB por um de 16 GB DDR4-3200 (32 GB no total).**
+O total fica em ~R$ 5.000, contra ~R$ 8.200 da 3090 com fonte e RAM.
+
+**Por quê:**
+- **O anonimizador fica praticamente igual nas duas.** Um lote de 130 folhas cai de 1h38 para ~20 min na 5060 Ti e ~15 min na 3090.
+- **O risco da 3090 não tem mitigação.** Sem teste, a memória gasta por mineração ou reparada só aparece depois do pagamento.
+- **Os ~R$ 3.200 a mais compram capacidade que provavelmente ficaria ociosa.**
+- **Para tarefas pesadas, o caminho mais forte é o próprio anonimizador.** Texto já anonimizado pode ir a um modelo online de ponta (nota 56–58), muito acima do que qualquer placa local roda (~34).
+- **A 5060 Ti é nova, tem garantia e consome ~180 W.** A fonte atual provavelmente serve, e a placa conserva valor de revenda se um dia surgir uma de 24 GB nova a preço razoável.
+
+O PDF consolidado está em `pesquisas/parecer_placa_video_2026-10.pdf`.
+
+## 1. Conclusão em uma página (versão de 17/10, antes dos fatos novos)
 
 **Recomendação: RTX 3090 24 GB usada, comprada no mercado nacional, com teste antes de pagar, junto com uma fonte nova de 850 W.**
 Não importe da China: depois dos impostos sai mais cara que a usada daqui e fica sem garantia nenhuma.

@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Parecer de compra: placa de vídeo para IA local</title>
+<style>
+  @page { size: A4; margin: 18mm 17mm 20mm 17mm; }
+  :root {
+    --ink: #1d2433;
+    --muted: #5b6475;
+    --line: #d9dde5;
+    --soft: #f3f5f8;
+    --accent: #1f4e79;
+    --good: #1e6b3a;
+    --goodbg: #e8f3ec;
+    --warn: #8a4b08;
+    --warnbg: #fbf1e3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    font-size: 10pt;
+    line-height: 1.45;
+    margin: 0;
+    background: #fff;
+  }
+  h1 { font-size: 20pt; margin: 0 0 4pt; color: var(--accent); letter-spacing: -0.2pt; }
+  h2 {
+    font-size: 13pt; color: var(--accent); margin: 18pt 0 6pt;
+    padding-bottom: 3pt; border-bottom: 1.5pt solid var(--accent);
+    break-after: avoid;
+  }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 6pt; padding-left: 16pt; }
+  li { margin-bottom: 2.5pt; }
+  .sub { color: var(--muted); font-size: 9.5pt; margin-bottom: 12pt; }
+  table { width: 100%; border-collapse: collapse; margin: 6pt 0 10pt; font-size: 8.8pt; break-inside: auto; }
+  tr { break-inside: avoid; }
+  th, td { border: 0.6pt solid var(--line); padding: 3.5pt 5pt; vertical-align: top; text-align: left; }
+  th { background: var(--soft); font-weight: 600; }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  tr.hl td { background: var(--goodbg); }
+  tr.ref td { background: #eef2f8; }
+  .box { border: 1pt solid var(--line); border-left: 4pt solid var(--accent); background: var(--soft); padding: 8pt 10pt; margin: 8pt 0 10pt; break-inside: avoid; }
+  .box.good { border-left-color: var(--good); background: var(--goodbg); }
+  .box.warn { border-left-color: var(--warn); background: var(--warnbg); }
+  .box h3 { margin-top: 0; }
+  .verdict { font-size: 12pt; font-weight: 700; color: var(--good); margin: 0 0 6pt; }
+  .kpis { display: flex; gap: 8pt; margin: 8pt 0 10pt; }
+  .kpi { flex: 1; border: 1pt solid var(--line); padding: 7pt 8pt; border-radius: 3pt; }
+  .kpi .v { font-size: 15pt; font-weight: 700; color: var(--accent); }
+  .kpi .l { font-size: 8.5pt; color: var(--muted); }
+  .small { font-size: 8.5pt; color: var(--muted); }
+  .src { font-size: 8pt; color: var(--muted); word-break: break-all; }
+  .src li { margin-bottom: 1.5pt; }
+  .pb { break-before: page; }
+  .bar { height: 8pt; background: var(--accent); display: inline-block; vertical-align: middle; border-radius: 1pt; }
+  .bar.local { background: var(--good); }
+  .bar.online { background: #7a8699; }
+  code { font-family: Consolas, monospace; font-size: 8.8pt; background: var(--soft); padding: 0 2pt; }
+</style>
+</head>
+<body>
+
+<h1>Parecer de compra: placa de vídeo para IA local</h1>
+<div class="sub">RTX 5060 Ti 16 GB (nova) × RTX 3090 24 GB (usada) · Anonimizador jurídico e projetos futuros · 18 de outubro de 2026<br>
+Trabalho só de pesquisa; nenhum código do anonimizador foi alterado. Preços e números de terceiros mudam rápido: confira-os no dia da compra.</div>
+
+<div class="box good">
+  <p class="verdict">Decisão: RTX 5060 Ti 16 GB + troca do pente de 8 GB por um de 16 GB (32 GB de RAM)</p>
+  <p>O custo total fica em ~R$ 5.000, contra ~R$ 8.200 da RTX 3090 (R$ 7.000) somada a fonte nova e RAM.</p>
+  <p>A primeira análise (17/10) preferia a 3090, sob duas condições: preço de até ~R$ 6.000 e teste antes de pagar. Nenhuma das duas se cumpriu:</p>
+  <ul>
+    <li>a placa encontrada custa R$ 7.000;</li>
+    <li>não há como testá-la.</li>
+  </ul>
+  <p>O Operador também avaliou que dificilmente usará modelos grandes, com frequência, além do anonimizador. Com isso, a conta vira a favor da 5060 Ti.</p>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="v">1h38 → ~20 min</div><div class="l">lote de 130 folhas na 5060 Ti (estimado); ~12 min com chamadas em paralelo</div></div>
+  <div class="kpi"><div class="v">~15 min</div><div class="l">mesmo lote na 3090 (estimado); ganho extra de só ~5 min</div></div>
+  <div class="kpi"><div class="v">~R$ 3.200</div><div class="l">diferença de custo total a favor da 5060 Ti</div></div>
+</div>
+
+<h2>1. Resposta às quatro perguntas</h2>
+<table>
+  <tr><th style="width:22%">Pergunta</th><th>RTX 5060 Ti 16 GB</th><th>RTX 3090 24 GB</th><th style="width:24%">A 3090 se justifica?</th></tr>
+  <tr><td>(1) Velocidade</td><td>Banda de 448 GB/s; gera ~60 % do que a 3090 gera</td><td>Banda de 936 GB/s; gera ~1,6–1,7× mais rápido</td><td>Só nos modelos grandes</td></tr>
+  <tr><td>(2) Modelos maiores</td><td>Teto limpo: modelos de ~7–14 B. Os de 27–35 B só cabem comprimidos ou com parte do modelo na RAM</td><td>Modelos de 27–35 B inteiros na placa; o Nemotron Bolt 74B (em 2 bits) cabe</td><td>Sim, é a vantagem real</td></tr>
+  <tr><td>(3) Anonimizador</td><td>1h38 → ~20 min</td><td>1h38 → ~15 min</td><td><b>Não</b>: a 5060 Ti entrega ~85 % do ganho</td></tr>
+  <tr><td>(4) Usos futuros</td><td>OCR por visão pequeno vai bem; ajuste fino (QLoRA) até ~8–14 B</td><td>Modelos de visão de 30 B; QLoRA até ~30 B</td><td>Só se os projetos se concretizarem</td></tr>
+</table>
+
+<h2>2. Por que a decisão mudou para a 5060 Ti</h2>
+<ol>
+  <li><b>O ganho no anonimizador é quase o mesmo.</b> As duas placas tiram o modelo de linguagem do papel de gargalo. Depois da troca, o que domina o tempo é a parte fixa do processo (~5 min). A 3090 economiza ~5 min por lote.</li>
+  <li><b>O risco da 3090 usada não teria mitigação.</b> Os problemas típicos só aparecem com teste:
+    <ul>
+      <li>memória GDDR6X desgastada por mineração;</li>
+      <li>chips de memória reparados (reballing);</li>
+      <li>placa adulterada.</li>
+    </ul>
+    Sem testar antes, sobra apenas a devolução pela Compra Garantida do Mercado Livre, que cobre o defeito evidente na chegada, não a falha que aparece meses depois.</li>
+  <li><b>O preço está acima do mercado.</b> As 3090 comuns usadas apareciam entre R$ 4.800 e 6.000. A R$ 7.000, mais ~R$ 800 de fonte, a diferença para a 5060 Ti chega a ~R$ 3.200.</li>
+  <li><b>O anonimizador já é o caminho para usar modelos de ponta.</b> O modelo local só é obrigatório antes da anonimização. Texto já anonimizado pode seguir para um modelo online de ponta, com nota 56–58 no índice da seção 4, muito acima do que qualquer placa local roda (~34). Para triagem de fatos e relatórios sobre material anonimizado, o "cérebro grande" já existe fora do PC.</li>
+  <li><b>A 5060 Ti preserva a opção.</b> É nova, tem garantia, consome ~180 W, provavelmente serve na fonte atual e mantém valor de revenda. Se em 6–12 meses surgir uma necessidade real de 24 GB, os R$ 3.200 economizados ajudam a comprar uma placa nova de 24 GB. As RTX 50 Super de 24 GB estão anunciadas, mas sem data.</li>
+</ol>
+
+<div class="box warn">
+  <h3>Se mesmo assim a escolha for a 3090</h3>
+  <ul>
+    <li>Compre só pelo Mercado Livre, com Compra Garantida, e teste nos primeiros dias:
+      <ul>
+        <li>OCCT VRAM ou memtest_vulkan, por 30 min;</li>
+        <li>HWiNFO, com a temperatura da memória (Memory Junction) abaixo de ~100 °C;</li>
+        <li>GPU-Z, confirmando 24 GB e barramento de 384 bits.</li>
+      </ul></li>
+    <li>Recuse placas "revisadas" ou com memória reparada.</li>
+    <li>Some ao custo uma fonte de 850 W 80 Plus Gold e confira se a placa (300–336 mm) cabe no gabinete.</li>
+  </ul>
+</div>
+
+<h2>3. O que o diagnóstico do PC mostrou</h2>
+<table>
+  <tr><th style="width:18%">Item</th><th style="width:36%">Leitura (feita sem instalar nada)</th><th>Consequência</th></tr>
+  <tr><td>Placa-mãe</td><td>Gigabyte A520M K V2, micro-ATX, BIOS F1 (12/2022)</td><td>Só um slot de vídeo útil (duas placas está fora de cogitação). <b>2 slots de memória</b>, até 64 GB (confirmar no manual)</td></tr>
+  <tr><td>Processador</td><td>Ryzen 5 4500, 6 núcleos</td><td>Limita o slot a PCIe 3.0, qualquer que seja a placa. A 5060 Ti usa 8 linhas, o que dá ~7,9 GB/s neste PC. Isso só pesa quando parte do modelo fica na RAM</td></tr>
+  <tr><td>RAM</td><td>8 GB Samsung + 16 GB (fabricante não informado), ambos DDR4-3200</td><td>Pentes diferentes: só 16 GB rodam nos dois canais de memória, o resto num canal só, mais lento</td></tr>
+  <tr><td>Fonte</td><td>Não dá para ler por software</td><td><b>Abrir o gabinete:</b> ler a potência e contar os conectores PCIe de 8 pinos. Para a 5060 Ti, basta uma fonte de qualidade com ≥ 500 W e 1 conector de 8 pinos</td></tr>
+  <tr><td>Disco</td><td>NVMe Kingston NV2 de 1 TB</td><td>Suficiente para os modelos</td></tr>
+</table>
+
+<h3>Memória RAM: por que 32 GB agora, e não 64 GB</h3>
+<ul>
+  <li><b>Troque o pente de 8 GB por um de 16 GB DDR4-3200.</b> Os dois pentes ficam iguais e voltam a rodar nos dois canais, e sobra folga para o sistema. Custa ~R$ 300–500.</li>
+  <li><b>Não precisa ser o mesmo modelo do pente atual.</b> Basta capacidade, velocidade e latência parecidas (veja a latência, como CL16 ou CL22, na etiqueta do pente).</li>
+  <li><b>48 GB não é possível nesta placa,</b> porque ela tem 2 slots, não 3.</li>
+  <li><b>Com a 5060 Ti, a RAM pesa mais.</b> Os modelos de 30 B precisam deixar parte dos especialistas na RAM, e 32 GB tornam isso viável.</li>
+  <li><b>64 GB (2 × 32 GB) só servem para os modelos MoE de ~125 B,</b> que pedem ~28–32 GB livres. Eles funcionam com metade do modelo na RAM porque cada token usa só ~6 B de parâmetros. Não é necessário agora.</li>
+</ul>
+
+<h2>4. Comparativo de capacidade: modelos locais × modelos online</h2>
+<p>A régua é o <b>Intelligence Index v4.3.2 da Artificial Analysis</b>, consultado em 17/10/2026. É um índice independente que aplica as mesmas 10 avaliações a modelos abertos e fechados, com estes pesos:</p>
+<ul>
+  <li>agentes, 30 %;</li>
+  <li>conhecimento geral, inclusive alucinação, 30 %;</li>
+  <li>programação, 20 %;</li>
+  <li>raciocínio científico, 20 %.</li>
+</ul>
+<p><b>Limites:</b> o índice não mede português nem trabalho jurídico. Os modelos abertos foram medidos sem compressão; rodando localmente comprimidos, eles perdem um pouco.</p>
+
+<table>
+  <tr><th class="n" style="width:7%">Índice</th><th style="width:31%">Modelo</th><th style="width:28%">Onde roda</th><th>Escala</th></tr>
+  <tr class="ref"><td class="n"><b>58</b></td><td>Claude Opus 5.5 (max)</td><td>Online, o melhor de hoje</td><td><span class="bar online" style="width:116pt"></span></td></tr>
+  <tr class="ref"><td class="n">56</td><td>Claude Sonnet 5.5 (max)</td><td>Online</td><td><span class="bar online" style="width:112pt"></span></td></tr>
+  <tr class="ref"><td class="n">53</td><td>Claude Fable 5.1 / GPT-6 Astra / Gemini 4 Argon</td><td>Online</td><td><span class="bar online" style="width:106pt"></span></td></tr>
+  <tr><td class="n">46</td><td>MiMo-V2.6-Pro (o melhor aberto)</td><td>Servidor; nenhuma das duas placas roda</td><td><span class="bar" style="width:92pt"></span></td></tr>
+  <tr class="ref"><td class="n">43</td><td>Claude Haiku 5.5 (max)</td><td>Online</td><td><span class="bar online" style="width:86pt"></span></td></tr>
+  <tr class="ref"><td class="n">41–42</td><td>Gemini 3.8 Flash / GPT-5.6 Terra</td><td>Online</td><td><span class="bar online" style="width:83pt"></span></td></tr>
+  <tr><td class="n">40</td><td>Qwen3.8-Flash-Next (125 B, MoE)</td><td>Só na 3090 com 64 GB de RAM</td><td><span class="bar local" style="width:80pt"></span></td></tr>
+  <tr><td class="n"><b>34</b></td><td><b>Qwen3.8 27B</b> (denso)</td><td>3090 inteiro (~36–41 tok/s); na 5060 Ti, só comprimido em Q3, mais fraco (~28–32, estimado) e lento (~20–25 tok/s)</td><td><span class="bar local" style="width:68pt"></span></td></tr>
+  <tr class="ref"><td class="n">26–30</td><td>GPT-5.5 Instant / Gemini 3.1 Pro Preview (geração anterior)</td><td>Online</td><td><span class="bar online" style="width:56pt"></span></td></tr>
+  <tr><td class="n">25</td><td>K2 Horizon MoVA 36B-A4B</td><td>3090, no limite; ainda sem suporte no Ollama</td><td><span class="bar local" style="width:50pt"></span></td></tr>
+  <tr class="hl"><td class="n"><b>21</b></td><td><b>K2 Horizon 7B</b> (denso)</td><td><b>Cabe com folga na 5060 Ti</b> (~50–60 tok/s, estimado)</td><td><span class="bar local" style="width:42pt"></span></td></tr>
+  <tr><td class="n">21</td><td>Nemotron 3.5 Bolt 74B-A9B</td><td>3090 em 2 bits (~80 tok/s no ExLlamaV3)</td><td><span class="bar local" style="width:42pt"></span></td></tr>
+  <tr class="ref"><td class="n">20</td><td>o3 (topo da OpenAI em 2025)</td><td>Online</td><td><span class="bar online" style="width:40pt"></span></td></tr>
+  <tr><td class="n">17–18</td><td>Qwen3.6 35B-A3B / Gemma 4 26B-A4B</td><td>3090 inteiro (~110–120 tok/s); 5060 Ti com parte do modelo na RAM (~40 tok/s)</td><td><span class="bar local" style="width:35pt"></span></td></tr>
+  <tr><td class="n">14</td><td>Gemma 4 12B</td><td>As duas</td><td><span class="bar local" style="width:28pt"></span></td></tr>
+  <tr><td class="n">9</td><td>gpt-oss-20b</td><td>As duas (5060 Ti ~92 tok/s; 3090 ~148 tok/s)</td><td><span class="bar local" style="width:18pt"></span></td></tr>
+  <tr><td class="n"><b>9</b></td><td><b>Gemma 4 E4B (modelo atual do anonimizador)</b></td><td>As duas, e também a RX 580</td><td><span class="bar local" style="width:18pt"></span></td></tr>
+</table>
+<p class="small">Legenda: barra cinza = modelo online; barra verde = roda localmente em alguma das placas; barra azul = modelo aberto que só roda em servidor. Os valores de velocidade vêm de medições da comunidade em llama.cpp, salvo quando marcados como estimados.</p>
+
+<h3>Leitura do comparativo</h3>
+<ul>
+  <li><b>Teto local:</b> o melhor modelo que roda inteiro na 5060 Ti marca ~21; na 3090, ~34. Com 64 GB de RAM, a 3090 chegaria a ~40.</li>
+  <li><b>Nenhuma das duas alcança o topo online.</b> O Opus 5.5 marca 58 e mesmo o Haiku 5.5, 43. A 3090 fecha cerca de metade da distância.</li>
+  <li><b>Raciocínio longo cobra tempo.</b> Uma pergunta difícil no Qwen3.8 27B gera 5–10 mil tokens de raciocínio: 2–4 min por resposta na 3090 e 4–8 min na 5060 Ti.</li>
+  <li><b>No anonimizador, o índice pesa pouco.</b> A tarefa é estreita e quem mede a qualidade é o gabarito do projeto. A Gemma 4 E4B, com nota 9, segue adequada.</li>
+  <li><b>OCR por visão:</b> os modelos dedicados de 1–4 B (GLM-OCR, LightOnOCR) rodam bem nas duas placas. Os modelos de visão de 30–36 B, como o MiniCPM-V 4.7, só cabem inteiros na 3090.</li>
+</ul>
+
+<h2>5. Velocidade medida (llama.cpp, mesma metodologia)</h2>
+<table>
+  <tr><th style="width:24%">Modelo (contexto de 4K)</th><th class="n">3090: leitura do prompt / geração (tok/s)</th><th class="n">5060 Ti: leitura do prompt / geração (tok/s)</th><th class="n">Razão na geração</th></tr>
+  <tr><td>Qwen3 8B Q4_K</td><td class="n">4.050 / 115</td><td class="n">2.965 / 69</td><td class="n">1,67×</td></tr>
+  <tr><td>Qwen3 14B Q4_K</td><td class="n">2.459 / 70</td><td class="n">1.743 / 41</td><td class="n">1,70×</td></tr>
+  <tr><td>gpt-oss 20B MXFP4</td><td class="n">4.400 / 148</td><td class="n">3.585 / 92</td><td class="n">1,60×</td></tr>
+  <tr><td>Modelos de 26–35 B</td><td class="n">34–120</td><td class="n">não cabem</td><td class="n">—</td></tr>
+</table>
+<p>A geração de texto acompanha a largura de banda da memória. A leitura do prompt depende mais do cálculo, e nela a arquitetura Blackwell da 5060 Ti encosta na 3090. A RTX 5070 Ti tem a velocidade da 3090, mas os mesmos 16 GB da 5060 Ti, por R$ 6.500–9.100.</p>
+
+<h2>6. Estimativa para o anonimizador (lote de 130 folhas)</h2>
+<p><b>Medido hoje:</b> 376 chamadas à Gemma 4 E4B, a ~13 s cada (82 min), mais 11 min de GLiNER na CPU e ~5 min do restante do processo, totalizando 1h38.</p>
+<p><b>Premissas (não medidas):</b> ~1.500 tokens de prompt e ~150 de resposta por chamada, e o GLiNER passando a rodar na placa.</p>
+<table>
+  <tr><th>Cenário</th><th class="n">Modelo de linguagem</th><th class="n">GLiNER</th><th class="n">Restante</th><th class="n">Total</th></tr>
+  <tr><td>RX 580 (medido)</td><td class="n">~82 min</td><td class="n">~11 min</td><td class="n">~5 min</td><td class="n"><b>1h38</b></td></tr>
+  <tr class="hl"><td>5060 Ti, chamadas em série</td><td class="n">~13 min</td><td class="n">~1,5 min</td><td class="n">~5 min</td><td class="n"><b>~20 min</b></td></tr>
+  <tr class="hl"><td>5060 Ti, 4 chamadas em paralelo</td><td class="n">~5 min</td><td class="n">~1,5 min</td><td class="n">~5 min</td><td class="n"><b>~12 min</b></td></tr>
+  <tr><td>3090, chamadas em série</td><td class="n">~9 min</td><td class="n">~1 min</td><td class="n">~5 min</td><td class="n">~15 min</td></tr>
+  <tr><td>3090, 4 chamadas em paralelo</td><td class="n">~3,5 min</td><td class="n">~1 min</td><td class="n">~5 min</td><td class="n">~10 min</td></tr>
+</table>
+<p class="small">Para confirmar as premissas sem custo: cada resposta do Ollama traz <code>prompt_eval_count</code>, <code>eval_count</code> e os tempos de cada etapa. Basta registrá-los num lote. Com a placa nova, rode <code>ollama run gemma4:e4b --verbose</code> e um lote real, com e sem <code>OLLAMA_NUM_PARALLEL=4</code>.</p>
+
+<h2>7. Riscos e preços</h2>
+<table>
+  <tr><th style="width:24%">Opção</th><th style="width:22%">Preço (out/2026)</th><th>Observações</th></tr>
+  <tr class="hl"><td>RTX 5060 Ti 16 GB, nova</td><td>R$ 3.600–4.900 no PIX (cotação do Operador: R$ 4.600)</td><td>Garantia de fábrica, ~180 W, 1 conector de 8 pinos, ~200–240 mm de comprimento</td></tr>
+  <tr><td>RTX 3090 24 GB, usada no Brasil</td><td>R$ 4.800–6.000 para modelos comuns; anúncio visto a R$ 7.000</td><td>Risco de mineração, memória quente ou reparada e fraude. Sem garantia. ~350 W, com picos acima disso. Pede fonte de 850 W (+R$ 600–1.000) e ocupa 300–336 mm</td></tr>
+  <tr><td>RTX 3090 importada da China</td><td>~R$ 8.500–12.000 com 60 % de imposto de importação e ICMS</td><td>Mais cara que a usada nacional e sem como devolver. Descartada</td></tr>
+  <tr><td>RTX 5070 Ti 16 GB</td><td>R$ 6.500–9.100</td><td>Velocidade da 3090, mas com 16 GB. Não compensa para este uso</td></tr>
+  <tr><td>RTX 4060 Ti 16 GB</td><td>parecido com a 5060 Ti</td><td>Banda de 288 GB/s, mais lenta. Descartada</td></tr>
+  <tr><td>RTX 50 Super de 24 GB</td><td>sem preço</td><td>Anunciadas, mas adiadas pela falta de memória, sem data (fala-se em 2027). É a opção para reavaliar no futuro</td></tr>
+</table>
+
+<h2>8. Verificação do material salvo no X</h2>
+<table>
+  <tr><th style="width:34%">Alegação</th><th>O que as fontes mostram</th><th style="width:16%">Veredito</th></tr>
+  <tr><td>Nemotron 3.5 Bolt 74B-A9B: 9 B ativos, 256K de contexto, texto, imagem e vídeo, cabe em 24 GB</td><td>O card oficial confirma: 74 B totais e 9 B ativos, 256K, 2 bits com treino específico para isso, publicado em 15/10/2026, com GGUF oficial</td><td>Confirmada</td></tr>
+  <tr><td>Números contra o Qwen3.6-35B (Terminal-Bench 51 × 44, GPQA 86 × 83 etc.)</td><td>Batem com o card, mas foram medidos pela própria NVIDIA (Bolt em 2 bits contra Qwen sem compressão). O Bolt perde nas medidas de alucinação</td><td>Confirmada, com ressalva</td></tr>
+  <tr><td>A 3090 não está na lista de hardware do vLLM</td><td>O card lista o A100, o Hopper e o Blackwell</td><td>Confirmada</td></tr>
+  <tr><td>Uma 3090 roda o Bolt a 80 tok/s com contexto de 262K</td><td>Medido no ExLlamaV3: 80,4 tok/s, com o contexto de 262K cabendo em ~22 GB. No Ollama e no llama.cpp não há medição</td><td>Confirmada (ExLlamaV3)</td></tr>
+  <tr><td>Uma 3090 roda o Qwen3.8 Flash-Next a 70 tok/s</td><td>O modelo ocupa 41,5 GiB; numa 3090, com parte dele na RAM, mediram ~38,6 tok/s. Com os 24 GB de RAM deste PC, não roda</td><td>Não confirmada</td></tr>
+  <tr><td>MiniCPM-V 4.7 com 90,4 no OCRBench</td><td>O modelo existe, mas foi publicado sem card nem benchmarks oficiais. Num teste prático, o OCR teve resultado irregular</td><td>Parcial</td></tr>
+</table>
+
+<h2>9. Próximos passos</h2>
+<ol>
+  <li><b>Antes de comprar:</b> abra o gabinete e leia na etiqueta da fonte a potência e os conectores PCIe de 8 pinos. Uma fonte de qualidade com ≥ 500 W e um conector de 8 pinos atende a 5060 Ti.</li>
+  <li><b>Compre</b> a RTX 5060 Ti 16 GB e um pente de 16 GB DDR4-3200 para substituir o de 8 GB.</li>
+  <li><b>Ainda com a RX 580 instalada,</b> atualize a BIOS da placa-mãe. É opcional, mas traz correções.</li>
+  <li><b>Depois da troca:</b> instale o driver NVIDIA, atualize o Ollama e confira se o modelo carrega todo na placa (<code>ollama ps</code> deve mostrar 100 % GPU).</li>
+  <li><b>Meça:</b> rode o lote de 130 folhas com e sem <code>OLLAMA_NUM_PARALLEL=4</code> e passe o GLiNER para a placa. Compare com as estimativas da seção 6.</li>
+  <li><b>Em 6–12 meses,</b> se a triagem de fatos ou o OCR por visão virarem projetos concretos e os 16 GB limitarem, reavalie uma placa nova de 24 GB.</li>
+</ol>
+
+<h2>Fontes</h2>
+<ul class="src">
+  <li>Card oficial do Nemotron 3.5 Bolt: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB (GGUF: …-24GB-GGUF)</li>
+  <li>Bolt na 3090 (ExLlamaV3): https://huggingface.co/r0b0tlab/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-EXL3-2.08bpw</li>
+  <li>Guia da Unsloth para o Bolt: https://unsloth.ai/docs/models/nemotron-3.5-bolt</li>
+  <li>Benchmarks de llama.cpp: https://www.hardware-corner.net/gpu-llm-benchmarks/ (páginas rtx-3090, rtx-5060-ti-16gb, rtx-5070-ti)</li>
+  <li>Artificial Analysis: https://artificialanalysis.ai/leaderboards/models · /models/open-source/small · /medium · /tiny · /articles/artificial-analysis-intelligence-index-v4-3 · /models/qwen3-8-27b</li>
+  <li>Qwen3.8 27B na 3090: https://openclawdc.com/blog/qwen-3-8-27b-rtx-3090/ · https://github.com/syv-ai/qwen38-27b-rtx3090 · https://willitrunai.com/models/qwen-3.8-27b</li>
+  <li>Qwen3.8-Flash-Next: https://www.contextstudios.ai/blog/one-model-six-hardware-tiers-what-we-measured · https://www.contextstudios.ai/local-ai/r0b0tlab--qwen38-flash-next-exl3-1x3090</li>
+  <li>K2 Horizon: https://rits.shanghai.nyu.edu/ai/ifm-releases-k2-horizon-six-open-models/ · https://runaihome.com/blog/ifm-k2-horizon-consumer-gpu-hardware-guide-2026/</li>
+  <li>MiniCPM-V 4.7: https://www.datalearner.com/en/ai-models/pretrained-models/minicpm-v-4-7-35b-a3b/analysis · https://www.mindstudio.ai/blog/minicpm-v-4-7-local-test</li>
+  <li>OCR: https://docs.z.ai/guides/vlm/glm-ocr · https://www.spheron.network/tools/gpu-recommender/lightonai/LightOnOCR-2-1B/</li>
+  <li>NVFP4 no llama.cpp: https://insiderllm.com/guides/fp4-inference-llamacpp-nvfp4-mxfp4/</li>
+  <li>Preços: https://www.pichau.com.br (5060 Ti) · https://www.kabum.com.br/busca/5060-TI · https://lista.mercadolivre.com.br/rtx-3090-usada · https://gpuprix.com/pt/brazil/gpus/geforce-rtx-5070-ti</li>
+  <li>Riscos da 3090 usada: https://techenclave.com/t/fair-price-to-pay-for-dead-rtx-3090/422046 · https://www.igorslab.de/en/?p=292628</li>
+  <li>RTX 50 Super adiadas: https://hardvance.co.uk/rtx-50-super-release-date/ · https://tech-insider.org/nvidia-rtx-50-super-delay-2026/</li>
+</ul>
+<p class="small">Hardware lido via Windows (WMI/PnP) em 17/10/2026. Estimativas de tempo baseadas em premissas declaradas; confirmar com medição após a instalação.</p>
+
+</body>
+</html>
