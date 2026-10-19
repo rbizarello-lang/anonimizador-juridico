@@ -4,6 +4,10 @@ Nao e regex faminta (P10): so localiza o numero que o usuario listou, com
 digito verificador. CNPJ de orgao publico nao entra. Com o indice Sul no
 disco, o CNPJ listado tambem traz a razao para esta rodada, mesmo se o
 numero nao aparecer na peca.
+
+H9-i lote B1: a raiz do CNPJ (8 digitos, "12.345.678") cobre todas as filiais daquela raiz (matriz 0001, filial
+0002...); CPF de 10 digitos e CNPJ de 13 que fecham o DV com o zero a esquerda que a planilha comeu entram com o
+zero; NIRE entra com o rotulo ("NIRE 42201234567").
 """
 
 from __future__ import annotations
@@ -30,6 +34,8 @@ _PREFIX = re.compile(
     r"\s*(?:n[ºo°.]{0,3})?\s*[:.\-]?\s*"
 )
 _SEP = r"[\s.,/\-]*"
+_NIRE_PREFIX = re.compile(r"(?is)^\s*nire\s*(?:n[ºo°.]{0,3})?\s*[:.\-]?\s*")
+_ROOT_LABEL = re.compile(r"(?i)(?:cnpj|raiz)[^\n]{0,20}$")
 _OCR_ATOM = {
     "0": r"[0Oo]",
     "1": r"[1Il]",
@@ -63,7 +69,12 @@ def parse_target_ids(values: Iterable[str]) -> tuple[str, ...]:
 
 
 def parse_target_id_line(raw: str) -> str | None:
-    stripped = _PREFIX.sub("", str(raw or "")).strip(" \t-–—|")
+    text = str(raw or "")
+    nire = _NIRE_PREFIX.match(text)
+    if nire is not None:
+        digits = only_digits(text[nire.end() :])
+        return f"NIRE {digits}" if 8 <= len(digits) <= 13 else None
+    stripped = _PREFIX.sub("", text).strip(" \t-–—|")
     if not stripped:
         return None
     if is_valid_cpf(stripped):
@@ -72,13 +83,37 @@ def parse_target_id_line(raw: str) -> str | None:
         if is_public_target_cnpj(stripped):
             return None
         return format_cnpj(stripped)
+    digits = only_digits(stripped)
+    if re.fullmatch(r"[\d\s.,/\-]+", stripped):
+        # A planilha guarda o numero como numero e come o zero a esquerda.
+        if len(digits) == 10 and is_valid_cpf("0" + digits):
+            return format_cpf("0" + digits)
+        if len(digits) == 13 and is_valid_cnpj("0" + digits):
+            return None if is_public_target_cnpj("0" + digits) else format_cnpj("0" + digits)
+        if len(digits) == 8 and len(set(digits)) > 1:
+            if any(digits.startswith(root) for root in PUBLIC_CNPJ_ROOTS):
+                return None
+            return format_cnpj_root(digits)
     return None
 
 
 def id_canonical(value: str) -> str:
+    if value.upper().startswith("NIRE"):
+        return "NIRE" + only_digits(value)
     if is_valid_cpf(value):
         return only_digits(value)
+    if _is_root(value):
+        return "RAIZ" + only_digits(value)
     return normalize_cnpj(value)
+
+
+def format_cnpj_root(value: str) -> str:
+    digits = only_digits(value)
+    return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}"
+
+
+def _is_root(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{2}\.\d{3}\.\d{3}", value.strip()))
 
 
 def format_cpf(value: str) -> str:
@@ -102,6 +137,14 @@ def is_public_target_cnpj(value: str) -> bool:
 def describe_listed_ids(values: Iterable[str]) -> tuple[ListedId, ...]:
     records: list[ListedId] = []
     for formatted in parse_target_ids(values):
+        if formatted.startswith("NIRE"):
+            records.append(ListedId(formatted=formatted, canonical=only_digits(formatted), entity_type="BR_NIRE"))
+            continue
+        if _is_root(formatted):
+            records.append(
+                ListedId(formatted=formatted, canonical=only_digits(formatted), entity_type="BR_CNPJ_RAIZ")
+            )
+            continue
         canonical = id_canonical(formatted)
         entity_type = "BR_CPF" if is_valid_cpf(formatted) else "BR_CNPJ"
         records.append(
@@ -116,6 +159,13 @@ def find_listed_id_spans(
     hits: list[tuple[int, int, ListedId]] = []
     occupied: list[tuple[int, int]] = []
     for record in describe_listed_ids(ids):
+        if record.entity_type == "BR_CNPJ_RAIZ":
+            for start, end, found in _root_hits(text, record):
+                if any(start < other_end and end > other_start for other_start, other_end in occupied):
+                    continue
+                occupied.append((start, end))
+                hits.append((start, end, found))
+            continue
         pattern = _pattern_for(record)
         for match in pattern.finditer(text):
             snippet = match.group(0)
@@ -185,6 +235,38 @@ def _append_name(
     names.append(name)
 
 
+def _root_hits(text: str, record: ListedId) -> list[tuple[int, int, ListedId]]:
+    """Todo CNPJ valido daquela raiz (qualquer filial) e a raiz sozinha logo depois de "CNPJ"/"raiz"."""
+
+    root = record.canonical
+    head = _SEP.join(re.escape(char) for char in root)
+    tail = _SEP.join([r"\d"] * 6)
+    full = re.compile(rf"(?<![0-9A-Za-z])(?:{head}{_SEP}{tail})(?![0-9A-Za-z])")
+    hits: list[tuple[int, int, ListedId]] = []
+    for match in full.finditer(text):
+        snippet = match.group(0)
+        if not is_valid_cnpj(snippet):
+            continue
+        canonical = normalize_cnpj(snippet)
+        hits.append(
+            (
+                match.start(),
+                match.end(),
+                ListedId(formatted=format_cnpj(canonical), canonical=canonical, entity_type="BR_CNPJ"),
+            )
+        )
+    alone = re.compile(rf"(?<![0-9A-Za-z./\-])(?:{root[:2]}\.?{root[2:5]}\.?{root[5:]})(?!\d|[./\-]\d)")
+    for match in alone.finditer(text):
+        if any(start <= match.start() < end for start, end, _record in hits):
+            continue
+        if not _ROOT_LABEL.search(text[max(0, match.start() - 24) : match.start()]):
+            continue
+        hits.append(
+            (match.start(), match.end(), ListedId(formatted=record.formatted, canonical=root, entity_type="BR_CNPJ"))
+        )
+    return hits
+
+
 def _pattern_for(record: ListedId) -> re.Pattern[str]:
     atoms: list[str] = []
     ocr = record.entity_type == "BR_CPF"
@@ -199,6 +281,8 @@ def _pattern_for(record: ListedId) -> re.Pattern[str]:
 
 
 def _matches_canonical(snippet: str, record: ListedId) -> bool:
+    if record.entity_type == "BR_NIRE":
+        return only_digits(snippet) == record.canonical
     if record.entity_type == "BR_CPF":
         return (
             only_digits(snippet) == record.canonical

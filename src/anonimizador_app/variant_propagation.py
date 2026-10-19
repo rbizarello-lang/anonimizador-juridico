@@ -566,7 +566,11 @@ class VariantPropagator:
         return sum(self.stats[name] for name in ("marca", "prenome", "sobrenome", "ocr"))
 
     def audit_lines(self) -> list[str]:
-        return [self.audit_line(), f"Tokens estendidos por adjacencia: {self.stats['adjacencia']}"]
+        return [
+            self.audit_line(),
+            f"Tokens estendidos por adjacencia: {self.stats['adjacencia']}",
+            f"Nomes completos juntados num token so: {self.stats['nome_inteiro']}",
+        ]
 
     def audit_line(self) -> str:
         return (

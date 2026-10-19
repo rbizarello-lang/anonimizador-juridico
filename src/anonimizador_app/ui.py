@@ -46,8 +46,8 @@ from .pipeline import (
     finalize_lote,
 )
 from .rules import InvalidRuleError, build_recognizers, slug_entity_type, validate_custom_rule
-from .settings import CustomRule, load_settings, save_settings
-from .spreadsheet_targets import merge_unique, parse_target_spreadsheet
+from .settings import CustomRule, carry_case_list, has_case_list, load_settings, save_settings
+from .spreadsheet_targets import SpreadsheetTargets, merge_unique, parse_target_spreadsheet
 from .target_ids import parse_target_ids
 from .ui_llm import EngineSession, build_engine_section, run_llm_flow
 from .version import version_info
@@ -262,6 +262,8 @@ body { color: var(--aj-ink); font-family: var(--aj-sans); font-size: 15px; -webk
 .aj-dot.ok { background: var(--aj-good); }
 .aj-dot.warn { background: var(--aj-ochre); }
 .aj-case-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; width: 100%; }
+.aj-case-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .aj-case-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .aj-case-grid { grid-template-columns: minmax(0, 1fr); } }
 .aj-list { padding: 16px 16px 14px; gap: 10px; }
 .aj-list-head { gap: 8px; align-items: center; width: 100%; }
@@ -350,15 +352,28 @@ def _parse_name_list(text: object) -> list[str]:
     return [item.strip() for item in str(text or "").splitlines() if item.strip()]
 
 
+# H9-i lote B1: as caixas novas da aba Caso (atributo do texto na sessao -> campo de AppSettings).
+_CASE_EXTRA_LISTS = (
+    ("target_aliases_text", "target_aliases"),
+    ("target_processes_text", "target_processes"),
+    ("target_cdas_text", "target_cdas"),
+    ("target_contacts_text", "target_contacts"),
+)
+
+
 def _commit_target_lists(
     session: Session,
     companies_text: object,
     people_text: object,
     ids_text: object = "",
+    extra: dict[str, object] | None = None,
 ) -> None:
     session.settings.target_companies = _parse_name_list(companies_text)
     session.settings.target_people = _parse_name_list(people_text)
     session.settings.target_ids = list(parse_target_ids([str(ids_text or "")]))
+    for text_attr, field_name in _CASE_EXTRA_LISTS:
+        if extra is not None and text_attr in extra:
+            setattr(session.settings, field_name, _parse_name_list(extra[text_attr]))
     _sync_target_list_text(session)
 
 
@@ -366,36 +381,49 @@ def _sync_target_list_text(session: Session) -> None:
     session.target_companies_text = "\n".join(session.settings.target_companies)
     session.target_people_text = "\n".join(session.settings.target_people)
     session.target_ids_text = "\n".join(session.settings.target_ids)
+    for text_attr, field_name in _CASE_EXTRA_LISTS:
+        setattr(session, text_attr, "\n".join(getattr(session.settings, field_name)))
+
+
+def _apply_spreadsheet(session: Session, parsed: SpreadsheetTargets, name: str) -> str:
+    """Mescla o que a planilha trouxe nas listas do caso (sem repetir) e grava; devolve a mensagem."""
+
+    settings = session.settings
+    before = {
+        "empresa(s)": len(settings.target_companies),
+        "pessoa(s)": len(settings.target_people),
+        "CPF/CNPJ": len(settings.target_ids),
+        "linha(s) de grafias": len(settings.target_aliases),
+        "processo(s)": len(settings.target_processes),
+        "CDA(s)": len(settings.target_cdas),
+        "contato(s)/veículo(s)": len(settings.target_contacts),
+    }
+    settings.target_companies = merge_unique(settings.target_companies, parsed.companies)
+    settings.target_people = merge_unique(settings.target_people, parsed.people)
+    settings.target_ids = list(parse_target_ids(settings.target_ids + parsed.ids))
+    settings.target_aliases = merge_unique(settings.target_aliases, parsed.aliases)
+    settings.target_processes = merge_unique(settings.target_processes, parsed.processes)
+    settings.target_cdas = merge_unique(settings.target_cdas, parsed.cdas)
+    settings.target_contacts = merge_unique(settings.target_contacts, parsed.contacts)
+    settings.target_roles = {**parsed.roles, **settings.target_roles}
+    _sync_target_list_text(session)
+    save_settings(session.private_dir, settings)
+    after = {
+        "empresa(s)": len(settings.target_companies),
+        "pessoa(s)": len(settings.target_people),
+        "CPF/CNPJ": len(settings.target_ids),
+        "linha(s) de grafias": len(settings.target_aliases),
+        "processo(s)": len(settings.target_processes),
+        "CDA(s)": len(settings.target_cdas),
+        "contato(s)/veículo(s)": len(settings.target_contacts),
+    }
+    parts = [f"{after[label] - count} {label}" for label, count in before.items() if after[label] > count]
+    added = ", ".join(parts) if parts else "nada novo"
+    return f"Importados {added} de {name}."
 
 
 def _import_spreadsheet_into_session(session: Session, path: Path) -> str:
-    parsed = parse_target_spreadsheet(path)
-    before_companies = len(session.settings.target_companies)
-    before_people = len(session.settings.target_people)
-    before_ids = len(session.settings.target_ids)
-    session.settings.target_companies = merge_unique(
-        session.settings.target_companies, parsed.companies
-    )
-    session.settings.target_people = merge_unique(
-        session.settings.target_people, parsed.people
-    )
-    session.settings.target_ids = list(
-        parse_target_ids(session.settings.target_ids + parsed.ids)
-    )
-    _sync_target_list_text(session)
-    save_settings(session.private_dir, session.settings)
-    added_companies = len(session.settings.target_companies) - before_companies
-    added_people = len(session.settings.target_people) - before_people
-    added_ids = len(session.settings.target_ids) - before_ids
-    parts = []
-    if added_companies:
-        parts.append(f"{added_companies} empresa(s)")
-    if added_people:
-        parts.append(f"{added_people} pessoa(s)")
-    if added_ids:
-        parts.append(f"{added_ids} CPF/CNPJ")
-    added = " e ".join(parts) if parts else "nenhum nome ou documento novo"
-    return f"Importados {added} de {path.name}."
+    return _apply_spreadsheet(session, parse_target_spreadsheet(path), path.name)
 
 
 class Session:
@@ -411,6 +439,8 @@ class Session:
         self.target_companies_text = "\n".join(self.settings.target_companies)
         self.target_people_text = "\n".join(self.settings.target_people)
         self.target_ids_text = "\n".join(self.settings.target_ids)
+        for text_attr, field_name in _CASE_EXTRA_LISTS:
+            setattr(self, text_attr, "\n".join(getattr(self.settings, field_name)))
 
 
 def run_app() -> None:
@@ -788,8 +818,17 @@ def _build_lote_tab(
     async def choose_private_dir() -> None:
         selected = await run.io_bound(_pick_folder, "Pasta dos mapas privados")
         if selected:
+            previous = session.settings
             session.private_dir = Path(selected)
             session.settings = load_settings(session.private_dir)
+            # H9-j: a pasta nova sem lista do caso recebe a que estava em uso (antes ela sumia da rodada sem aviso).
+            if carry_case_list(previous, session.settings):
+                save_settings(session.private_dir, session.settings)
+                ui.notify(
+                    "A pasta nova não tinha lista do caso: a lista em uso foi levada para ela.", type="info"
+                )
+            elif not has_case_list(session.settings):
+                ui.notify("Atenção: a lista do caso desta pasta privada está vazia.", type="warning")
             _sync_target_list_text(session)
             local_toggle.value = session.settings.local_ner_enabled
             update_destinations()
@@ -1028,6 +1067,47 @@ def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Calla
                 mono=True,
             )
 
+        # H9-i lote B1: o que a planilha do Nexus traz alem dos nomes; tudo vira regra do caso (troca sem rotulo).
+        with ui.element("div").classes("aj-case-grid aj-case-grid-4"):
+            aliases = _list_card(
+                session,
+                title="Outras grafias",
+                icon="alternate_email",
+                attribute="target_aliases_text",
+                placeholder="ex.: Maria Exemplo da Silva = Mari Silva; M. E. Silva\nex.: Madeireira Exemplo Ltda = Pinhal Verde",
+                hint="Nome principal = grafia1; grafia2. Todas saem com o mesmo token do nome principal.",
+                count=lambda text: len(_parse_name_list(text)),
+            )
+            processes = _list_card(
+                session,
+                title="Processos",
+                icon="gavel",
+                attribute="target_processes_text",
+                placeholder="ex.: 5000000-00.2024.4.04.7100\nex.: PA: 10000.000000/2019-00",
+                hint="Número CNJ ou processo administrativo. Trocado em todo o texto, até em ementa.",
+                count=lambda text: len(_parse_name_list(text)),
+                mono=True,
+            )
+            cdas = _list_card(
+                session,
+                title="CDAs",
+                icon="receipt_long",
+                attribute="target_cdas_text",
+                placeholder="ex.: 80.6.21.000000-00",
+                hint="Número da inscrição, com ou sem pontuação. Trocado mesmo sem rótulo.",
+                count=lambda text: len(_parse_name_list(text)),
+                mono=True,
+            )
+            contacts = _list_card(
+                session,
+                title="Contatos e veículos",
+                icon="contact_mail",
+                attribute="target_contacts_text",
+                placeholder="ex.: Rua Exemplo, 100, Centro\nex.: (00) 90000-0000\nex.: e-mail: fulano@exemplo.com\nex.: placa: ABC1D23",
+                hint="Endereço, telefone ou e-mail (um por linha); placa e RENAVAM com o rótulo.",
+                count=lambda text: len(_parse_name_list(text)),
+            )
+
         with ui.row().classes("aj-callout info items-start"):
             ui.icon("shield")
             ui.label(
@@ -1036,12 +1116,26 @@ def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Calla
                 "sobretudo para os nomes."
             )
 
+    extra_boxes = {
+        "target_aliases_text": aliases,
+        "target_processes_text": processes,
+        "target_cdas_text": cdas,
+        "target_contacts_text": contacts,
+    }
+
+    def extra_values() -> dict[str, object]:
+        return {attr: box.value for attr, box in extra_boxes.items()}
+
     def is_dirty() -> bool:
         return (
             _parse_name_list(session.target_companies_text) != session.settings.target_companies
             or _parse_name_list(session.target_people_text) != session.settings.target_people
             or list(parse_target_ids([str(session.target_ids_text or "")]))
             != list(session.settings.target_ids)
+            or any(
+                _parse_name_list(getattr(session, attr)) != getattr(session.settings, field_name)
+                for attr, field_name in _CASE_EXTRA_LISTS
+            )
         )
 
     def refresh_state() -> None:
@@ -1052,34 +1146,67 @@ def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Calla
         on_change()
 
     def save_case_targets() -> None:
-        _commit_target_lists(session, companies.value, people.value, ids.value)
+        _commit_target_lists(session, companies.value, people.value, ids.value, extra_values())
         save_settings(session.private_dir, session.settings)
         refresh_state()
         ui.notify("Lista deste caso salva.", type="positive")
 
     async def import_case_sheet() -> None:
-        _commit_target_lists(session, companies.value, people.value, ids.value)
+        _commit_target_lists(session, companies.value, people.value, ids.value, extra_values())
         selected = await run.io_bound(_pick_spreadsheet)
         if not selected:
             refresh_state()
             return
         try:
-            message = _import_spreadsheet_into_session(session, Path(selected))
+            parsed = parse_target_spreadsheet(Path(selected))
         except (OSError, ValueError) as exc:
             ui.notify(str(exc), type="warning")
             return
+        # Resumo antes de salvar (H9-i lote B1): nada entra na lista sem o Operador ver o que veio e o que caiu.
+        if not await _confirm_spreadsheet(parsed, Path(selected).name):
+            refresh_state()
+            return
+        message = _apply_spreadsheet(session, parsed, Path(selected).name)
         companies.value = session.target_companies_text
         people.value = session.target_people_text
         ids.value = session.target_ids_text
+        for attr, box in extra_boxes.items():
+            box.value = getattr(session, attr)
         refresh_state()
         ui.notify(message, type="positive")
 
-    for box in (companies, people, ids):
+    for box in (companies, people, ids, *extra_boxes.values()):
         box.on_value_change(lambda _event: refresh_state())
     save_btn.on_click(save_case_targets)
     import_btn.on_click(import_case_sheet)
     refresh_state()
     return refresh_state
+
+
+async def _confirm_spreadsheet(parsed: SpreadsheetTargets, name: str) -> bool:
+    """O resumo da planilha (quanto de cada tipo, linhas descartadas e por que); True se o Operador confirmar."""
+
+    with ui.dialog() as dialog, ui.column().classes("aj-dialog"):
+        ui.label("Planilha do Nexus").classes("aj-kicker")
+        ui.label(name).classes("aj-title").style("font-size:22px")
+        if parsed.sheets:
+            ui.label("Abas lidas: " + ", ".join(parsed.sheets)).classes("aj-card-note")
+        # A lista do dialogo e uma grade de duas colunas: rotulo | valor.
+        rows = (line.partition(": ") for line in parsed.summary_lines())
+        ui.html(
+            "<ul>"
+            + "".join(f"<li><span>{html.escape(label)}</span><span>{html.escape(value)}</span></li>" for label, _sep, value in rows)
+            + "</ul>"
+        ).classes("w-full")
+        ui.label("O que já está nas caixas fica; o que vier repetido não entra de novo.").classes("aj-card-note")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancelar", on_click=lambda: dialog.submit(False)).props("flat no-caps")
+            ui.button("Salvar na lista do caso", icon="save", on_click=lambda: dialog.submit(True)).props(
+                "unelevated no-caps"
+            )
+    result = await dialog
+    dialog.clear()
+    return bool(result)
 
 
 def _list_card(

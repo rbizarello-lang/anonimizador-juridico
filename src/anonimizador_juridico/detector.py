@@ -33,6 +33,7 @@ _TYPE_PRIORITY = {
     "BR_URL": 102,
     # H9-i: numero de CDA e de processo administrativo vence o que os mesmos digitos poderiam ser (telefone, CPF).
     "BR_CDA": 101,
+    "BR_REGISTRO_CIVIL": 101,
     "BR_CADASTRO_RURAL": 101,
     "BR_REGISTRO_JUNTA": 103,
     "BR_IP": 101,
@@ -47,6 +48,7 @@ _TYPE_PRIORITY = {
 
 # Desempate por FONTE antes de tipo/score (P13). IDs Presidio ficam acima desta lista.
 SOURCE_RECOGNIZER_RANK = {
+    "ListaDoCaso": 700,
     "ListaDeAlvos": 500,
     "CnpjLookup": 400,
     "HeaderHeuristic": 300,

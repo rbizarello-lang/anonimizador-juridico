@@ -12,6 +12,7 @@ from .gemini_detector import is_kept_term, is_legal_nature, is_registry_office, 
 from .protected_patterns import inside_protected_region, touches_legislation
 
 _TARGET_RECOGNIZER = "ListaDeAlvos"
+_CASE_RULE_RECOGNIZER = "ListaDoCaso"
 # Propagacao do lote (deteccao 2.1): a entidade ja foi julgada no elenco (cargo colado
 # ao nome em qualquer arquivo tira a entidade da propagacao); a ocorrencia propagada nao
 # repete as regras amplas de contexto (juiz/PFN por perto, parte de precedente, nome banal).
@@ -235,6 +236,34 @@ class FidelityDropStats:
     higiene_limite: int = 0
 
 
+# H9-j: contato institucional de orgao publico (decisao do Operador de 17/10: fica em claro). No teste de 16/10 eram 19
+# ocorrencias trocadas (e-mail, telefone, CEP e endereco de vara e procuradoria no cabecalho das pecas).
+_PUBLIC_EMAIL = re.compile(r"(?i)@(?:[a-z0-9-]+\.)*(?:jus|gov|mp|leg|def|mil)\.br$")
+_CONTACT_TYPES = frozenset({"BR_PHONE", "BR_CEP", "LOCATION"})
+_ORGAN_LINE = re.compile(
+    r"(?i)\b(?:vara\s+(?:federal|do\s+trabalho|c[ií]vel|criminal)|f[oó]rum|tribunal|se[cç][aã]o\s+judici[aá]ria"
+    r"|subse[cç][aã]o\s+judici[aá]ria|justi[cç]a\s+federal|procuradoria|pgfn|receita\s+federal|advocacia-geral"
+    r"|minist[ée]rio\s+p[úu]blico|defensoria|secretaria\s+da\s+vara|cartório\s+eleitoral)\b"
+)
+
+
+def is_institutional_contact(text: str, start: int, end: int, entity_type: str) -> bool:
+    """E-mail de dominio publico (.jus.br, .gov.br, .mp.br...) ou telefone/CEP/endereco na mesma linha do nome de um
+    orgao publico (vara, foro, tribunal, procuradoria, Receita): contato institucional, fica em claro."""
+
+    value = text[start:end].strip()
+    if entity_type == "EMAIL_ADDRESS":
+        return bool(_PUBLIC_EMAIL.search(value.replace(" ", "")))
+    if entity_type not in _CONTACT_TYPES:
+        return False
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line = text[line_start : line_end if line_end >= 0 else len(text)]
+    # So linha curta de cabecalho/rodape: numa frase longa ("requer ao tribunal a citacao na Rua X") o endereco e do
+    # particular.
+    return len(line.strip()) <= 160 and bool(_ORGAN_LINE.search(line))
+
+
 def drop_protected_spans(
     text: str,
     spans: Sequence[EntitySpan],
@@ -250,10 +279,18 @@ def drop_protected_spans(
         value = span.value_from(text)
         # Trava geral (H9-i): a lista do caso (aba Caso) vence a lista protegida de sistemas, orgaos e padroes.
         is_target = span.recognizer == _TARGET_RECOGNIZER
+        if span.recognizer == _CASE_RULE_RECOGNIZER:
+            # H9-i lote B1: processo, CDA e contato listados na aba Caso: so a lista de exclusoes do usuario os tira
+            # (nem a regra do precedente, nem a do telefone sem rotulo; o valor ja foi provado na lista).
+            if not is_kept_term(value, extra_keep):
+                kept.append(span)
+            continue
         if is_kept_term(value, extra_keep) and not (is_target and is_system_term(value)):
             continue
         if not is_target and touches_legislation(text, span.start, span.end):
             continue  # "Lei 8.112", "Tema 1.209": nunca entidade, nunca numero trocado
+        if not is_target and is_institutional_contact(text, span.start, span.end, span.entity_type):
+            continue  # e-mail, telefone, CEP ou endereco de vara, procuradoria, orgao publico (H9-j)
         if not is_target and span.entity_type in _CONTEXTUAL_TYPES and inside_protected_region(text, span.start, span.end):
             continue  # orgao fracionado, sigla com UF, cooperativa (padroes 6a a 6c)
         if (
@@ -552,6 +589,34 @@ def is_precedent_process(
     if _PRECEDENT_CUE.search(_before_window(text, start, 60)):
         return True
     return bool(_PRECEDENT_AFTER.match(text[stop : stop + 60].split("\n", 1)[0]))
+
+
+# H9-i lote B5: o titulo do julgador COLADO antes do nome, na mesma linha ("Rel. Min.", "Relatora", "Des. Federal").
+_JUDGE_TITLE_BEFORE = re.compile(
+    r"(?i)(?:\bRel\.(?:\s*p/\s*ac[oó]rd[aã]o)?(?:\s*(?:Min\.|Minist(?:ro|ra)|Des\.|Desembargador(?:a)?))?"
+    r"|\bRelator(?:a)?(?:\s*p/\s*ac[oó]rd[aã]o)?(?:\s*(?:Min\.|Minist(?:ro|ra)|Des\.|Desembargador(?:a)?))?"
+    r"|\bMin\.|\bMinist(?:ro|ra)\b|\bDes\.|\bDesembargador(?:a)?"
+    r"|\bJu[ií]z(?:a)?\s+Federal\s+Convocad[oa])"
+    r"(?:\s+Federal)?(?:\s*\(a\))?\s*[:\-–]?\s*$"
+)
+
+
+def is_precedent_judge(text: str, start: int, end: int) -> bool:
+    """Nome do julgador numa citacao de precedente (ementa, "Rel. Min. X, Segunda Turma, DJe ...").
+
+    Estreito de proposito (vale para o nome que o LLM ou o elenco trouxe, que ja passou pelo juizo): o titulo tem de
+    estar colado antes do nome, na mesma linha, e a linha (ou os 200 caracteres em volta) tem de ter sinal de citacao
+    (REsp, Turma, DJe, julgado, STJ...). O magistrado da capa ou da assinatura segue as regras de sempre."""
+
+    head = max(text.rfind("\n", 0, start) + 1, start - 40)
+    title = _JUDGE_TITLE_BEFORE.search(text, head, start)
+    if title is None:
+        return False
+    # O sinal de citacao tem de vir de fora do proprio titulo (o "Rel." sozinho nao prova ementa).
+    around = text[max(0, start - 200) : title.start()] + " " + text[end : min(len(text), end + 200)]
+    return bool(
+        _PRECEDENT_ORG_CUE.search(around) or _PRECEDENT_AFTER.match(text[end : end + 60].split("\n", 1)[0])
+    )
 
 
 def is_precedent_party(text: str, start: int, end: int) -> bool:

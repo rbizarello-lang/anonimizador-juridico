@@ -270,12 +270,98 @@ def _relation(left: _Cluster, right: _Cluster) -> str:
     return ""
 
 
-def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[str, str]:
+# H9-j: o mesmo CNPJ colado a duas razoes sociais prova a mesma pessoa juridica (prova, nao aproximacao). No teste de
+# 16/10 o nome antigo da requerida aparecia no RENAJUD com o CNPJ dela e virou outro token. Matriz e filiais (mesma raiz
+# de 8 digitos) sao a mesma pessoa juridica.
+_CNPJ_IN_TEXT = re.compile(r"(?<!\d)\d{2}\.?\d{3}\.?\d{3}\s?/?\s?\d{4}\s?-?\s?\d{2}(?!\d)")
+_CNPJ_GAP = re.compile(
+    r"(?i)^[\s|,;:()\[\]\-–—]*(?:(?:inscrit[ao]\s+no\s+|sob\s+o\s+|com\s+)?(?:cnpj|c\.n\.p\.j\.?)(?:\s*/\s*mf)?"
+    r"\s*(?:n[º°o.]{1,2})?)?[\s|,;:()\-–—]*$"
+)
+_CNPJ_WINDOW = 160
+_CNPJ_TOKEN = re.compile(r"\[CNPJ_\d+\]")
+# Depois do CNPJ e antes do nome: so pontuacao, separador de tabela e rotulo ("| [CNPJ_1]: NOME").
+_CNPJ_LEAD = re.compile(r"(?i)^[\s|,;:()\[\]\-–—]*(?:cnpj\s*[:\-]?\s*)?[\s|,;:()\-–—]*$")
+
+
+def _cnpj_roots(text: str, tokens: dict[str, str] | None = None) -> list[tuple[int, int, str]]:
+    """(inicio, fim, raiz de 8 digitos) de cada CNPJ valido do texto: escrito, ou o token ``[CNPJ_n]`` (no pipeline o
+    texto ja chega com o CNPJ mascarado; ``tokens`` traz token -> 14 digitos, vindo do mapa)."""
+
+    from anonimizador_juridico.validators import is_valid_cnpj, only_digits
+
+    found: list[tuple[int, int, str]] = []
+    for match in _CNPJ_IN_TEXT.finditer(text):
+        digits = only_digits(match.group(0))
+        if len(digits) == 14 and is_valid_cnpj(digits):
+            found.append((match.start(), match.end(), digits[:8]))
+    if tokens:
+        for match in _CNPJ_TOKEN.finditer(text):
+            digits = tokens.get(match.group(0), "")
+            if len(digits) == 14:
+                found.append((match.start(), match.end(), digits[:8]))
+    return found
+
+
+def _cnpj_links(
+    clusters: Sequence["_Cluster"],
+    by_key: dict[str, RosterEntry],
+    texts: Sequence[str],
+    tokens: dict[str, str] | None = None,
+) -> list[tuple[int, int]]:
+    """Pares de grupos de empresa cujo nome aparece colado ao mesmo CNPJ (mesma raiz), em qualquer texto do lote: o
+    nome antes do CNPJ ("NOME (CNPJ 11.222...)") ou depois dele ("| [CNPJ_1]: NOME |", extrato RENAJUD/SISBAJUD)."""
+
+    forms: list[tuple[int, re.Pattern[str]]] = []
+    for number, cluster in enumerate(clusters):
+        if cluster.kind != "empresa":
+            continue
+        entry = by_key.get(cluster.key)
+        if entry is None:
+            continue
+        for value in (entry.name, *entry.variants):
+            if has_token(value) or len(content_words("empresa", value)) < 2:
+                continue
+            words = re.findall(r"[^\W_]+", value)
+            if words:
+                forms.append((number, re.compile(r"(?i)(?<![^\W_])" + r"[\s.,/&-]+".join(map(re.escape, words)) + r"(?![^\W_])")))
+    owners: dict[str, set[int]] = defaultdict(set)
+    for text in texts or ():
+        for start, end, root in _cnpj_roots(text, tokens):
+            line_start = max(text.rfind(chr(10), 0, start) + 1, start - _CNPJ_WINDOW)
+            before = text[line_start:start]
+            line_end = text.find(chr(10), end)
+            after = text[end : min(line_end if line_end >= 0 else len(text), end + _CNPJ_WINDOW)]
+            best: tuple[int, int] | None = None
+            for number, pattern in forms:
+                for match in pattern.finditer(before):
+                    if _CNPJ_GAP.match(before[match.end():]) and (best is None or match.end() > best[0]):
+                        best = (match.end(), number)
+            if best is None:
+                for number, pattern in forms:
+                    match = pattern.search(after)
+                    if match is not None and _CNPJ_LEAD.fullmatch(after[: match.start()]):
+                        best = (0, number)
+                        break
+            if best is not None:
+                owners[root].add(best[1])
+    pairs: set[tuple[int, int]] = set()
+    for members in owners.values():
+        ordered = sorted(members)
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1 :]:
+                pairs.add((left, right))
+    return sorted(pairs)
+
+
+def fuse_identities(
+    roster: Roster, texts: Sequence[str] | None = None, cnpj_tokens: dict[str, str] | None = None
+) -> dict[str, str]:
     """Funde no ``roster`` as entradas da mesma entidade; devolve ``{chave removida: chave que ficou}``.
 
-    ``texts`` (os textos do lote) ficou so por compatibilidade com quem chama: a politica restrita nao le o texto."""
+    ``texts`` (os textos do lote): H9-j, a empresa cujo nome aparece colado ao mesmo CNPJ que outra e a mesma entrada.
+    ``cnpj_tokens``: token ``[CNPJ_n]`` -> 14 digitos (o texto do pipeline ja vem com o CNPJ mascarado)."""
 
-    del texts
     entries = [entry for entry in roster.entries if _eligible(entry)]
     names: dict[str, list[tuple[str, ...]]] = defaultdict(list)
     for entry in roster.entries:
@@ -299,13 +385,17 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
     clusters = [cluster for cluster in clusters if cluster.forms]
     # Arestas: nome canonico e igualdade primeiro, OCR depois (grafia de OCR nao disputa com a identidade exata).
     matches: dict[tuple[int, int], str] = {}
-    edges: dict[str, list[tuple[int, int]]] = {"canonico": [], "igual": [], "ocr": []}
+    edges: dict[str, list[tuple[int, int]]] = {"canonico": [], "igual": [], "ocr": [], "cnpj": []}
     for left in range(len(clusters)):
         for right in range(left + 1, len(clusters)):
             relation = _relation(clusters[left], clusters[right])
             if relation:
                 matches[(left, right)] = relation
                 edges[relation].append((left, right))
+    for pair in _cnpj_links(clusters, by_key, texts or (), cnpj_tokens):
+        if pair not in matches:
+            matches[pair] = "cnpj"
+            edges["cnpj"].append(pair)
     parent = list(range(len(clusters)))
     members: dict[int, list[int]] = {number: [number] for number in range(len(clusters))}
 
@@ -328,7 +418,7 @@ def fuse_identities(roster: Roster, texts: Sequence[str] | None = None) -> dict[
         members[keep].extend(members.pop(drop))
         roster.identity_reasons[relation] = roster.identity_reasons.get(relation, 0) + 1
 
-    for relation in ("canonico", "igual"):
+    for relation in ("canonico", "igual", "cnpj"):
         for left, right in edges[relation]:
             join(left, right, relation)
     # OCR: so quando a grafia nao e ambigua. Os vizinhos de OCR de um grupo (fora o outro) tem de ser os mesmos do outro

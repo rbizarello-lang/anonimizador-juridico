@@ -15,8 +15,15 @@ from anonimizador_juridico.pseudonymizer import fold_lexical
 
 ROLE_LABEL_WORDS = frozenset(
     "socio socia socios socias administrador administradora administradores administradoras".split()
+    # H9-j: qualidade processual (no teste de 16/10, "Requerida" virou empresa e "requerida e agravante" virou pessoa).
+    + """requerida requerido requeridas requeridos requerente requerentes agravante agravantes agravada agravado
+    agravadas agravados executada executado executadas executados exequente exequentes embargante embargantes
+    embargada embargado embargadas embargados impugnante impugnantes impugnada impugnado excipiente excipientes
+    excepta excepto recorrente recorrentes recorrida recorrido apelante apelantes apelada apelado autora autoras
+    reu reus interessada interessado suscitante suscitada suscitado""".split()
 )
-_LINK_WORDS = frozenset({"e", "de", "da", "do", "das", "dos"})
+# H9-j: artigo e "ora" ("A REQUERIDA", "requerida e ora agravante") tambem ligam as palavras do rotulo.
+_LINK_WORDS = frozenset({"e", "de", "da", "do", "das", "dos", "a", "o", "as", "os", "ora"})
 _PLURAL_MARK = re.compile(r"\((?:a|as|es|s|is|o|os)\)")
 _WORD = re.compile(r"[^\W\d_]+")
 

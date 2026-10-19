@@ -36,6 +36,7 @@ _TOKEN_LABELS = {
     "BR_CNH": "CNH",
     "BR_URL": "URL",
     "BR_CDA": "CDA",
+    "BR_REGISTRO_CIVIL": "REGISTRO_CIVIL",
     "BR_CADASTRO_RURAL": "CADASTRO_RURAL",
     "BR_REGISTRO_JUNTA": "REGISTRO_JUNTA",
     "BR_IP": "IP",
@@ -221,10 +222,31 @@ class MapRecord:
     canonical: str
     originals: list[str] = field(default_factory=list)
     alvo: str = ""
+    # H9-j: quantas vezes cada grafia foi trocada (para a forma preferida na reversao).
+    counts: dict[str, int] = field(default_factory=dict)
 
     def add_original(self, value: str) -> None:
         if value not in self.originals:
             self.originals.append(value)
+        self.counts[value] = self.counts.get(value, 0) + 1
+
+    def preferred(self) -> str:
+        """A grafia para reverter o token (H9-j): o grupo de grafias mais frequente (iguais salvo acento e caixa) e,
+        dentro dele, a que tem acento e caixa mista ("Helena" antes de "HELENA" e "Helena")."""
+
+        if not self.originals:
+            return ""
+        groups: dict[str, list[str]] = {}
+        for value in self.originals:
+            groups.setdefault(fold_lexical(" ".join(value.split())), []).append(value)
+        best = max(groups.values(), key=lambda items: sum(self.counts.get(item, 1) for item in items))
+
+        def score(value: str) -> tuple[int, int, int, int]:
+            accented = int(value != fold_lexical(value) and any(ord(char) > 127 for char in value))
+            mixed = int(not value.isupper() and any(char.isupper() for char in value))
+            return (accented, mixed, self.counts.get(value, 1), -value.count("\n"))
+
+        return " ".join(max(best, key=score).split())
 
 
 class PseudonymMap:
@@ -340,6 +362,7 @@ class PseudonymMap:
             canonical=canonical,
             originals=[value],
             alvo=alvo,
+            counts={value: 1},
         )
         self._insert(record)
         return token
@@ -357,6 +380,8 @@ class PseudonymMap:
                 "entity_type": record.entity_type,
                 "canonical": record.canonical,
                 "originals": list(record.originals),
+                # H9-j: a grafia para reverter o token (acento e caixa da forma mais frequente).
+                "preferida": record.preferred(),
             }
             if record.alvo:
                 item["alvo"] = record.alvo

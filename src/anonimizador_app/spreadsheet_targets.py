@@ -5,6 +5,12 @@ Abas no formato do Nexus (Pessoas / CNPJs) e planilhas genericas com esses
 cabecalhos sao aceitas. Nomes vao para as caixas de empresa/pessoa; documentos
 validos vao para a caixa de CPF/CNPJ da carteira. Numero sem DV ou CNPJ de
 orgao publico nao entra.
+
+H9-i lote B1: o formato combinado "Para o Anonimizador" (``saidas/privados/regras/formato_exportacao_nexus.txt``)
+le todas as abas de uma vez: Pessoas (apelidos, papel), Empresas (nome_fantasia, papel, nire), Processos, CDAs
+(processo_adm), Contatos (titular, tipo, valor) e Veiculos (placa, renavam). Coluna ausente ou vazia e aceita;
+``vinculo``, ``situacao``, ``classe``, ``relacao`` e ``papel_original`` sao ignorados (nao fundem nada). Cada linha
+descartada entra em ``discarded`` com o motivo, para o resumo antes de salvar. A planilha antiga continua valendo.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from pathlib import Path
 from anonimizador_juridico.pseudonymizer import fold_lexical
 from anonimizador_juridico.validators import only_digits
 
+from .case_list import classify_cda, classify_contact, classify_process, format_alias_line
 from .gemini_detector import is_kept_term
 from .target_ids import id_canonical, parse_target_ids
 
@@ -37,6 +44,34 @@ _DOC_KEYS = frozenset(
 )
 _PJ_TIPOS = frozenset({"pj", "pessoa juridica", "pessoa jurídica", "empresa"})
 _PF_TIPOS = frozenset({"pf", "pessoa fisica", "pessoa física"})
+_ALIAS_KEYS = ("nome fantasia", "nomes fantasia", "apelidos", "apelido", "outras grafias")
+_ROLE_KEYS = frozenset({"papel"})
+_NIRE_KEYS = frozenset({"nire"})
+_COMPANY_SHEETS = frozenset({"cnpjs", "cnpj", "empresas", "empresa"})
+# O papel do Nexus traduzido para o elenco, so para papel de particular: "procurador" no Nexus e o procurador DA
+# PARTE (advogado), nunca o da Fazenda; papel fora da tabela nao entra (o nome continua sendo trocado).
+_NEXUS_ROLES = {
+    "devedor": "parte",
+    "devedora": "parte",
+    "grupo": "parte",
+    "sucessora": "parte",
+    "socio": "socio",
+    "socia": "socio",
+    "administrador": "socio",
+    "administradora": "socio",
+    "responsavel": "socio",
+    "conjuge": "terceiro",
+    "parente": "terceiro",
+    "terceiro": "terceiro",
+    "terceira": "terceiro",
+    "laranja": "terceiro",
+    "interposta": "terceiro",
+    "credora": "terceiro",
+    "procurador": "advogado",
+    "procuradora": "advogado",
+    "advogado": "advogado",
+    "advogada": "advogado",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +81,45 @@ class SpreadsheetTargets:
     ids: list[str] = field(default_factory=list)
     skipped: int = 0
     sheets: tuple[str, ...] = ()
+    # H9-i lote B1 (formato combinado): linhas da aba Caso e o papel de cada nome.
+    aliases: list[str] = field(default_factory=list)
+    processes: list[str] = field(default_factory=list)
+    cdas: list[str] = field(default_factory=list)
+    contacts: list[str] = field(default_factory=list)
+    roles: dict[str, str] = field(default_factory=dict)
+    # motivo -> linhas descartadas (para o resumo antes de salvar).
+    discarded: dict[str, int] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
-        return len(self.companies) + len(self.people) + len(self.ids)
+        return (
+            len(self.companies)
+            + len(self.people)
+            + len(self.ids)
+            + len(self.aliases)
+            + len(self.processes)
+            + len(self.cdas)
+            + len(self.contacts)
+        )
+
+    def summary_lines(self) -> list[str]:
+        """O resumo mostrado antes de salvar: quanto entra de cada tipo e o que foi descartado, e por que."""
+
+        lines = [
+            f"Pessoas: {len(self.people)}",
+            f"Empresas: {len(self.companies)}",
+            f"CPF/CNPJ/NIRE: {len(self.ids)}",
+            f"Outras grafias: {len(self.aliases)} linha(s)",
+            f"Processos: {len(self.processes)}",
+            f"CDAs: {len(self.cdas)}",
+            f"Contatos e veículos: {len(self.contacts)}",
+        ]
+        if self.discarded:
+            detail = "; ".join(f"{reason}: {count}" for reason, count in sorted(self.discarded.items()))
+            lines.append(f"Descartadas: {sum(self.discarded.values())} ({detail})")
+        else:
+            lines.append("Descartadas: 0")
+        return lines
 
 
 def parse_target_spreadsheet(path: Path | str) -> SpreadsheetTargets:
@@ -65,56 +135,226 @@ def parse_target_spreadsheet(path: Path | str) -> SpreadsheetTargets:
         raise ValueError(
             "Use uma planilha .xlsx ou .csv com colunas de Nome e CPF/CNPJ."
         )
-    companies: list[str] = []
-    people: list[str] = []
-    ids: list[str] = []
-    skipped = 0
-    seen_company: set[str] = set()
-    seen_person: set[str] = set()
-    seen_id: set[str] = set()
+    out = _Collector()
     used_sheets: list[str] = []
     for sheet_name, rows in tables:
-        mapping = _header_map(rows[0] if rows else [])
+        header = rows[0] if rows else []
+        reader = _CASE_SHEETS.get(fold_lexical(sheet_name).strip())
+        if reader is not None:
+            columns = _columns(header)
+            if reader(out, columns, rows[1:]):
+                used_sheets.append(sheet_name)
+            continue
+        mapping = _header_map(header)
         if mapping is None:
             continue
         used_sheets.append(sheet_name)
-        sheet_is_cnpj = fold_lexical(sheet_name) in {"cnpjs", "cnpj"}
+        sheet_is_cnpj = fold_lexical(sheet_name).strip() in _COMPANY_SHEETS
+        columns = _columns(header)
         for raw in rows[1:]:
-            names, kind, ignore, documents = _row_targets(raw, mapping, sheet_is_cnpj)
-            skipped += ignore
-            kept_row = bool(names) and all(is_kept_term(name) for name in names)
-            if not kept_row:
-                for formatted in parse_target_ids(documents):
-                    key = id_canonical(formatted)
-                    if key in seen_id:
-                        skipped += 1
-                        continue
-                    seen_id.add(key)
-                    ids.append(formatted)
-            bucket = companies if kind == "company" else people
-            seen = seen_company if kind == "company" else seen_person
-            for name in names:
-                key = fold_lexical(name)
-                if not key or key in seen or is_kept_term(name):
-                    if key in seen or is_kept_term(name):
-                        skipped += 1
-                    continue
-                seen.add(key)
-                bucket.append(name)
+            _read_name_row(out, raw, mapping, columns, sheet_is_cnpj)
     if not used_sheets:
         raise ValueError(
             "Nao achei colunas de Nome e CPF/CNPJ nesta planilha. "
-            "No Nexus, exporte Pessoas e/ou CNPJs."
+            "No Nexus, exporte Pessoas e/ou CNPJs, ou o arquivo \"Para o Anonimizador\"."
         )
-    if not companies and not people and not ids:
-        raise ValueError("A planilha nao trouxe nenhum nome ou CPF/CNPJ aproveitavel.")
-    return SpreadsheetTargets(
-        companies=companies,
-        people=people,
-        ids=ids,
-        skipped=skipped,
-        sheets=tuple(used_sheets),
-    )
+    result = out.result(tuple(used_sheets))
+    if not result.total:
+        raise ValueError("A planilha nao trouxe nenhum nome, documento, processo, CDA ou contato aproveitavel.")
+    return result
+
+
+class _Collector:
+    """O que a planilha traz, sem repeticao, e as linhas descartadas por motivo."""
+
+    def __init__(self) -> None:
+        self.companies: list[str] = []
+        self.people: list[str] = []
+        self.ids: list[str] = []
+        self.aliases: list[str] = []
+        self.processes: list[str] = []
+        self.cdas: list[str] = []
+        self.contacts: list[str] = []
+        self.roles: dict[str, str] = {}
+        self.discarded: dict[str, int] = {}
+        self.skipped = 0
+        self._seen: dict[str, set[str]] = {}
+
+    def drop(self, reason: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        self.discarded[reason] = self.discarded.get(reason, 0) + count
+        self.skipped += count
+
+    def add(self, bucket: str, value: str, key: str, *, repeated: str = "") -> bool:
+        seen = self._seen.setdefault(bucket, set())
+        if not key:
+            return False
+        if key in seen:
+            if repeated:
+                self.drop(repeated)
+            return False
+        seen.add(key)
+        getattr(self, bucket).append(value)
+        return True
+
+    def add_ids(self, documents: list[str]) -> None:
+        filled = [item for item in documents if item.strip()]
+        parsed = parse_target_ids(filled)
+        self.drop("documento sem dígito verificador válido ou de órgão público", len(filled) - len(parsed))
+        for formatted in parsed:
+            self.add("ids", formatted, id_canonical(formatted), repeated="documento repetido")
+
+    def result(self, sheets: tuple[str, ...]) -> SpreadsheetTargets:
+        return SpreadsheetTargets(
+            companies=self.companies,
+            people=self.people,
+            ids=self.ids,
+            skipped=self.skipped,
+            sheets=sheets,
+            aliases=self.aliases,
+            processes=self.processes,
+            cdas=self.cdas,
+            contacts=self.contacts,
+            roles=self.roles,
+            discarded=self.discarded,
+        )
+
+
+def _columns(header: list[str]) -> dict[str, int]:
+    """Cabecalho dobrado -> indice (a primeira coluna com aquele nome vale)."""
+
+    found: dict[str, int] = {}
+    for index, cell in enumerate(header):
+        key = _fold_header(str(cell or ""))
+        if key and key not in found:
+            found[key] = index
+    return found
+
+
+def _value(row: list[str], columns: dict[str, int], *keys: str) -> str:
+    for key in keys:
+        index = columns.get(key)
+        if index is not None and index < len(row) and str(row[index] or "").strip():
+            return str(row[index]).strip()
+    return ""
+
+
+def _read_name_row(
+    out: _Collector,
+    raw: list[str],
+    mapping: dict[str, int],
+    columns: dict[str, int],
+    sheet_is_cnpj: bool,
+) -> None:
+    names, kind, ignore, documents = _row_targets(raw, mapping, sheet_is_cnpj)
+    if ignore:
+        out.drop("linha sem nome", ignore)
+    kept_row = bool(names) and all(is_kept_term(name) for name in names)
+    if kept_row:
+        out.drop("termo protegido (União, PGFN...)")
+        return
+    nire = only_digits(_value(raw, columns, *_NIRE_KEYS))
+    if nire:
+        documents = [*documents, f"NIRE {nire}"]
+    out.add_ids(documents)
+    bucket = "companies" if kind == "company" else "people"
+    for name in names:
+        if is_kept_term(name):
+            out.drop("termo protegido (União, PGFN...)")
+            continue
+        out.add(bucket, name, fold_lexical(name), repeated="nome repetido")
+    if not names:
+        return
+    principal = names[0]
+    # Todas as colunas de grafia da linha (a aba Empresas do Nexus traz nome_fantasia E apelidos).
+    aliases = [
+        alias
+        for key in _ALIAS_KEYS
+        for alias in _split_names(_value(raw, columns, key))
+        if fold_lexical(alias) != fold_lexical(principal) and not is_kept_term(alias)
+    ]
+    # Varias razoes na mesma celula (troca de razao social): as demais sao grafias da primeira.
+    aliases = [*names[1:], *aliases]
+    if aliases:
+        line = format_alias_line(principal, list(dict.fromkeys(aliases)))
+        out.add("aliases", line, fold_lexical(line))
+    role = _NEXUS_ROLES.get(fold_lexical(_value(raw, columns, *_ROLE_KEYS)).replace(" ", "_"))
+    if role:
+        out.roles.setdefault(principal, role)
+
+
+def _read_processes(out: _Collector, columns: dict[str, int], rows: list[list[str]]) -> bool:
+    if "numero" not in columns:
+        return False
+    for raw in rows:
+        value = _value(raw, columns, "numero")
+        parsed = classify_process(value) if value else None
+        if parsed is None:
+            out.drop("processo sem número válido")
+            continue
+        out.add("processes", value, only_digits(value), repeated="processo repetido")
+    return True
+
+
+def _read_cdas(out: _Collector, columns: dict[str, int], rows: list[list[str]]) -> bool:
+    if "numero" not in columns:
+        return False
+    for raw in rows:
+        value = _value(raw, columns, "numero")
+        cda = classify_cda(value) if value else None
+        if cda is None:
+            out.drop("CDA sem número válido")
+        else:
+            out.add("cdas", cda, re.sub(r"[^0-9A-Za-z]", "", cda).upper(), repeated="CDA repetida")
+        administrative = _value(raw, columns, "processo adm", "processo administrativo")
+        if administrative:
+            line = f"PA: {administrative}"
+            if classify_process(line) is None:
+                out.drop("processo administrativo sem número válido")
+            else:
+                out.add("processes", line, only_digits(administrative), repeated="processo repetido")
+    return True
+
+
+def _read_contacts(out: _Collector, columns: dict[str, int], rows: list[list[str]]) -> bool:
+    if "valor" not in columns:
+        return False
+    for raw in rows:
+        value = _value(raw, columns, "valor")
+        kind = fold_lexical(_value(raw, columns, "tipo"))
+        label = {"endereco": "endereço", "telefone": "telefone", "email": "e-mail", "e-mail": "e-mail"}.get(kind, "")
+        line = f"{label}: {value}" if label else value
+        if not value or classify_contact(line) is None:
+            out.drop("contato vazio ou fora do formato")
+            continue
+        out.add("contacts", line, fold_lexical(line), repeated="contato repetido")
+    return True
+
+
+def _read_vehicles(out: _Collector, columns: dict[str, int], rows: list[list[str]]) -> bool:
+    if "placa" not in columns and "renavam" not in columns:
+        return False
+    for raw in rows:
+        for kind in ("placa", "renavam"):
+            value = _value(raw, columns, kind)
+            if not value:
+                continue
+            line = f"{kind}: {value}"
+            if classify_contact(line) is None:
+                out.drop(f"{kind} fora do formato")
+                continue
+            out.add("contacts", line, fold_lexical(line), repeated="veículo repetido")
+    return True
+
+
+_CASE_SHEETS = {
+    "processos": _read_processes,
+    "cdas": _read_cdas,
+    "cda": _read_cdas,
+    "contatos": _read_contacts,
+    "veiculos": _read_vehicles,
+}
 
 
 def merge_unique(existing: list[str], incoming: list[str]) -> list[str]:

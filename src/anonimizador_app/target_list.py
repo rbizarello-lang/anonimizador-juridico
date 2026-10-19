@@ -37,8 +37,9 @@ from pathlib import Path
 from anonimizador_juridico import EntitySpan, resolve_overlaps
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
+from .case_list import CaseRules, parse_alias_lines
 from .fidelity import is_magistrate_or_citation, is_pfn_officer
-from .gemini_detector import is_kept_term
+from .gemini_detector import is_kept_term, is_system_term
 from .target_ids import find_listed_id_spans, names_from_listed_cnpjs, parse_target_ids
 
 # Nomes muito curtos (siglas de 1-2 letras) causariam trocas acidentais.
@@ -215,6 +216,11 @@ _COMMON_PERSON_PARTICLES = frozenset(
         "vanessa",
         "vieira",
         "xavier",
+        # H9-i lote B1: prenome/sobrenome que tambem e palavra comum (a curta nem vira particula; vale para a
+        # grafia adicional de uma palavra so).
+        "rosa",
+        "paz",
+        "vitoria",
     }
 )
 _ROLE_CUE = re.compile(
@@ -474,6 +480,8 @@ class _TargetEntry:
     phrases: tuple[str, ...]
     particles: tuple[str, ...]
     names: tuple[str, ...] = ()
+    # H9-i lote B1: grafias adicionais (apelido, nome fantasia, razao antiga) da mesma entrada.
+    aliases: tuple[str, ...] = ()
 
 
 class TargetListEngine:
@@ -490,6 +498,10 @@ class TargetListEngine:
         extra_keep: Iterable[str] = (),
         lookup_cnpj_names: bool = True,
         cnpj_index_path: Path | None = None,
+        aliases: Iterable[str] = (),
+        processes: Iterable[str] = (),
+        cdas: Iterable[str] = (),
+        contacts: Iterable[str] = (),
     ) -> None:
         self.ids = parse_target_ids(ids)
         extra_companies = ()
@@ -499,18 +511,62 @@ class TargetListEngine:
                 extra_keep=extra_keep,
                 index_path=cnpj_index_path,
             )
+        companies = list(companies)
+        people = list(people)
+        # H9-i lote B1: grafias adicionais ("nome principal = grafia1; grafia2") vao para a MESMA entrada.
+        alias_map = _place_aliases(parse_alias_lines(aliases), companies, people)
         self.companies = _clean((*companies, *extra_companies))
         self.people = _clean(people)
         self.extra_keep = tuple(extra_keep)
-        self._entries = _build_entries(self.companies, self.people)
+        self._extra_folded = frozenset(fold_lexical(item) for item in self.extra_keep if str(item).strip())
+        self._entries = _build_entries(self.companies, self.people, alias_map)
+        self.rules = CaseRules(processes=processes, cdas=cdas, contacts=contacts)
+        self._index = _MentionIndex(self._entries)
 
     def has_targets(self) -> bool:
-        return bool(self.companies or self.people or self.ids)
+        return bool(self.companies or self.people or self.ids or self.rules)
+
+    def _kept(self, value: str) -> bool:
+        """Termo protegido que a lista do caso NAO vence: a lista de exclusoes do usuario e os termos fixos (Uniao,
+        PGFN...). O sistema da lista protegida (``sistemas_protegidos.txt``) cede ao nome listado (H9-i)."""
+
+        if not is_kept_term(value, self.extra_keep):
+            return False
+        return not (is_system_term(value) and fold_lexical(value) not in self._extra_folded)
+
+    @property
+    def entries(self) -> tuple["_TargetEntry", ...]:
+        return self._entries
+
+    def resolve_mention(
+        self,
+        value: str,
+        *,
+        text: str = "",
+        start: int = -1,
+        end: int = -1,
+    ) -> "_TargetEntry | None":
+        """A entrada da lista a que uma mencao (do LLM ou do motor local) pertence, ou ``None``.
+
+        Casa o nome, as grafias adicionais, a razao sem sufixo, os prefixos (forma curta), o nome fantasia e as
+        frases do nome (Lopes da Silva). Particula de uma palavra: a distintiva casa sozinha; a comum (Silva,
+        Campos, Rosa) so com apoio no texto (rotulo de parte ou outra palavra do mesmo nome colada), e so com
+        posicao. Particula de duas entradas: ``resolve_particle_alias``. Varias palavras soltas do mesmo nome
+        ("Gioconda Pereira"): todas do mesmo alvo e uma distintiva."""
+
+        return self._index.resolve(
+            value, text=text, start=start, end=end, kept=self._kept
+        )
 
     def detect(self, text: str) -> list[EntitySpan]:
         occupied: list[tuple[int, int]] = []
         spans: list[EntitySpan] = []
+        for span in self.rules.detect(text):
+            occupied.append((span.start, span.end))
+            spans.append(span)
         for start, end, record in find_listed_id_spans(text, self.ids):
+            if any(start < other_end and end > other_start for other_start, other_end in occupied):
+                continue
             occupied.append((start, end))
             spans.append(
                 EntitySpan(
@@ -530,11 +586,11 @@ class TargetListEngine:
         phrase_jobs: list[tuple[int, _TargetEntry, str]] = []
         skipped_keys: set[str] = set()
         for entry in self._entries:
-            if is_kept_term(entry.original, self.extra_keep):
+            if self._kept(entry.original):
                 skipped_keys.add(entry.canonical_key)
                 continue
             for phrase in entry.phrases:
-                if is_kept_term(phrase, self.extra_keep):
+                if self._kept(phrase):
                     continue
                 if is_blocked_particle(phrase):
                     continue
@@ -603,7 +659,7 @@ class TargetListEngine:
             particle_forms.items(), key=lambda item: len(item[1]), reverse=True
         )
         for folded, form in particle_jobs:
-            if is_kept_term(form, self.extra_keep) or is_blocked_particle(form):
+            if self._kept(form) or is_blocked_particle(form):
                 continue
             owners = [
                 item
@@ -791,12 +847,55 @@ def _majority_type(candidates: Sequence[_TargetEntry]) -> str:
     return "PERSON"
 
 
-def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_TargetEntry, ...]:
+def _company_body(value: str) -> str:
+    return fold_lexical(_LEGAL_TAIL.sub("", value).strip(" -,."))
+
+
+def _place_aliases(
+    parsed: Sequence[tuple[str, tuple[str, ...]]],
+    companies: list[str],
+    people: list[str],
+) -> dict[tuple[str, str], list[str]]:
+    """Cada linha de grafias vai para a entrada do nome principal (empresa ou pessoa ja listada). Principal que nao
+    esta em nenhuma lista entra na de empresas se tiver sufixo societario, senao na de pessoas."""
+
+    placed: dict[tuple[str, str], list[str]] = {}
+    for principal, aliases in parsed:
+        folded = fold_lexical(principal)
+        body = _company_body(principal)
+        if any(fold_lexical(item) == folded or _company_body(item) == body for item in companies):
+            key = ("empresa", body)
+        elif any(fold_lexical(item) == folded for item in people):
+            key = ("pessoa", folded)
+        elif _LEGAL_TAIL.search(principal) or _CORPORATE_FOLLOW.search(" " + principal):
+            companies.append(principal)
+            key = ("empresa", body)
+        else:
+            people.append(principal)
+            key = ("pessoa", folded)
+        bucket = placed.setdefault(key, [])
+        for alias in aliases:
+            if alias not in bucket:
+                bucket.append(alias)
+    return placed
+
+
+def _single_common_word(value: str) -> bool:
+    words = value.split()
+    return len(words) == 1 and (is_common_person_particle(value) or is_blocked_particle(value))
+
+
+def _build_entries(
+    companies: Sequence[str],
+    people: Sequence[str],
+    aliases: dict[tuple[str, str], list[str]] | None = None,
+) -> tuple[_TargetEntry, ...]:
+    aliases = aliases or {}
     entries: list[_TargetEntry] = []
     company_groups: dict[str, list[str]] = {}
     company_order: list[str] = []
     for value in companies:
-        body = fold_lexical(_LEGAL_TAIL.sub("", value).strip(" -,."))
+        body = _company_body(value)
         if not body:
             continue
         if body not in company_groups:
@@ -806,7 +905,17 @@ def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_Ta
             company_groups[body].append(value)
     for body in company_order:
         originals = tuple(company_groups[body])
-        phrases = _company_search_terms(originals)
+        extra: list[str] = []
+        loose: list[str] = []
+        for alias in aliases.get(("empresa", body), ()):
+            alias_body = _company_body(alias)
+            if not alias_body or (alias_body != body and alias_body in company_groups):
+                continue  # grafia que e outra entrada da lista: duas entradas nunca se fundem
+            if _single_common_word(alias):
+                loose.append(alias)  # palavra comum sozinha: so com apoio, como particula
+            elif alias not in originals and alias not in extra:
+                extra.append(alias)
+        phrases = _company_search_terms((*originals, *extra))
         entries.append(
             _TargetEntry(
                 original=originals[0],
@@ -815,7 +924,9 @@ def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_Ta
                 body_folded=body,
                 canonical_key=f"alvo:empresa:{body}",
                 phrases=phrases,
-                particles=(),
+                particles=tuple(loose),
+                names=(*originals, *extra),
+                aliases=tuple(extra),
             )
         )
 
@@ -842,21 +953,41 @@ def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_Ta
             person_order.append(body)
         if value not in person_groups[body]:
             person_groups[body].append(value)
+    folded_bodies = set(person_groups)
     for body in person_order:
         originals = tuple(person_groups[body])
+        extra: list[str] = []
+        loose: list[str] = []
+        for original in originals:
+            for alias in aliases.get(("pessoa", fold_lexical(original)), ()):
+                alias_body = fold_lexical(alias)
+                if not alias_body or (alias_body != body and alias_body in folded_bodies):
+                    continue  # grafia que e outra pessoa da lista: duas entradas nunca se fundem
+                if _single_common_word(alias):
+                    loose.append(alias)
+                elif alias not in originals and alias not in extra:
+                    extra.append(alias)
         particles: list[str] = []
         seen = set()
-        for original in originals:
+        for original in (*originals, *extra):
             for part in _entry_particles(original, company=False):
                 key = fold_lexical(part)
                 if key in seen:
                     continue
                 seen.add(key)
                 particles.append(part)
+        for part in loose:
+            key = fold_lexical(part)
+            if key not in seen:
+                seen.add(key)
+                particles.append(part)
+        # As frases derivadas (par inicial, sobrenomes colados) saem so do nome listado; a grafia adicional
+        # entra inteira (e com as particulas), sem gerar frase nova.
         phrases = tuple(
             dict.fromkeys(
                 (
                     *originals,
+                    *extra,
                     *(item for original in originals for item in _glued_pairs(original)),
                     *(item for original in originals for item in _leading_person_phrases(original)),
                     *(item for original in originals for item in _trailing_person_phrases(original)),
@@ -872,7 +1003,8 @@ def _build_entries(companies: Sequence[str], people: Sequence[str]) -> tuple[_Ta
                 canonical_key=f"alvo:pessoa:{body}",
                 phrases=phrases,
                 particles=tuple(particles),
-                names=originals,
+                names=(*originals, *extra),
+                aliases=tuple(extra),
             )
         )
     return tuple(entries)
@@ -1434,3 +1566,126 @@ def _person_particles(people: Iterable[str]) -> tuple[str, ...]:
             seen.add(key)
             particles.append(part)
     return tuple(particles)
+
+
+_MENTION_EDGE = " \t\n,.;:()[]{}\"'-–—"
+_MENTION_TITLE = re.compile(r"^(?:dr|dra|sr|sra|srta|exmo|exma)\.?\s+")
+_SKIP_FOLDED = frozenset(fold_lexical(item) for item in _PARTICLE_SKIP)
+
+
+def _mention_form(value: str) -> str:
+    folded = " ".join(fold_lexical(value).split()).strip(_MENTION_EDGE)
+    folded = _MENTION_TITLE.sub("", folded)
+    return _ESPOLIO_PREFIX.sub("", folded).strip(_MENTION_EDGE)
+
+
+class _MentionIndex:
+    """As formas de cada entrada da lista, para resolver a mencao que chega de fora da busca da lista (o LLM, o
+    NER): nome, grafia adicional, razao sem sufixo, prefixo, frase do nome e particula (``resolve_mention``)."""
+
+    def __init__(self, entries: Sequence[_TargetEntry]) -> None:
+        self._entries = tuple(entries)
+        self._forms: dict[str, list[_TargetEntry]] = defaultdict(list)
+        self._particles: dict[str, list[_TargetEntry]] = defaultdict(list)
+        self._words: dict[str, frozenset[str]] = {}
+        for entry in self._entries:
+            keys: set[str] = {entry.body_folded}
+            for value in (entry.original, *entry.names, *entry.phrases):
+                for candidate in (value, _LEGAL_TAIL.sub("", value) if entry.kind == "empresa" else value):
+                    folded = _mention_form(candidate)
+                    if not folded or (" " not in folded and _single_common_word(folded)):
+                        continue
+                    keys.add(folded)
+            for key in keys:
+                if entry not in self._forms[key]:
+                    self._forms[key].append(entry)
+            for particle in entry.particles:
+                folded = fold_lexical(particle)
+                if entry not in self._particles[folded]:
+                    self._particles[folded].append(entry)
+            words = {
+                word
+                for value in (entry.original, *entry.names)
+                for word in _mention_form(value).split()
+                if word not in _SKIP_FOLDED
+            }
+            self._words[entry.canonical_key] = frozenset(words)
+
+    def resolve(
+        self,
+        value: str,
+        *,
+        text: str = "",
+        start: int = -1,
+        end: int = -1,
+        kept=lambda _value: False,
+    ) -> _TargetEntry | None:
+        folded = _mention_form(value)
+        if not folded:
+            return None
+        positioned = bool(text) and 0 <= start < end <= len(text)
+        candidates = self._forms.get(folded) or self._forms.get(_mention_form(_LEGAL_TAIL.sub("", value)))
+        if candidates:
+            candidates = [item for item in candidates if not kept(item.original)]
+            if len(candidates) == 1:
+                return candidates[0]
+            if len(candidates) > 1 and positioned:
+                return self._alias(text, start, end, value, candidates)
+            return None
+        words = [word for word in folded.split() if word not in _SKIP_FOLDED]
+        if len(words) == 1:
+            word = words[0]
+            if is_blocked_particle(word):
+                return None
+            owners = [item for item in self._particles.get(word, ()) if not kept(item.original)]
+            if not owners:
+                return None
+            if positioned and _particle_blocked(text, start, end):
+                return None
+            if is_common_person_particle(word):
+                if not positioned:
+                    return None
+                if not (
+                    _particle_has_support(text, start, end, owners, ())
+                    or any(
+                        _name_adjacent_to_phrase(text, start, end, name)
+                        for owner in owners
+                        for name in owner.names
+                    )
+                ):
+                    return None
+            if len(owners) == 1:
+                return owners[0]
+            return self._alias(text, start, end, value, owners) if positioned else None
+        if len(words) >= 2:
+            wanted = set(words)
+            owners = [
+                item
+                for item in self._entries
+                if item.kind == "pessoa"
+                and wanted <= self._words.get(item.canonical_key, frozenset())
+                and not kept(item.original)
+            ]
+            distinctive = any(
+                len(word) >= _MIN_PARTICLE_CHARS
+                and not is_common_person_particle(word)
+                and not is_blocked_particle(word)
+                for word in words
+            )
+            if len(owners) == 1 and distinctive:
+                return owners[0]
+        return None
+
+    def _alias(
+        self, text: str, start: int, end: int, value: str, candidates: Sequence[_TargetEntry]
+    ) -> _TargetEntry | None:
+        complete: dict[str, list[int]] = defaultdict(list)
+        for entry in candidates:
+            for name in entry.names or (entry.original,):
+                complete[entry.canonical_key].extend(
+                    match.start() for match in phrase_pattern(name).finditer(text)
+                )
+        entry, _key, _alvo = resolve_particle_alias(
+            text, start, end, particle=value, candidates=candidates, complete_starts=complete
+        )
+        return entry

@@ -53,6 +53,8 @@ _NIRE_VALOR = r"\d(?:[ .\-]?\d){10}"
 _URL_CHAVE_PARAM = re.compile(
     r"(?i)[?&;][A-Za-z_]*(?:chave|key|codigo|token|hash|verific|assinatura|signature|senha)"
     r"[A-Za-z0-9_]*="
+    # H9-j: identificador numerico de registro/mensagem na query ("IdSiscomMensagem=123456", "idDocumento=...").
+    r"|[?&;]id[A-Za-z_]*=\d{3,}"
 )
 _GLUED_EMAIL = re.compile(
     r"[A-Za-z0-9._%+\-]+@(?:[A-Za-z0-9-]+\.)+[a-z]{2,24}(?=[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])"
@@ -639,7 +641,9 @@ _CDA_PGFN = r"80[ .]?\d[ .]?\d{2}[ .]?\d{6}[ .\-]?\d{2}"
 # Sem rotulo so a forma separada por ponto, espaco ou hifen (13 digitos corridos pedem rotulo).
 _CDA_PGFN_SEPARADA = r"80[ .]\d[ .]\d{2}[ .]\d{6}[ .\-]\d{2}"
 # CDA de outros entes e de FGTS ("FGSC201902345"): numero com 6+ digitos (pontos, hifens, barra) ou letras e digitos.
-_CDA_GENERICO = r"\d{3,}(?:[.\-/]\d+)*|[A-Z]{2,5}\d{8,14}"
+# H9-j: grupos separados por espaco terminando em "-DD" ("80 2 19 012345-67"), antes da forma generica.
+# A quebra de linha no meio ("91 6 06\n003142-93") tambem separa os grupos.
+_CDA_GENERICO = r"\d{2}(?:(?: |[ \t]*\n[ \t]*)\d{1,6}){2,4}-\d{2}|\d{3,}(?:[.\-/]\d+)*|[A-Z]{2,5}\d{8,14}"
 _CDA_LABEL = (
     r"(?:\bCDAs?\b(?:\s*[/\-]\s*[A-Za-z]{2,4}\b)?"
     r"|\bcertid(?:[ãa]o|[õo]es)\s+de\s+d[ií]vida\s+ativa(?:\s*\(\s*CDAs?\s*\))?"
@@ -652,10 +656,14 @@ _PA_FORTE = (
 )
 _PA_GENERICO = (
     r"(?!\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})(?!\d{5}-\d{3}\b)\d{3,}(?:[.\-/]\d+)*"
+    # H9-j: varios blocos pontuados que comecam com 2 digitos (MPF da Receita: "08.1.23.00-2005-00012-3").
+    r"|\d{2}(?:[.\-]\d+){3,}"
 )
 _PA_LABEL = (
     r"(?:\bprocessos?\s+administrativos?(?:\s+fiscais?)?"
     r"|\bprocedimentos?\s+administrativos?(?:\s+fiscais?)?"
+    # H9-j: Mandado de Procedimento Fiscal da Receita ("MPF nº 08.1.23.00-2005-00012-3").
+    r"|\bmandados?\s+de\s+procedimento\s+fiscal|\bMPF\b(?=\s*(?:n[ºo°]|:))"
     r"|\bP\.?A\.?F\.?(?![A-Za-z])|\bPAs?\b(?=\s*(?:n[ºo°]|:)))"
 )
 # Entre o rotulo e o numero: pontuacao, "sob o", "de", "n", "n.", "nº", "nºs", "nos", "numero(s)", "nrs.".
@@ -750,6 +758,50 @@ class BrCdaRecognizer(_RotuloListaRecognizer):
             generico=_CDA_GENERICO,
             min_digits=6,
             forte_sem_rotulo=rf"{_CDA_PGFN_SEPARADA}|(?:FG|CS)[A-Z]{{2}}\d{{9,12}}",
+        )
+
+
+class BrProcessoAntigoRecognizer(PatternRecognizer):
+    """H9-j: numero de processo da Justica Federal anterior ao CNJ ("2005.71.00.012345-0": ano, regiao, secao, seis
+    digitos e digito verificador). A forma e unica; entra sem rotulo, como ``[PROCESSO_n]``. Quebra de linha no meio
+    vale (o numero partido entre linhas)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_entity="BR_PROCESSO",
+            supported_language="pt",
+            name="BrProcessoAntigoRecognizer",
+            patterns=[
+                Pattern(
+                    name="processo_jf_antigo",
+                    regex=r"(?<![\d.])(?:19|20)\d{2}\.\d{2}\.\d{2}\.\d{6}-\d(?![\d])",
+                    score=0.85,
+                )
+            ],
+        )
+
+
+class BrRegistroCivilRecognizer(PatternRecognizer):
+    """H9-j: matricula de certidao do registro civil (nascimento, casamento, obito): 32 digitos no modelo nacional
+    ("123456 01 55 2015 1 00012 123 0012345 12"), com espaco, ponto ou quebra de linha entre os blocos. A forma de 32
+    digitos e unica; entra sem rotulo como ``[REGISTRO_CIVIL_n]``. Nada a ver com a matricula de imovel (em claro)."""
+
+    def __init__(self) -> None:
+        sep = r"[ .]?"
+        super().__init__(
+            supported_entity="BR_REGISTRO_CIVIL",
+            supported_language="pt",
+            name="BrRegistroCivilRecognizer",
+            patterns=[
+                Pattern(
+                    name="matricula_registro_civil",
+                    regex=(
+                        rf"(?<![\d.])\d{{6}}{sep}\d{{2}}{sep}\d{{2}}{sep}\d{{4}}{sep}\d{sep}\d{{5}}{sep}\d{{3}}"
+                        rf"(?:{sep}|\s*\n\s*)\d{{7}}{sep}\d{{2}}(?!\d)"
+                    ),
+                    score=0.9,
+                )
+            ],
         )
 
 
@@ -1091,7 +1143,8 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
                 Pattern(
                     name="processo_rotulado_sem_validacao",
                     regex=(
-                        r"\b(?:PROCESSO|AUTOS)\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
+                        # H9-j: "Execucao Fiscal n." tambem e rotulo (numero com erro de digitacao no DV vazava).
+                        r"\b(?:PROCESSO|AUTOS|EXECU[ÇC][ÃA]O\s+FISCAL|EF)\s*(?:N[.\s]*[Oº°]?\s*)?:?\s*"
                         rf"(?P<valor>{_CNJ_FORMATADO}|\d{{20}})(?!\d)"
                     ),
                     score=0.55,
@@ -1141,6 +1194,8 @@ def build_structured_recognizers() -> list[PatternRecognizer]:
         *([] if MATRICULA_EM_CLARO else [BrMatriculaImovelRecognizer()]),
         BrCdaRecognizer(),
         BrProcessoAdministrativoRecognizer(),
+        BrProcessoAntigoRecognizer(),
+        BrRegistroCivilRecognizer(),
         BrCadastroRuralRecognizer(),
         BrRegistroJuntaRecognizer(),
         BrIpRecognizer(),

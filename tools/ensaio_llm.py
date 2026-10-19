@@ -416,8 +416,9 @@ def step_forced_failure(pdf: Path, export_root: Path, private_root: Path, decisi
         check(f"LLM {mode}: as folhas tratadas pelo motor local aparecem no resultado", bool(listed), str(listed))
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
         guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
-        check(f"LLM {mode}: AUDITORIA e LEIA-ME dizem 'folhas tratadas pelo motor local por falha do LLM'",
-              "olhas tratadas pelo motor local por falha do LLM" in audit and "olhas tratadas pelo motor local por falha do LLM" in guide)
+        phrases = ("olhas tratadas pelo motor local por falha do LLM", "olhas com resposta VAZIA do LLM")
+        check(f"LLM {mode}: AUDITORIA e LEIA-ME dizem 'folhas tratadas pelo motor local' (falha ou resposta vazia)",
+              any(x in audit for x in phrases) and any(x in guide for x in phrases))
         cached = list(cache.glob("*.json")) if cache.exists() else []
         check(f"LLM {mode}: resposta {mode} nao foi guardada no cache", not cached, f"{len(cached)} arquivo(s)")
         if mode == "excecao":

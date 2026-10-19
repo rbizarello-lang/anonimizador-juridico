@@ -226,6 +226,9 @@ class LlmConfig:
     chunk_chars: int = 4000
     max_output_tokens: int = 8192
     retries: int = 1
+    # H9-j: o trecho que voltou vazio volta ao LLM em dois pedacos menores (B6 revisto; o reenvio do mesmo texto, com
+    # temperatura 0, da a mesma resposta: 29 reenvios e 0 recuperados no teste de 16/10).
+    retry_empty: bool = True
     thinking: str = DEFAULT_THINKING
     # Canal local (Ollama): janela de contexto, quanto o modelo fica carregado depois da chamada (segundos) e
     # o prazo de cada chamada (segundos). Os outros provedores ignoram.
@@ -262,6 +265,9 @@ class DiscoveryReport:
     # resposta ruim: o LLM nao e quem decide. O pipeline manda o motor local conferir (B1/I6) e a resposta
     # vazia nunca vai para o cache.
     empty: list[tuple[int, int]] = field(default_factory=list)
+    # H9-i lote B6: trechos vazios reenviados uma vez, e quantos vieram com entidade na segunda vez.
+    empty_retried: int = 0
+    empty_recovered: int = 0
     # Modo sem rede: trecho fora do cache nao foi lido (nao e falha do provedor).
     offline: bool = False
 
@@ -311,6 +317,30 @@ def split_chunks(text: str, max_chars: int) -> list[Chunk]:
         Chunk(start=start, end=end, text=text[start:end])
         for start, end in merged
         if _LETTER.search(text[start:end])
+    ]
+
+
+def split_in_halves(chunk: Chunk, minimum: int = 600) -> list[Chunk]:
+    """O trecho em dois, no paragrafo, linha ou espaco mais perto do meio (H9-j). Trecho curto nao se divide."""
+
+    text = chunk.text
+    if len(text) < minimum:
+        return []
+    middle = len(text) // 2
+    cut = -1
+    for separator in (chr(10) * 2, chr(10), ". ", " "):
+        before = text.rfind(separator, middle // 2, middle + 1)
+        after = text.find(separator, middle, middle + middle // 2)
+        options = [pos for pos in (before, after) if pos > 0]
+        if options:
+            best = min(options, key=lambda pos: abs(pos - middle))
+            cut = best + len(separator)
+            break
+    if cut <= 0 or cut >= len(text):
+        cut = middle
+    return [
+        Chunk(start=chunk.start, end=chunk.start + cut, text=text[:cut]),
+        Chunk(start=chunk.start + cut, end=chunk.end, text=text[cut:]),
     ]
 
 
@@ -505,6 +535,12 @@ class LangExtractDiscoverer:
         elif pending:
             report.sent = len(pending)
             failed = self._run(chunks, pending, found, report)
+            # H9-j (B6 revisto): o trecho que voltou vazio (JSON valido sem entidade) volta ao LLM em DOIS PEDACOS
+            # menores. Reenviar o mesmo texto com temperatura 0 da a mesma resposta (29 reenvios, 0 recuperados no
+            # teste de 16/10); a entrada diferente pode dar outra. Cada metade tem cache proprio.
+            retry = [index for index in pending if index not in failed and not found.get(index)]
+            if retry and self.config.retry_empty:
+                self._retry_empty_in_halves(chunks, retry, found, report)
             report.failed = [(chunks[index].start, chunks[index].end) for index in sorted(failed)]
             report.empty = [
                 (chunks[index].start, chunks[index].end)
@@ -519,6 +555,48 @@ class LangExtractDiscoverer:
                     report.ungrounded += 1
                 mentions.append(mention)
         return Discovery(mentions=mentions, report=report)
+
+    def _retry_empty_in_halves(
+        self,
+        chunks: Sequence[Chunk],
+        retry: Sequence[int],
+        found: dict[int, list[dict]],
+        report: DiscoveryReport,
+    ) -> None:
+        subs: list[Chunk] = []
+        owner: list[int] = []
+        for index in retry:
+            for half in split_in_halves(chunks[index]):
+                subs.append(half)
+                owner.append(index)
+        if not subs:
+            return
+        report.empty_retried = len({index for index in owner})
+        sub_found: dict[int, list[dict]] = {}
+        sub_pending: list[int] = []
+        for number, sub in enumerate(subs):
+            cached = self._cache_load(sub)
+            if cached is None:
+                sub_pending.append(number)
+            else:
+                sub_found[number] = cached
+        if sub_pending:
+            reasons = list(report.failure_reasons)
+            report.sent += len(sub_pending)
+            self._run(subs, sub_pending, sub_found, report)
+            report.failure_reasons = sorted({*reasons, *report.failure_reasons})
+        recovered: set[int] = set()
+        for number, sub in enumerate(subs):
+            parent = chunks[owner[number]]
+            shift = sub.start - parent.start
+            for item in sub_found.get(number, []):
+                moved = dict(item)
+                if isinstance(moved.get("inicio"), int) and isinstance(moved.get("fim"), int):
+                    moved["inicio"] += shift
+                    moved["fim"] += shift
+                found.setdefault(owner[number], []).append(moved)
+                recovered.add(owner[number])
+        report.empty_recovered = len(recovered)
 
     def _run(
         self,

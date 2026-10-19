@@ -38,6 +38,7 @@ STRUCTURED_TAGS: tuple[TagInfo, ...] = (
         "Número de processo administrativo (PA, PAF; com rótulo, ou no formato da Receita)",
         True,
     ),
+    TagInfo("BR_REGISTRO_CIVIL", "[REGISTRO_CIVIL_n]", "Matrícula de certidão do registro civil (32 dígitos)", True),
     TagInfo("BR_CADASTRO_RURAL", "[CADASTRO_RURAL_n]", "Número de CCIR, CAR, CIB, NIRF ou ITR (área e data ficam em claro)", True),
     TagInfo("BR_REGISTRO_JUNTA", "[REGISTRO_JUNTA_n]", "Protocolo, arquivamento ou chancela da Junta Comercial (JUCESC)", True),
     TagInfo("BR_IP", "[IP_n]", "Endereço IP (IPv4)", True),

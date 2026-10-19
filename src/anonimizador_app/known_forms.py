@@ -11,6 +11,9 @@ fora de numero maior. Nome de pessoa, de empresa e endereco NAO entram aqui: ess
 respeita as entradas "manter" e as travas de termo protegido; uma passada cega por nome reabriria a super-redacao.
 Spans que ja existem no texto (qualquer tipo) nao sao tocados; so o que esta fora deles. Termo da lista de exclusoes
 do usuario continua protegido.
+
+H9-i lote B1: os processos, CDAs e contatos listados na aba Caso (``case_list.CaseRules``) tambem entram aqui, em toda
+ocorrencia e antes das demais formas; o processo da lista vale ate dentro de ementa.
 """
 
 from __future__ import annotations
@@ -78,6 +81,16 @@ class KnownForms:
         self._digits: dict[str, set[tuple[str, str]]] = defaultdict(set)
         self._patterns: dict[tuple[str, str], re.Pattern[str] | None] = {}
         self.counts: Counter[str] = Counter()
+        self._case = None
+
+    def add_case(self, rules: object | None) -> None:
+        """Regras do caso (``CaseRules``): o valor listado e trocado em todo o texto, sem rotulo."""
+
+        if not rules:
+            return
+        self._case = rules
+        for entity_type, canonical in getattr(rules, "values", ()):
+            self.add(entity_type, canonical, "")
 
     def add(self, entity_type: str, canonical: str, original: str = "") -> None:
         if entity_type not in _NUMERIC and entity_type not in _PATTERN_TYPES:
@@ -113,10 +126,11 @@ class KnownForms:
     ) -> list[EntitySpan]:
         """As ocorrencias de ID conhecido fora dos spans ja marcados (``taken``)."""
 
-        if not self._originals:
+        if not self._originals and self._case is None:
             return []
         occupied = sorted((span.start, span.end) for span in taken)
         found: list[EntitySpan] = []
+        listed: list[EntitySpan] = []
 
         def free(start: int, end: int) -> bool:
             for other_start, other_end in occupied:
@@ -135,6 +149,11 @@ class KnownForms:
                     )
                 )
 
+        if self._case is not None:
+            for span in self._case.detect(text):
+                if free(span.start, span.end):
+                    found.append(span)
+                    listed.append(span)
         for pattern in (_RUN, _CNJ, _NIRE_SPACED, _CDA_SPACED):
             for match in pattern.finditer(text):
                 digits = re.sub(r"\D", "", match.group())
@@ -152,9 +171,12 @@ class KnownForms:
         # O numero de processo que o mapa ja conhece e o do caso: a regra do "precedente" (ementa, citacao) so vale
         # para numero novo, e foi ela que deixou o processo principal em claro nos rodapes. Os demais tipos seguem
         # as travas de fidelidade (CNPJ publico, CPF em contexto de NIRE ou protocolo, termo da lista de exclusoes).
-        processes = [span for span in found if span.entity_type == "BR_PROCESSO"]
+        processes = [span for span in found if span.entity_type == "BR_PROCESSO" or span in listed]
         others = drop_protected_spans(
-            text, [span for span in found if span.entity_type != "BR_PROCESSO"], exclusions, source_name=source_name
+            text,
+            [span for span in found if span.entity_type != "BR_PROCESSO" and span not in listed],
+            exclusions,
+            source_name=source_name,
         )
         found = sorted([*processes, *others], key=lambda span: span.start)
         self.counts.update(span.entity_type for span in found)

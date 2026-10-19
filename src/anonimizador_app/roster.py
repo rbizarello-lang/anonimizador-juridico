@@ -344,11 +344,13 @@ class Roster:
             self._absorb(entry, grounded, "")
         return entry
 
-    def add_listed(self, kind: str, name: str) -> RosterEntry | None:
-        """Nome que o usuario listou (lista de alvos): sempre tokeniza."""
+    def add_listed(self, kind: str, name: str, role: str = "") -> RosterEntry | None:
+        """Nome que o usuario listou (lista de alvos): sempre tokeniza. ``role``: o papel da planilha (so elenco)."""
 
         mention = Mention(kind=kind, text=name, role="parte", canonical=name)
         entry = self.add_mention(mention, source="lista")
+        if entry is not None and role:
+            self._absorb(entry, "", normalize_role(role))
         if entry is not None and not entry.pinned:
             entry.action = TOKENIZE
         return entry

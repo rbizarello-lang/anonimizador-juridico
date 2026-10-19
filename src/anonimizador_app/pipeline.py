@@ -31,13 +31,14 @@ from .extractors import UnsupportedDocumentError
 from .file_names import export_stem, write_name_map
 from .fidelity import FidelityDropStats, drop_protected_spans
 from .lote_elenco import CAST_NAME, apply_company_groups, write_lote_cast
+from . import lote_alerts
 from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
 from .gemini_detector import ContextualEngine
 from .local_ner import ner_fallback_warning, reset_ner_status
 from .netblock import block_network
 from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
-from .settings import AppSettings
+from .settings import AppSettings, case_list_lines
 
 ProgressFn = Callable[[str, float], None]
 
@@ -125,6 +126,13 @@ def resolve_lote_dirs(
     return export_dir, map_path, warning
 
 
+def _read_quiet(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def write_lote_guides(
     *,
     job_id: str,
@@ -142,6 +150,16 @@ def write_lote_guides(
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
     ner_warning = ner_fallback_warning()
     attention = "".join(f"ATENCAO: {line}\n" for line in [*notes, ner_warning] if line)
+    # O paragrafo do sufixo de grupo so vale quando algum texto tem token de grupo (·G1).
+    group_note = ""
+    if any("·G" in _read_quiet(export_dir / name) for name in markdown_names):
+        group_note = (
+            "\n"
+            "Sufixo de grupo: token de empresa como [EMPRESA_3·G1] e [EMPRESA_7·G1] sao tokens\n"
+            "SEPARADOS (cada um com o seu nome) que o ELENCO.md declara ligados (mudanca de nome\n"
+            "ou mesmo CNPJ nas capas); G1 e o grupo. Para reverter, ignore o sufixo: o mapa tem\n"
+            "[EMPRESA_3] e [EMPRESA_7].\n"
+        )
     if attention:
         attention += "\n"
     generated_by = f"Gerado por: {version_info().line(engine)}\n"
@@ -164,6 +182,8 @@ def write_lote_guides(
             "para o seguinte vem marcado. Envie junto com os .md.\n"
             f"{CAST_NAME}: quem e quem (requerido, executado, procurador...) pelos tokens,\n"
             "sem nomes, tirado da capa de cada processo. Envie junto com os .md.\n"
+            f"{lote_alerts.INSTRUCTIONS_NAME}: o que a IA que vai ler estes textos precisa saber (tokens,\n"
+            "nao deduzir parentesco, lote parcial, sigilo). Envie junto, de preferencia como primeira mensagem.\n"
             "\n"
             "O mapa para REVERTER os tokens NAO esta aqui.\n"
             f"Mapa privado: {map_path}\n"
@@ -171,13 +191,12 @@ def write_lote_guides(
             "Como reverter (se precisar da peca identificada de novo):\n"
             "1. Abra o mapa.json na pasta privada do mesmo lote.\n"
             "2. Cada registro tem \"token\" (ex.: [EMPRESA_1]) e \"originals\".\n"
-            "3. No Markdown, troque o token pelo texto original correspondente.\n"
-            "\n"
-            "Sufixo de grupo: token de empresa como [EMPRESA_3·G1] e [EMPRESA_7·G1] sao tokens\n"
-            "SEPARADOS (cada um com o seu nome) que o ELENCO.md declara ligados (mudanca de nome\n"
-            "ou mesmo CNPJ nas capas); G1 e o grupo. Para reverter, ignore o sufixo: o mapa tem\n"
-            "[EMPRESA_3] e [EMPRESA_7].\n"
-            "Nao envie o mapa junto com estes .md.\n"
+            "3. No Markdown, troque o token pelo texto original correspondente (o campo \"preferida\" do\n"
+            "   registro e a grafia certa, com acento).\n"
+            "Para conferir uma peca que outra IA desanonimizou: python tools\\reverter_lote.py <mapa.json>\n"
+            "<peca com tokens> --conferir <peca desanonimizada> (so contagens na tela).\n"
+            + group_note
+            + "Nao envie o mapa junto com estes .md.\n"
         ),
         encoding="utf-8",
     )
@@ -209,7 +228,13 @@ def write_outcomes_index(export_dir: Path, outcomes: Sequence[FileOutcome]) -> P
 
     paths = [outcome.markdown_path for outcome in outcomes if outcome.ok and outcome.markdown_path]
     write_lote_cast(export_dir, paths)
-    return write_lote_index(export_dir, paths)
+    index = write_lote_index(export_dir, paths)
+    # H9-j: sigilo e evento citado fora do lote (no INDICE e nas instrucoes para a IA redatora).
+    if paths:  # arquivo retido (nada exportado): sem instrucoes, nada a mandar para fora
+        alerts = lote_alerts.analyze([(path.name, path.read_text(encoding="utf-8")) for path in paths])
+        lote_alerts.append_to_index(index, alerts)
+        lote_alerts.write_ai_instructions(export_dir, alerts)
+    return index
 
 
 PRIVATE_AUDIT_NAME = "AUDITORIA_PRIVADA.txt"
@@ -224,6 +249,7 @@ def finalize_lote(
     mapping: PseudonymMap,
     roster: BatchRoster | None = None,
     network_attempts: int | None = None,
+    settings: AppSettings | None = None,
 ) -> None:
     """Depois da troca de todos os arquivos: mapa, AUDITORIA (e a privada), INDICE, ELENCO e LEIA-ME.
 
@@ -235,8 +261,9 @@ def finalize_lote(
     # do ELENCO (que leem o texto ja com o sufixo).
     apply_company_groups([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None])
     notes = build_audit_notes(outcomes, mapping, roster)
+    notes.append(lote_alerts.audit_section([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None]))
     if network_attempts is not None:
-        notes.insert(0, ("motor", local_network_lines(network_attempts)))
+        notes.insert(0, ("motor", [*local_network_lines(network_attempts), *case_list_lines(settings)]))
     write_audit_report(export_dir, notes)
     if roster is not None:
         write_private_audit(map_path.parent, roster, mapping)
@@ -403,6 +430,7 @@ def _run_job_blocked(
         mapping=mapping,
         roster=roster,
         network_attempts=len(attempts),
+        settings=active,
     )
     _report(on_progress, "Concluido", 1.0)
     return build_job_result(

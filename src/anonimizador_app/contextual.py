@@ -27,6 +27,10 @@ def build_contextual_engine(
         ids=settings.target_ids,
         extra_keep=settings.exclusions,
         lookup_cnpj_names=settings.cnpj_lookup_enabled,
+        aliases=settings.target_aliases,
+        processes=settings.target_processes,
+        cdas=settings.target_cdas,
+        contacts=settings.target_contacts,
     )
     if targets.has_targets():
         engines.append(targets)

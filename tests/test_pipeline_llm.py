@@ -393,26 +393,21 @@ class StructureParityTests(unittest.TestCase):
         texts = {o.source.name: o.markdown_path.read_text(encoding="utf-8") for o in result.job.outcomes}
         return result, texts
 
-    def test_companies_with_the_same_cnpj_get_the_group_suffix(self) -> None:
+    def test_companies_with_the_same_cnpj_are_one_entry(self) -> None:
+        # H9-j (decisao do Operador de 17/10, substitui o E13 neste ponto): o mesmo CNPJ colado as duas razoes sociais
+        # prova a mesma pessoa juridica (troca de nome); antes eram dois tokens com o sufixo de grupo ·G1.
         entities = [
             ("empresa", "ALFA TRANSPORTES FICTICIOS LTDA", "parte"),
             ("empresa", "BETA LOGISTICA FICTICIA LTDA", "parte"),
         ]
         result, texts = self._lote({"a.md": COVER_ALFA, "b.md": COVER_BETA}, entities)
 
-        self.assertIn("[EMPRESA_1·G1]", texts["a.md"])
-        self.assertIn("[EMPRESA_2·G1]", texts["b.md"])
+        self.assertIn("[EMPRESA_1]", texts["a.md"])
+        self.assertIn("[EMPRESA_1]", texts["b.md"])
         self.assertNotIn("ALFA TRANSPORTES", texts["a.md"])
-        cast = (result.job.export_dir / "ELENCO.md").read_text(encoding="utf-8")
-        self.assertIn("G1", cast)
-        # A tabela de papeis do LLM (no fim do ELENCO) tambem leva o sufixo; o mapa privado, nao.
-        section = cast.split("## Papéis atribuídos pelo LLM", 1)[1]
-        self.assertIn("| [EMPRESA_1·G1] |", section)
-        self.assertIn("| [EMPRESA_2·G1] |", section)
-        mapa = result.job.map_path.read_text(encoding="utf-8")
-        self.assertNotIn("·G", mapa)
-        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
-        self.assertIn("Sufixo de grupo", guide)
+        self.assertNotIn("BETA LOGISTICA", texts["b.md"])
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("mesmo CNPJ 1", audit)
 
     def test_one_word_company_that_is_a_city_does_not_eat_the_court_or_the_address(self) -> None:
         text = (

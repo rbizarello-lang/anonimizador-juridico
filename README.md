@@ -180,7 +180,7 @@ maquina nova o modelo ainda nao esta no cache local; baixe-o uma vez, de proposi
 com `python tools\instalar_modelo_ner.py --baixar` (sem a opcao, so mostra o que
 baixaria). Sem o modelo o app cai no spaCy PT, como antes, e avisa no log.
 
-A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
+A versao em uso aparece no cabecalho da janela ("v0.4.4 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia
 anterior tiver travado ao fechar (viva, sem janela), o proximo clique a

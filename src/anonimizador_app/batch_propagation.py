@@ -99,6 +99,9 @@ _ROLE_BEFORE_CUES = (
     r"|diretor(?:a)?\s+de\s+secretaria|servidor(?:a)?|oficial(?:a)?\s+de\s+justi[cç]a"
     r"|analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]"
     r"|usu[aá]rio|protocolad[oa]\s+por"
+    # H9-j: assinatura do eproc com o codigo do servidor entre o rotulo e o nome ("Usuario: MAC99 - NOME"). So o codigo
+    # de servidor (2 a 4 letras e 2 digitos); o advogado aparece com a OAB (UF e 6 digitos) e continua particular.
+    r"|usu[aá]rio\s*:\s*[A-Z]{{2,4}}\d{{2}}\s*[-–—]"
     r"|procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal"
     # H9-h: cargo de cartorio, como juiz: tabeliao, escrevente, registrador, oficial de registro, oficial substituto.
     r"|tabeli[aã]o?(?:\s+substitut[oa])?|escrevente(?:\s+(?:substitut[oa]|autorizad[oa]))?"
@@ -134,7 +137,8 @@ _STREET_BEFORE = re.compile(
 )
 _HOUSE_NUMBER_AFTER = re.compile(r"(?i)\s*,?\s*(?:nr?\.|n[º°o]\.?|n[uú]mero)\s*\d")
 _COMPE_BEFORE = re.compile(r"^\s*\d{3,5}\s*-\s*$")
-_BANK_HEADER_AFTER = re.compile(r"[^\n]{0,25}\n\s*Data/hora")
+# H9-j: a linha seguinte pode ser a linha de cabecalho de tabela ("| Data/hora protocolo | ..."), como no extrato real.
+_BANK_HEADER_AFTER = re.compile(r"[^\n]{0,25}\n\s*\|?\s*Data/hora")
 
 
 @dataclass(slots=True)
@@ -154,6 +158,9 @@ class _Entity:
     role_phrases: list[str] = field(default_factory=list)
     # Captura de duas pessoas coladas: tem token proprio e nao recebe forma curta (E13).
     glued: bool = False
+    # H9-i lote B1: chave da entrada da lista do caso ("alvo:...") que alguma grafia trouxe; vira a chave da entidade
+    # (mesmo token do que a lista achou) e impede que duas entradas da lista se fundam.
+    alvo: str = ""
 
     @property
     def is_street(self) -> bool:
@@ -176,7 +183,7 @@ class _Entity:
 
     @property
     def key(self) -> str:
-        return fold_lexical(self.representative)
+        return self.alvo or fold_lexical(self.representative)
 
 
 class BatchRoster:
@@ -187,6 +194,7 @@ class BatchRoster:
         self._strict_signature = strict_signature
         self._protected = protected_forms(self._extra_keep)
         self._names: dict[tuple[str, str], list[str]] = defaultdict(list)
+        self._alvo: dict[tuple[str, str], str] = {}
         self._role_phrases: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._ids: dict[tuple[str, str], str] = {}
         self._cnpjs: dict[str, str] = {}
@@ -221,6 +229,8 @@ class BatchRoster:
                     named.append((span.start, span.end))
                 if _CONTENT.search(core):
                     self._names[(span.entity_type, core)].append(value)
+                    if span.canonical_key.startswith("alvo:"):
+                        self._alvo.setdefault((span.entity_type, core), span.canonical_key)
                     if len(_CONTENT.findall(core)) < 2:
                         role = ROLE_BEFORE_NAME.search(text, max(0, span.start - 24), span.start)
                         if role is not None:
@@ -424,10 +434,13 @@ class BatchRoster:
             # Cabeca de grupo: mais palavras, depois a grafia mais vista (o nome certo antes do OCR).
             order = sorted(cores, key=lambda item: (-len(item.split()), -len(cores[item]), -len(item), item))
             for core in order:
+                alvo = self._alvo.get((entity_type, core), "")
                 matches = [
                     group
                     for group in groups
-                    if not group.glued and any(_same(entity_type, core, head, support) for head in group.cores)
+                    if not group.glued
+                    and not (alvo and group.alvo and group.alvo != alvo)
+                    and any(_same(entity_type, core, head, support) for head in group.cores)
                 ]
                 if entity_type == "PERSON" and _generation_sibling(core, known):
                     matches = []  # "Fulano Silva" com "Fulano Silva Filho" no lote: pai ou filho?
@@ -437,6 +450,7 @@ class BatchRoster:
                     target.glued = entity_type == "PERSON" and _glued(core, known)
                     groups.append(target)
                 target.cores.append(core)
+                target.alvo = target.alvo or alvo
                 target.names.extend(cores[core])
                 target.role_phrases.extend(self._role_phrases.get((entity_type, core), ()))
                 target.financial = target.financial or core in self._financial

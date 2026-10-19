@@ -10,13 +10,14 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
 from .coverage import parse_coverage
 from .extractors import ExtractedDocument, extract_document
+from .invisible_chars import normalize_invisible
 from .fast_extract import FAST_DOCX_CACHE_SUFFIX, FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
 
 CACHE_SUBDIR = "cache_extracao"
@@ -109,7 +110,8 @@ def load_or_extract(
         if use_cache and md_path.is_file() and json_path.is_file():
             meta = json.loads(json_path.read_text(encoding="utf-8"))
             extracted = ExtractedDocument(
-                markdown=md_path.read_text(encoding="utf-8"),
+                # H9-j: invisiveis do PDF viram espaco tambem no cache ja gravado (nada e reextraido).
+                markdown=normalize_invisible(md_path.read_text(encoding="utf-8")),
                 page_count=int(meta.get("paginas") or meta.get("page_count") or 0),
                 extractor=str(meta.get("extrator") or meta.get("extractor") or ""),
                 ocr_used=bool(meta.get("ocr_used")),
@@ -131,6 +133,9 @@ def load_or_extract(
             source,
             previous=_reusable_markdown(file_bytes, cache_dir, version) if use_cache else None,
         )
+    if extracted.markdown != normalize_invisible(extracted.markdown):
+        # H9-j: o cache novo ja sai sem os invisiveis do PDF.
+        extracted = replace(extracted, markdown=normalize_invisible(extracted.markdown))
     generated_at = datetime.now().isoformat(timespec="seconds")
     if cache_dir is not None and md_path is not None and json_path is not None:
         meta = {

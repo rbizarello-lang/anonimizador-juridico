@@ -44,6 +44,19 @@
   claro, cadastro rural/registro da Junta/IP/CPF mascarado/OAB trocados, PIX (UUID e EndToEndId), sufixos e rotulos soltos,
   lista protegida em arquivo de dados com padroes (orgao fracionado, sigla com UF, cooperativa, legislacao) e trava da
   lista do caso, logradouro com nome proprio, qualidade processual fora do token.
+  2.11.0 = H9-i lote B: lista do caso como chave unica tambem com LLM (grafias adicionais, frases da empresa, mencao do
+  LLM e do motor local apontadas para a entrada da lista, que vence a lista protegida e a higiene), processos, CDAs,
+  contatos e veiculos da aba Caso trocados sem rotulo, raiz de CNPJ, zero a esquerda e NIRE listados, nome completo num
+  token so, julgador de ementa em claro, nova tentativa do trecho vazio e o LLM retirando nome so do detector de nomes
+  (desligado por padrao, contado na AUDITORIA).
+  2.12.0 = H9-j (teste ponta a ponta com IA externa): caracteres invisiveis do PDF viram espaco; CDA com espacos,
+  processo com DV errado depois de "Execucao Fiscal", processo antigo da JF, matricula de registro civil, MPF, URL
+  com id, chassi/placa/RENAVAM em pares de tabela e em lista, conta em comprovante; papel processual nunca e nome;
+  nome de pessoa para na virgula e na palavra minuscula; juizo do lote tambem na verificacao; servidor do eproc;
+  contato de orgao publico em claro; mesmo CNPJ = mesma empresa; reenvio do trecho vazio desligado.
+  2.12.1 = H9-j rodada 2: fusao por CNPJ sobre o texto mascarado; banco do extrato com cabecalho de tabela; papel com
+  artigo; palavra minuscula e comentario HTML fora de token; CDA partida, placa com zero, conta repetida; trecho vazio
+  reenviado em dois pedacos.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -60,8 +73,8 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
-APP_VERSION = "0.4.1"
-DETECTION_VERSION = "2.10.0"
+APP_VERSION = "0.4.4"
+DETECTION_VERSION = "2.12.1"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent

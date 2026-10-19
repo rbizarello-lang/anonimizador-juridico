@@ -265,7 +265,9 @@ class LangExtractAdapterTests(unittest.TestCase):
 
         self.assertEqual(len(first.report.empty), 1)
         self.assertIn("Nada mais", text[first.report.empty[0][0] : first.report.empty[0][1]])
-        # A pagina sem entidade e reenviada na segunda rodada (a vazia nao esta no cache) e volta como vazia.
+        # A pagina sem entidade e reenviada na segunda rodada (a vazia nao esta no cache) e volta como vazia; o reenvio
+        # imediato da vazia (B6) ficou desligado por padrao (H9-j).
+        self.assertEqual(first.report.empty_retried, 0)
         self.assertEqual(len(calls), sent + 1)
         self.assertEqual(len(second.report.empty), 1)
         self.assertEqual(second.report.cached, second.report.chunks - 1)

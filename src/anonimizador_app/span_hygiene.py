@@ -17,6 +17,7 @@ from .fidelity import FidelityDropStats
 from .vehicle_names import is_vehicle_span
 
 _TARGET = "ListaDeAlvos"
+_CASE_RULE = "ListaDoCaso"
 _CONTEXTUAL = frozenset({"PERSON", "ORGANIZATION", "LOCATION"})
 _MAX_LEN = {
     "PERSON": 80,
@@ -77,11 +78,30 @@ def sanitize_spans(
     """Encolhe ou descarta spans que descaracterizariam a peca."""
 
     cleaned: list[EntitySpan] = []
+    comments = comment_ranges(text) if "<!--" in text else []
     for span in spans:
+        if comments and inside_comment(comments, span.start, span.end):
+            continue  # nada dentro de comentario HTML (cobertura, ancora): nao e texto da peca (H9-j)
         clipped = _clip(text, span, stats)
         if clipped is not None:
             cleaned.append(clipped)
     return resolve_overlaps(cleaned)
+
+
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def comment_ranges(text: str) -> list[tuple[int, int]]:
+    return [match.span() for match in _COMMENT.finditer(text)]
+
+
+def inside_comment(ranges: list[tuple[int, int]], start: int, end: int) -> bool:
+    """O trecho cai dentro de um comentario HTML (``<!-- ... -->``). ``ranges`` em ordem (``comment_ranges``)."""
+
+    from bisect import bisect_right
+
+    index = bisect_right(ranges, (start, float("inf"))) - 1
+    return index >= 0 and ranges[index][0] <= start and end <= ranges[index][1]
 
 
 def _clip(
@@ -92,7 +112,11 @@ def _clip(
     start, end = span.start, span.end
     if start < 0 or end > len(text) or end <= start:
         return None
+    if span.recognizer == _CASE_RULE:
+        return span  # valor listado na aba Caso (processo, CDA, contato): ja vem no tamanho exato (H9-i lote B1)
     value = text[start:end]
+    if span.entity_type == "PERSON" and value.isalpha() and value.islower():
+        return None  # uma palavra so, toda em minuscula ("branco" de "em branco"): nao e nome de pessoa (H9-j)
     if _LABEL_ONLY.match(value.strip()):
         if stats is not None:
             stats.higiene_rotulo += 1
@@ -133,6 +157,24 @@ def _clip(
             value = text[start:end]
             if stats is not None:
                 stats.higiene_rotulo += 1
+
+    if span.entity_type == "PERSON":
+        # H9-j: o nome de pessoa nao leva frase: no teste de 16/10 o detector local devolveu "a Fulana de Tal,
+        # corroborando a cadeia". Sai a palavra minuscula do comeco (artigo), o nome para na virgula e na primeira
+        # palavra minuscula que nao e particula (de, da, do, dos, das, e).
+        lead = _PERSON_LOWER_LEAD.match(value)
+        if lead is not None and lead.end() < len(value):
+            start += lead.end()
+            value = text[start:end]
+        cut = _person_cut(value)
+        if cut is not None:
+            end = start + cut
+            value = text[start:end].rstrip(" \t\n,;-")
+            end = start + len(value)
+            if stats is not None:
+                stats.higiene_limite += 1
+            if end <= start or not value.strip():
+                return None
 
     if span.entity_type in ("PERSON", "ORGANIZATION"):
         # H9-i: qualidade processual fica fora do token ("MASSA FALIDA DE [EMPRESA_1]", "[EMPRESA_1] - EM RECUPERACAO
@@ -217,6 +259,28 @@ def _rstrip_separators(text: str, start: int, end: int) -> int:
     while end > start and text[end - 1] in _TRAILING_SEPARATORS:
         end -= 1
     return end
+
+
+_PERSON_LOWER_LEAD = re.compile(r"^(?:(?:a|o|as|os|ao|à|pela|pelo|da|do|de|e|que|sra?\.?)\s+)+")
+_PERSON_PARTICLES = frozenset({"de", "da", "do", "das", "dos", "e", "d'", "del", "della", "van", "von"})
+_PERSON_WORD = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?")
+
+
+def _person_cut(value: str) -> int | None:
+    """Onde o nome de pessoa acaba: virgula, ponto e virgula, ou palavra minuscula que nao e particula. ``None`` se o
+    trecho inteiro e nome."""
+
+    seen_capital = False
+    for match in re.finditer(r"[,;]|" + _PERSON_WORD.pattern, value):
+        token = match.group(0)
+        if token in {",", ";"}:
+            return match.start() if seen_capital else None
+        if token[:1].isupper():
+            seen_capital = True
+        elif seen_capital and token.casefold() not in _PERSON_PARTICLES:
+            # So depois de uma palavra com maiuscula: nome todo em minusculas (OCR) nao e cortado.
+            return match.start()
+    return None
 
 
 def _location_cell_limit(text: str, start: int, end: int) -> int:
