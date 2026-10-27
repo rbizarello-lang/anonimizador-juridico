@@ -28,14 +28,29 @@ from .catalog import EXPORT_BLOCKED_REASON
 from .coverage import pages_label, unread_pages
 from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extract
 from .extractors import UnsupportedDocumentError
+from .file_names import export_stem, write_name_map
+from .address_heuristic import extend_address_tails
 from .fidelity import FidelityDropStats, drop_protected_spans
-from .lote_elenco import CAST_NAME, apply_company_groups, write_lote_cast
+from .lote_elenco import (
+    CAST_NAME,
+    append_denominations_section,
+    append_family_section,
+    append_first_name_section,
+    append_same_person_section,
+    apply_company_groups,
+    set_cnpj_roots,
+    write_lote_cast,
+)
+from . import features, lote_alerts, uncertainty
 from .lote_index import INDEX_NAME, add_sheet_anchors, write_lote_index
 from .gemini_detector import ContextualEngine
 from .local_ner import ner_fallback_warning, reset_ner_status
+from .netblock import block_network
 from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
-from .settings import AppSettings
+from . import run_timing
+from .run_notes import run_note_lines
+from .settings import AppSettings, case_list_lines, settings_for_operation
 
 ProgressFn = Callable[[str, float], None]
 
@@ -123,6 +138,13 @@ def resolve_lote_dirs(
     return export_dir, map_path, warning
 
 
+def _read_quiet(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def write_lote_guides(
     *,
     job_id: str,
@@ -140,6 +162,16 @@ def write_lote_guides(
     names = "\n".join(f"  - {name}" for name in markdown_names) or "  (nenhum Markdown gravado)"
     ner_warning = ner_fallback_warning()
     attention = "".join(f"ATENCAO: {line}\n" for line in [*notes, ner_warning] if line)
+    # O paragrafo do sufixo de grupo so vale quando algum texto tem token de grupo (·G1).
+    group_note = ""
+    if any("·G" in _read_quiet(export_dir / name) for name in markdown_names):
+        group_note = (
+            "\n"
+            "Sufixo de grupo: token de empresa como [EMPRESA_3·G1] e [EMPRESA_7·G1] sao tokens\n"
+            "SEPARADOS (cada um com o seu nome) que o ELENCO.md declara ligados (mudanca de nome\n"
+            "ou mesmo CNPJ nas capas); G1 e o grupo. Para reverter, ignore o sufixo: o mapa tem\n"
+            "[EMPRESA_3] e [EMPRESA_7].\n"
+        )
     if attention:
         attention += "\n"
     generated_by = f"Gerado por: {version_info().line(engine)}\n"
@@ -162,6 +194,10 @@ def write_lote_guides(
             "para o seguinte vem marcado. Envie junto com os .md.\n"
             f"{CAST_NAME}: quem e quem (requerido, executado, procurador...) pelos tokens,\n"
             "sem nomes, tirado da capa de cada processo. Envie junto com os .md.\n"
+            f"{lote_alerts.INSTRUCTIONS_NAME}: o que a IA que vai ler estes textos precisa saber (tokens,\n"
+            "nao deduzir parentesco, lote parcial, sigilo). Envie junto, de preferencia como primeira mensagem.\n"
+            f"{uncertainty.NOTICES_NAME}: folhas com leitura incerta do OCR e nomes/numeros casados com tolerancia\n"
+            "(folha, token e motivo, sem nomes). Envie junto: a IA deve avisar o que depende desses trechos.\n"
             "\n"
             "O mapa para REVERTER os tokens NAO esta aqui.\n"
             f"Mapa privado: {map_path}\n"
@@ -169,13 +205,12 @@ def write_lote_guides(
             "Como reverter (se precisar da peca identificada de novo):\n"
             "1. Abra o mapa.json na pasta privada do mesmo lote.\n"
             "2. Cada registro tem \"token\" (ex.: [EMPRESA_1]) e \"originals\".\n"
-            "3. No Markdown, troque o token pelo texto original correspondente.\n"
-            "\n"
-            "Sufixo de grupo: token de empresa como [EMPRESA_3·G1] e [EMPRESA_7·G1] sao tokens\n"
-            "SEPARADOS (cada um com o seu nome) que o ELENCO.md declara ligados (mudanca de nome\n"
-            "ou mesmo CNPJ nas capas); G1 e o grupo. Para reverter, ignore o sufixo: o mapa tem\n"
-            "[EMPRESA_3] e [EMPRESA_7].\n"
-            "Nao envie o mapa junto com estes .md.\n"
+            "3. No Markdown, troque o token pelo texto original correspondente (o campo \"preferida\" do\n"
+            "   registro e a grafia certa, com acento).\n"
+            "Para conferir uma peca que outra IA desanonimizou: python tools\\reverter_lote.py <mapa.json>\n"
+            "<peca com tokens> --conferir <peca desanonimizada> (so contagens na tela).\n"
+            + group_note
+            + "Nao envie o mapa junto com estes .md.\n"
         ),
         encoding="utf-8",
     )
@@ -207,7 +242,15 @@ def write_outcomes_index(export_dir: Path, outcomes: Sequence[FileOutcome]) -> P
 
     paths = [outcome.markdown_path for outcome in outcomes if outcome.ok and outcome.markdown_path]
     write_lote_cast(export_dir, paths)
-    return write_lote_index(export_dir, paths)
+    index = write_lote_index(export_dir, paths)
+    # H9-j: sigilo e evento citado fora do lote (no INDICE e nas instrucoes para a IA redatora).
+    if paths:  # arquivo retido (nada exportado): sem instrucoes, nada a mandar para fora
+        alerts = lote_alerts.analyze([(path.name, path.read_text(encoding="utf-8")) for path in paths])
+        lote_alerts.append_to_index(index, alerts)
+        lote_alerts.write_ai_instructions(export_dir, alerts)
+        # v0.4.12: casamentos tolerantes, recusas por ambiguidade e trechos incertos do OCR (folha, token, motivo).
+        uncertainty.write_notices(export_dir, paths)
+    return index
 
 
 PRIVATE_AUDIT_NAME = "AUDITORIA_PRIVADA.txt"
@@ -221,17 +264,72 @@ def finalize_lote(
     outcomes: Sequence[FileOutcome],
     mapping: PseudonymMap,
     roster: BatchRoster | None = None,
+    network_attempts: int | None = None,
+    settings: AppSettings | None = None,
+    shared_names: Sequence[object] = (),
 ) -> None:
-    """Depois da troca de todos os arquivos: mapa, AUDITORIA (e a privada), INDICE, ELENCO e LEIA-ME."""
+    """Depois da troca de todos os arquivos: mapa, AUDITORIA (e a privada), INDICE, ELENCO e LEIA-ME.
+
+    ``shared_names`` (v0.4.13): as denominacoes usadas por duas empresas que ``apply_batch`` separou.
+
+    ``network_attempts``: tentativas de rede fora de loopback barradas durante a rodada (H9-d); a AUDITORIA
+    registra o numero mesmo sem LLM, para o zero ficar escrito."""
 
     mapping.dump(map_path)
     # Empresas ligadas por vinculo declarado levam o sufixo de grupo no texto, antes da AUDITORIA, do INDICE e
     # do ELENCO (que leem o texto ja com o sufixo).
+    set_cnpj_roots(mapping)  # v0.4.15: CNPJ diferente de cada lado nao forma grupo
     apply_company_groups([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None])
-    write_audit_report(export_dir, build_audit_notes(outcomes, mapping, roster))
+    notes = build_audit_notes(outcomes, mapping, roster)
+    if features.enabled("shared_company_names"):
+        from .shared_names import audit_lines as shared_name_lines
+
+        # v0.4.13: a mesma denominacao usada por empresas diferentes (so contagens).
+        notes.insert(1, ("denominacao usada por 2+ empresas (so contagens)", shared_name_lines(shared_names)))
+    notes.append(lote_alerts.audit_section([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None]))
+    from .review_import import review_audit_lines  # import tardio: review_import usa resolve_lote_dirs daqui
+
+    motor: list[str] = []
+    if network_attempts is not None:
+        motor.extend(local_network_lines(network_attempts))
+    elif settings is not None:
+        # H9-m: a tela no modo local (sem LLM) passa a lista usada; a AUDITORIA diz qual foi, como no modo LLM.
+        motor.append("Motor: local (sem LLM). Nenhuma chamada a provedor.")
+    motor.extend(case_list_lines(settings))
+    # H9-m: revisao externa (Gemini) aplicada as listas depois do lote anterior (so contagens).
+    motor.extend(review_audit_lines(map_path.parent.parent, job_id))
+    if settings is not None:
+        # H9-o: linhas sem operacao, etiquetas desligadas e o registro da revisao externa aplicada.
+        motor.extend(run_note_lines(settings, map_path.parent.parent, job_id))
+    # H9-o: tempo de cada etapa e total (na AUDITORIA exportavel e na privada).
+    timing = run_timing.take_lines()
+    motor.extend(timing)
+    if motor:
+        notes.insert(0, ("motor", motor))
+    write_audit_report(export_dir, notes)
     if roster is not None:
         write_private_audit(map_path.parent, roster, mapping)
+    run_timing.append_private(map_path.parent / PRIVATE_AUDIT_NAME, timing)
     write_outcomes_index(export_dir, outcomes)
+    # H9-n: "Pode ser a mesma pessoa" no ELENCO tambem no modo local (pelo mapa e pelo CPF ao lado).
+    append_same_person_section(
+        export_dir,
+        [(record.token, record.preferred()) for record in mapping.records if record.entity_type == "PERSON"],
+        [o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None],
+    )
+    # H9-o: empresa com 2+ razoes sociais no mesmo token (so contagens, sem nomes).
+    append_denominations_section(export_dir, mapping.records)
+    # v0.4.14: o sobrenome de 2+ pessoas da lista casado sozinho leva [SOBRENOME_n] tambem no motor local.
+    append_family_section(export_dir, mapping.records)
+    append_first_name_section(export_dir, mapping.records)  # v0.4.15: [PRENOME_n]
+    if shared_names:
+        from .shared_names import append_shared_names_section
+
+        append_shared_names_section(export_dir, shared_names, mapping.records)
+    write_name_map(
+        map_path.parent,
+        ((o.markdown_path.name, o.source.name) for o in outcomes if o.ok and o.markdown_path is not None),
+    )
     write_lote_guides(
         job_id=job_id,
         export_dir=export_dir,
@@ -281,6 +379,11 @@ def run_job(
     sources = _dedupe_paths(files)
     if not sources:
         raise ValueError("Nenhum arquivo foi informado.")
+    if settings is not None:
+        settings = settings_for_operation(settings)  # H9-l: so a lista da operacao escolhida na aba Caso
+    run_timing.reset()  # H9-o: o tempo da AUDITORIA comeca nesta rodada
+    run_timing.mark_start()
+    uncertainty.reset()  # v0.4.12: avisos de incerteza desta rodada
 
     identifier = job_id or new_job_id()
     export_dir, map_path, split_warning = resolve_lote_dirs(
@@ -290,6 +393,47 @@ def run_job(
     private_root.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # H9-d: a rodada local inteira roda com a rede bloqueada fora do loopback (o loopback fica livre para a
+    # tela). Nada aqui precisa de rede; a contagem vai para a AUDITORIA e tem de dar zero.
+    with block_network(allow_loopback=True) as attempts, features.activate(settings or AppSettings()):
+        return _run_job_blocked(
+            sources,
+            identifier=identifier,
+            export_dir=export_dir,
+            map_path=map_path,
+            split_warning=split_warning,
+            private_root=private_root,
+            on_progress=on_progress,
+            contextual=contextual,
+            settings=settings,
+            use_cache=use_cache,
+            attempts=attempts,
+        )
+
+
+def local_network_lines(blocked: int) -> list[str]:
+    """Bloco "motor" da AUDITORIA do modo local (sem LLM): so contagens."""
+
+    return [
+        "Motor: local (sem LLM). Nenhuma chamada a provedor: nada saiu desta maquina.",
+        f"Tentativas de rede fora de loopback bloqueadas: {blocked}",
+    ]
+
+
+def _run_job_blocked(
+    sources: Sequence[Path],
+    *,
+    identifier: str,
+    export_dir: Path,
+    map_path: Path,
+    split_warning: str,
+    private_root: Path,
+    on_progress: ProgressFn | None,
+    contextual: ContextualEngine | None,
+    settings: AppSettings | None,
+    use_cache: bool,
+    attempts: list[str],
+) -> JobResult:
     active = settings or AppSettings()
     reset_ner_status()
     detector = StructuredDetector(recognizers=build_recognizers(active))
@@ -321,7 +465,9 @@ def run_job(
     _report(on_progress, "Montando o elenco do lote", 0.8)
     roster.review(item.text for item in prepared if item.ok)
 
-    # Fase 2: mesma entidade, mesmo token, em todos os arquivos.
+    # Fase 2: mesma entidade, mesmo token, em todos os arquivos. v0.4.13: os spans do elenco de todos os arquivos
+    # primeiro, para separar por empresa a denominacao usada por duas empresas (CNPJ diferentes) no lote inteiro.
+    applied, shared_found = apply_batch(prepared, roster, exclusions=active.exclusions)
     outcomes: list[FileOutcome] = []
     for index, item in enumerate(prepared):
         _report(
@@ -336,6 +482,8 @@ def run_job(
                 mapping=mapping,
                 roster=roster,
                 contextual=contextual,
+                ordinal=index + 1,
+                entities=applied.get(index),
             )
         )
 
@@ -347,6 +495,9 @@ def run_job(
         outcomes=outcomes,
         mapping=mapping,
         roster=roster,
+        network_attempts=len(attempts),
+        settings=active,
+        shared_names=shared_found,
     )
     _report(on_progress, "Concluido", 1.0)
     return build_job_result(
@@ -430,6 +581,64 @@ def prepare_file(
         return PreparedFile(source=source, error=str(exc) or type(exc).__name__)
 
 
+def apply_batch(
+    prepared: Sequence[PreparedFile], roster: BatchRoster | None, *, exclusions: Iterable[str] = ()
+) -> tuple[dict[int, list[EntitySpan]], list]:
+    """v0.4.13: o elenco do lote aplicado a cada arquivo (indice -> spans) e a denominacao usada por duas empresas
+    separada por empresa no lote inteiro (``shared_names``, chave ``shared_company_names``). Arquivo com erro fica de
+    fora (``finish_file`` relata). Erro aqui nao derruba o lote: os spans voltam sem a separacao."""
+
+    from .shared_names import split_shared_names
+
+    applied: dict[int, list[EntitySpan]] = {}
+    for index, item in enumerate(prepared):
+        if not item.ok:
+            continue
+        try:
+            entities = item.entities
+            if roster is not None:
+                entities = roster.apply(item.text, entities, source_name=item.source.name)
+            # v0.4.15: complemento e bairro colados ao endereco trocado entram no mesmo token.
+            entities = extend_address_tails(item.text, entities)
+            applied[index] = list(entities)
+        except Exception:  # noqa: BLE001 - ``finish_file`` refaz e relata o erro do arquivo
+            continue
+    applied = _known_forms(prepared, applied, tuple(exclusions))
+    if not applied or not features.enabled("shared_company_names"):
+        return applied, []
+    order = sorted(applied)
+    try:
+        split, found = split_shared_names([(prepared[index].text, applied[index]) for index in order])
+    except Exception:  # noqa: BLE001 - a separacao e melhoria; sem ela, a troca de antes
+        return applied, []
+    return dict(zip(order, split)), found
+
+
+def _known_forms(
+    prepared: Sequence[PreparedFile], applied: dict[int, list[EntitySpan]], exclusions: Sequence[str]
+) -> dict[int, list[EntitySpan]]:
+    """v0.4.14: a passada final de formas conhecidas (``known_forms``, a mesma do motor LLM) tambem no motor local: o
+    NIRE, o RG, o CPF, o processo... que algum trecho do lote provou com rotulo e trocado onde aparecer escrito igual
+    (o NIRE do carimbo, a segunda citacao do RG sem o rotulo). So acrescenta spans fora dos que ja existem."""
+
+    from .known_forms import KnownForms
+
+    try:
+        forms = KnownForms()
+        for index, entities in applied.items():
+            forms.add_spans(prepared[index].text, entities)
+        if not len(forms):
+            return applied
+        result: dict[int, list[EntitySpan]] = {}
+        for index, entities in applied.items():
+            item = prepared[index]
+            extra = forms.spans(item.text, entities, exclusions, item.source.name)
+            result[index] = sorted([*entities, *extra], key=lambda span: (span.start, span.end))
+        return result
+    except Exception:  # noqa: BLE001 - a passada e melhoria; sem ela, os spans de antes
+        return applied
+
+
 def finish_file(
     prepared: PreparedFile,
     *,
@@ -437,20 +646,28 @@ def finish_file(
     mapping: PseudonymMap,
     roster: BatchRoster | None = None,
     contextual: ContextualEngine | None = None,
+    ordinal: int = 0,
+    entities: Sequence[EntitySpan] | None = None,
 ) -> FileOutcome:
     """Fase 2: aplica o elenco do lote (mesmo token por entidade; ocorrências que
-    a detecção não pegou), troca e grava."""
+    a detecção não pegou), troca e grava. ``entities``: os spans já com o elenco aplicado (``apply_batch``)."""
 
     if not prepared.ok or prepared.cached is None:
         return FileOutcome(source=prepared.source, ok=False, error=prepared.error or "Falha na leitura.")
     try:
         text = prepared.text
-        entities = prepared.entities
-        if roster is not None:
-            entities = roster.apply(text, entities, source_name=prepared.source.name)
+        if entities is not None:
+            entities = list(entities)
+        else:
+            entities = prepared.entities
+            if roster is not None:
+                entities = roster.apply(text, entities, source_name=prepared.source.name)
         result = pseudonymize(text, entities, mapping=mapping)
         residual = tuple(contextual.scan_residual(result.text)) if contextual else ()
-        markdown_path = _unique_path(export_dir, prepared.source.stem, ".md")
+        # H9-f: o nome exportado nao leva o nome de origem (pode ter razao social); ver ``file_names``.
+        number = ordinal or 1 + sum(1 for _item in export_dir.glob("*.md"))
+        markdown_path = _unique_path(export_dir, export_stem(prepared.source, mapping, number), ".md")
+        uncertainty.collect(markdown_path.name, text, entities, mapping)  # v0.4.12: AVISOS.md
         # Ancora visivel por folha ("[fl. 84 · Evento 1 · CONTRSOCIAL4 · p. 1]"), depois da troca:
         # nao entra na deteccao nem muda os caches.
         markdown_path.write_text(add_sheet_anchors(result.text, markdown_path.name), encoding="utf-8")

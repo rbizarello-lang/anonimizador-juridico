@@ -25,10 +25,17 @@ class Coverage:
     broken_font: int = 0
     blank: int = 0
     unread: tuple[int, ...] = ()
+    # H9-k: pouco texto nativo e o corpo em imagem (certidao de matricula): o OCR acrescenta o corpo.
+    hybrid: int = 0
+    # v0.4.12: imagens embutidas em folha de texto (>= 5% da folha) lidas por OCR, recortadas. A folha segue nativa.
+    embedded: int = 0
+    embedded_pages: int = 0
+    embedded_empty: int = 0
+    embedded_failed: int = 0
 
     @property
     def ocr(self) -> int:
-        return self.scanned + self.vector + self.broken_font
+        return self.scanned + self.vector + self.broken_font + self.hybrid
 
     def comment(self) -> str:
         unread = " ".join(str(number) for number in self.unread) or "nenhuma"
@@ -36,7 +43,14 @@ class Coverage:
             f"<!-- cobertura: paginas={self.pages}; nativas={self.native}; "
             f"escaneadas={self.scanned}; vetoriais={self.vector}; "
             f"fonte-quebrada={self.broken_font}; em-branco={self.blank}; "
-            f"nao-lidas={unread} -->"
+            + (f"hibridas={self.hybrid}; " if self.hybrid else "")
+            + (
+                f"recortes={self.embedded}; recortes-folhas={self.embedded_pages}; "
+                f"recortes-sem-texto={self.embedded_empty}; recortes-falhos={self.embedded_failed}; "
+                if self.embedded or self.embedded_empty or self.embedded_failed
+                else ""
+            )
+            + f"nao-lidas={unread} -->"
         )
 
 
@@ -66,6 +80,11 @@ def parse_coverage(markdown: str) -> Coverage | None:
         broken_font=number("fonte-quebrada"),
         blank=number("em-branco"),
         unread=unread,
+        hybrid=number("hibridas"),
+        embedded=number("recortes"),
+        embedded_pages=number("recortes-folhas"),
+        embedded_empty=number("recortes-sem-texto"),
+        embedded_failed=number("recortes-falhos"),
     )
 
 

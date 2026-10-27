@@ -80,6 +80,13 @@ def build_recognizers(settings: AppSettings | None = None) -> list[PatternRecogn
         entity = recognizer.supported_entities[0]
         if active.enabled_tags.get(entity, True):
             selected.append(recognizer)
+    from . import features
+
+    if features.enabled("ocr_fuzzy_numbers"):
+        # v0.4.12: NIRE, RG, CPF, CNPJ e matricula com O/o->0, l/I->1, S->5 (CPF/CNPJ so com DV conferindo).
+        from .ocr_numbers import build_ocr_number_recognizers
+
+        selected.extend(build_ocr_number_recognizers(active.enabled_tags))
     for rule in active.custom_rules:
         selected.append(_custom_recognizer(rule))
     return selected

@@ -59,7 +59,8 @@ class SpanHygieneTests(unittest.TestCase):
         kept = sanitize_spans(text, [_span(text, block, "PERSON")])
         self.assertEqual(len(kept), 1)
         value = text[kept[0].start : kept[0].end]
-        self.assertEqual(value, "Nome Ficticio\nsegunda linha")
+        # H9-j: palavra minuscula depois do nome encerra o nome de pessoa ("segunda linha" nao e nome).
+        self.assertEqual(value, "Nome Ficticio")
 
     def test_date_is_not_swallowed_by_location(self) -> None:
         block = "Rua das Palmeiras, 100/12/1983"

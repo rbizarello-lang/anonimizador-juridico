@@ -1,7 +1,10 @@
 """Mede a estrutura de um lote contra os PDFs originais. So contagens: nada de PII na saida.
 
 Uso:
-    python tools/medir_estrutura.py <pasta_dos_pdfs> <pasta_do_lote_exportavel>
+    python tools/medir_estrutura.py <pasta_dos_pdfs> <pasta_do_lote_exportavel> [<nomes_arquivos.json>]
+
+O nome do .md exportado nao e o do arquivo de origem (H9-f): o par vem de ``nomes_arquivos.json``, na pasta
+privada do lote (``saidas/privados/<lote>/``, achado sozinho no layout padrao, ou dado como terceiro argumento).
 
 Por arquivo, compara tres camadas: o PDF (PyMuPDF), o texto extraido pelo app (cache
 privado, antes da troca) e o Markdown exportavel (depois da troca):
@@ -182,14 +185,29 @@ def _header_tokens(markdown: str) -> int:
     return count
 
 
+def _original_names(lote: Path, explicit: str = "") -> dict[str, str]:
+    """Nome exportado -> nome de origem, de ``nomes_arquivos.json`` (vazio se nao houver)."""
+
+    guesses = [Path(explicit)] if explicit else [
+        lote.parent.parent / "privados" / lote.name / "nomes_arquivos.json",
+        lote.parent / "privados" / lote.name / "nomes_arquivos.json",
+    ]
+    for guess in guesses:
+        if guess.is_file():
+            return dict(json.loads(guess.read_text(encoding="utf-8")).get("arquivos", {}))
+    return {}
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
+    if len(argv) not in (3, 4):
         print(__doc__)
         return 2
     pdf_dir, lote = Path(argv[1]), Path(argv[2])
+    originals = _original_names(lote, argv[3] if len(argv) == 4 else "")
     totals = collections.Counter()
     for exported in sorted(lote.glob("*.md")):
-        candidates = [pdf_dir / f"{exported.stem}{suffix}" for suffix in (".pdf", ".PDF")]
+        origin_stem = Path(originals.get(exported.name, exported.name)).stem
+        candidates = [pdf_dir / f"{origin_stem}{suffix}" for suffix in (".pdf", ".PDF")]
         pdf = next((path for path in candidates if path.is_file()), None)
         if pdf is None:
             continue

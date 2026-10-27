@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import tempfile
 import unittest
@@ -380,3 +381,56 @@ class FastTextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+@unittest.skipUnless(HAS_DOCX, "python-docx nao instalado")
+class DocxImageMarkerTests(unittest.TestCase):
+    def _docx(self, tmp: str) -> Path:
+        from docx import Document
+
+        image = Path(tmp) / "prova.png"
+        image.write_bytes(_PNG_1X1)
+        document = Document()
+        document.add_paragraph("Segue a prova do pagamento.")
+        document.add_picture(str(image))  # imagem sozinha no paragrafo
+        run = document.add_paragraph("Texto antes da figura. ").add_run()
+        run.add_picture(str(image))  # imagem inline no meio do texto
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "Comprovante"
+        table.cell(0, 1).paragraphs[0].add_run().add_picture(str(image))  # imagem dentro de tabela
+        document.add_paragraph("Fim do documento.")
+        path = Path(tmp) / "peca.docx"
+        document.save(path)
+        return path
+
+    def test_cada_imagem_vira_uma_linha_marcador(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = extract_fast(self._docx(tmp)).markdown
+        self.assertEqual(text.count("[imagem omitida]"), 3)
+        lines = text.splitlines()
+        self.assertIn("[imagem omitida]", lines)  # linha propria, nao colada ao texto
+        self.assertLess(text.index("Segue a prova"), text.index("[imagem omitida]"))
+        self.assertLess(text.index("Texto antes da figura."), text.rindex("[imagem omitida]"))
+        self.assertLess(text.rindex("[imagem omitida]"), text.index("Fim do documento."))
+
+    def test_leitor_antigo_tambem_marca(self) -> None:
+        from anonimizador_app.extractors import _read_docx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            text = _read_docx(self._docx(tmp))
+        self.assertEqual(text.count("[imagem omitida]"), 3)
+
+    def test_documento_sem_imagem_nao_ganha_marcador(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sem.docx"
+            document = Document()
+            document.add_paragraph("So texto.")
+            document.save(path)
+            self.assertNotIn("imagem omitida", extract_fast(path).markdown)

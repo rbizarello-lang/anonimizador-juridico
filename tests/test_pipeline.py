@@ -189,6 +189,11 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job.map_path.name, "mapa.json")
             self.assertTrue((job.export_dir / "LEIA-ME.txt").is_file())
             self.assertTrue((job.export_dir / "AUDITORIA.txt").is_file())
+            # H9-d: o modo local tambem registra a rede barrada (tem de dar zero), mesmo sem LLM.
+            self.assertIn(
+                "Tentativas de rede fora de loopback bloqueadas: 0",
+                (job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8"),
+            )
             self.assertTrue((job.map_path.parent / "LEIA-ME.txt").is_file())
             self.assertIn("REVERTER", (job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8"))
             self.assertIn("[CPF_1]", markdown)

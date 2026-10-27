@@ -4,8 +4,8 @@ O app abre sempre no motor **local**. O motor LLM nao e uma preferencia que
 se grava: e uma escolha da sessao, e so fica DISPONIVEL se as condicoes de
 configuracao valerem:
 
-1. um dos dois canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``).
-   ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
+1. um dos canais cadastraveis foi escolhido (``gemini-pago``, ``vertex-sp``, ou o local
+   ``ollama-local``, H9-b). ``gemini-gratuito``, canal vazio e canal desconhecido sao BLOQUEADOS;
 2. ha chave (``credentials``) ou, no Vertex AI, projeto e credencial local;
 3. os pacotes (``langextract``, ``google-genai``) importam;
 4. o ``config.json`` nao guarda chave.
@@ -14,6 +14,9 @@ O app AVISA (sigilo fiscal, CTN art. 198; residencia dos dados; faturamento), ma
 politica: decidir enviar, e quais arquivos, e do Operador. Por isso a escolha do motor nao autoriza
 envio nenhum: cada RODADA exige uma confirmacao (``llm_gate.RunPermit``) com canal, regiao, lista de
 arquivos e total de caracteres, que expira quando a rodada termina.
+
+O canal ``ollama-local`` (H9-b) fala so com o Ollama em loopback: nada sai da maquina, entao nao tem aviso de
+envio nem ``RunPermit``; em troca a rodada roda dentro do bloqueio de rede e a AUDITORIA conta as tentativas.
 
 ``check_engine`` so le o ambiente e o disco: nao abre conexao nenhuma.
 """
@@ -28,16 +31,29 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .credentials import ApiKey, Vault, VertexSetup, load_key, load_vertex_setup, validate_service_account_file
+from .credentials import (
+    ApiKey,
+    Vault,
+    VertexSetup,
+    load_key,
+    load_openrouter_key,
+    load_vertex_setup,
+    validate_service_account_file,
+)
 from .llm_discovery import (
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
+    OLLAMA_CHUNK_CHARS,
+    OLLAMA_MAX_OUTPUT_TOKENS,
+    OLLAMA_DEFAULT_MODEL,
     THINKING_LEVELS,
     LangExtractDiscoverer,
     LlmConfig,
     LlmConfigError,
+    ollama_seconds_per_chunk,
+    ollama_timeout_for,
 )
-from .llm_gate import RunPermit, SendPlan, env_refusals, env_warnings
+from .llm_gate import RunPermit, SendPlan, env_refusals, env_warnings, ollama_model_refusal, ollama_refusals
 from .settings import config_path
 from .version import ENGINE_LOCAL
 
@@ -47,15 +63,25 @@ WARNING_VERSION = "2026-10-01.1"
 CHANNEL_GEMINI_PAGO = "gemini-pago"
 CHANNEL_VERTEX_SP = "vertex-sp"
 CHANNEL_GEMINI_GRATUITO = "gemini-gratuito"
+CHANNEL_OLLAMA_LOCAL = "ollama-local"
+CHANNEL_OPENROUTER_TESTE = "openrouter-teste"
+
+LOCAL_SENDS_NOTHING = "LLM local (Ollama, loopback), nada enviado"
 
 
 @dataclass(frozen=True, slots=True)
 class Channel:
     id: str
     label: str
-    provider: str  # gemini | vertex
+    provider: str  # gemini | vertex | ollama | openrouter
     needs_key: bool = False
     needs_project: bool = False
+
+    @property
+    def is_local(self) -> bool:
+        """Canal que nao tira texto da maquina (so o Ollama em loopback)."""
+
+        return self.provider == "ollama"
 
 
 CHANNELS: dict[str, Channel] = {
@@ -71,7 +97,35 @@ CHANNELS: dict[str, Channel] = {
         "vertex",
         needs_project=True,
     ),
+    CHANNEL_OLLAMA_LOCAL: Channel(
+        CHANNEL_OLLAMA_LOCAL,
+        "LLM local (Ollama, só esta máquina)",
+        "ollama",
+    ),
 }
+
+# H9-p: canais SO DE TESTE. Ficam fora de ``CHANNELS`` (a tela nao os mostra): so a linha de comando os aceita, e
+# o openrouter-teste so roda com o documento sintetico (``llm_gate.synthetic_lock_refusals``).
+TEST_CHANNELS: dict[str, Channel] = {
+    CHANNEL_OPENROUTER_TESTE: Channel(
+        CHANNEL_OPENROUTER_TESTE,
+        "OpenRouter (SO TESTE: so o documento sintetico)",
+        "openrouter",
+        needs_key=True,
+    ),
+}
+
+
+def channel_spec(channel: str) -> Channel | None:
+    """O canal cadastrado (tela e CLI) ou de teste (so CLI)."""
+
+    name = (channel or "").strip().lower()
+    return CHANNELS.get(name) or TEST_CHANNELS.get(name)
+
+
+def is_test_channel(channel: str) -> bool:
+    return (channel or "").strip().lower() in TEST_CHANNELS
+
 
 BLOCKED_CHANNELS: dict[str, str] = {
     CHANNEL_GEMINI_GRATUITO: (
@@ -83,11 +137,27 @@ BLOCKED_CHANNELS: dict[str, str] = {
 _KEY_FIELD = re.compile(
     r"(?i)^(?:api[_\- ]?key|apikey|chave(?:[_\- ]?api)?|secret\w*|senha|password|gemini\w*|google\w*)$"
 )
-_KEY_VALUE = re.compile(r"AIza[0-9A-Za-z_\-]{25,}")
+_KEY_VALUE = re.compile(r"AIza[0-9A-Za-z_\-]{25,}|sk-or-[0-9A-Za-z_\-]{16,}")
+_OPENROUTER_MODEL = re.compile(r"^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]{0,100}$")
+
+
+def is_local_channel(channel: str) -> bool:
+    """``True`` para o canal que nao tira texto da maquina (``ollama-local``)."""
+
+    spec = channel_spec(channel)
+    return spec is not None and spec.is_local
 
 
 def warning_paragraphs(channel: str) -> tuple[str, ...]:
     """O aviso que o usuario confirma antes de o texto sair da máquina."""
+
+    if is_local_channel(channel):
+        return (
+            "LLM local: o texto vai só ao Ollama desta máquina (127.0.0.1, porta 11434) e nada sai dela. "
+            "O app roda a rodada com a rede bloqueada fora do loopback e conta as tentativas na AUDITORIA. "
+            "O Ollama em si não é controlado pelo app: use modelo baixado (nunca ':cloud') e mantenha a "
+            "configuração dele só em loopback.",
+        )
 
     common = (
         "O texto das peças será enviado ao provedor do modelo. CPF, CNPJ, OAB, conta, placa "
@@ -100,6 +170,13 @@ def warning_paragraphs(channel: str) -> tuple[str, ...]:
         "produtos, com revisão humana). Só chave de projeto com faturamento ativo é paga "
         "(não treina o modelo; adendo de tratamento de dados).",
     )
+    if channel == CHANNEL_OPENROUTER_TESTE:
+        specific = (
+            "CANAL DE TESTE (OpenRouter): só o documento sintético (100% fictício) pode sair por ele; o app "
+            "confere o SHA-256 de cada arquivo e recusa qualquer outro. Cada pedido leva "
+            "provider.data_collection = deny (só provedores que não guardam nem treinam com o texto).",
+        )
+        return (common[0], common[1], *specific)
     if channel == CHANNEL_VERTEX_SP:
         specific = (
             "Vertex AI, região southamerica-east1: termos do contrato de nuvem e residência de "
@@ -122,6 +199,10 @@ def warning_text(channel: str) -> str:
 def billing_note(channel: str) -> str:
     """Informacao (nao bloqueio) sobre o faturamento do canal."""
 
+    if is_local_channel(channel):
+        return "Sem faturamento: o modelo roda nesta máquina."
+    if channel == CHANNEL_OPENROUTER_TESTE:
+        return "Faturamento: créditos da conta do OpenRouter (o custo de cada chamada vai para o resumo da rodada)."
     if channel == CHANNEL_VERTEX_SP:
         return (
             "Faturamento: o projeto deve ser o institucional do Google Cloud, com faturamento ativo "
@@ -165,10 +246,13 @@ class EngineDecision:
 
 
 def missing_packages(channel: str = CHANNEL_GEMINI_PAGO) -> list[str]:
-    spec = CHANNELS.get(channel)
+    spec = channel_spec(channel)
     needed = ["langextract"]
+    # O canal local nao usa o SDK do Google: so o LangExtract (que traz o cliente HTTP).
     if spec is None or spec.provider in {"gemini", "vertex"}:
         needed.append("google.genai")
+    elif spec.provider == "openrouter":
+        needed.append("requests")
     missing: list[str] = []
     for name in needed:
         try:
@@ -256,13 +340,20 @@ def check_engine(
         return EngineDecision(False, "", ("Nenhum canal escolhido: o app segue no motor local.",))
     if channel in BLOCKED_CHANNELS:
         return EngineDecision(False, channel, (BLOCKED_CHANNELS[channel],))
-    spec = CHANNELS.get(channel)
+    spec = channel_spec(channel)
     if spec is None:
         return EngineDecision(False, channel, (f"Canal desconhecido: {channel!r}.",))
 
     reasons: list[str] = []
     key: ApiKey | None = None
-    if spec.needs_key:
+    if spec.provider == "openrouter":
+        key = load_openrouter_key(env=env, vault=vault)
+        if key is None:
+            reasons.append(
+                "Sem chave do OpenRouter. Guarde-a no Gerenciador de Credenciais (servico "
+                "AnonimizadorJuridico/openrouter) ou na variavel ANONIMIZADOR_OPENROUTER_CHAVE."
+            )
+    elif spec.needs_key:
         key = load_key(env=env, vault=vault)
         if key is None:
             reasons.append(
@@ -291,9 +382,25 @@ def check_engine(
                 "Sem credencial do Google Cloud: aponte o arquivo de conta de servico do projeto "
                 "institucional ou rode gcloud auth application-default login."
             )
-    # I4: variavel do SDK que desvia o trafego para outro endereco recusa ja na configuracao (e de novo no
-    # ponto da rede, em ``llm_gate.check_network_point``).
-    reasons.extend(env_refusals(env))
+    model_id = choice.model_id or DEFAULT_MODEL
+    if spec.is_local:
+        # H9-b: nao ha chave nem projeto. O modelo padrao do canal e o do Ollama (o do Gemini nao serve), e o
+        # ambiente que desvie o Ollama para fora do loopback (OLLAMA_HOST) ou ponha proxy no meio recusa
+        # ja na configuracao (e de novo no ponto da rede, em ``llm_gate.check_network_point``).
+        if model_id in ("", DEFAULT_MODEL):
+            model_id = OLLAMA_DEFAULT_MODEL
+        problem = ollama_model_refusal(model_id)
+        if problem:
+            reasons.append(problem)
+        reasons.extend(ollama_refusals(env))
+    else:
+        if spec.provider == "openrouter" and not _OPENROUTER_MODEL.match(model_id or ""):
+            reasons.append("Canal openrouter-teste: informe --modelo com o id do OpenRouter (ex.: qwen/qwen3-30b-a3b).")
+        if spec.provider == "openrouter" and ":free" in (model_id or "").casefold():
+            reasons.append("Variante ':free' do OpenRouter recusada: o provedor gratuito pode guardar o texto.")
+        # I4: variavel do SDK que desvia o trafego para outro endereco recusa ja na configuracao (e de novo no
+        # ponto da rede, em ``llm_gate.check_network_point``).
+        reasons.extend(env_refusals(env))
     missing = (missing_fn or missing_packages)(channel)
     if missing:
         reasons.append(
@@ -304,14 +411,26 @@ def check_engine(
 
     if reasons:
         return EngineDecision(False, channel, tuple(reasons), key=None, key_source=key.source if key else "")
+    extra = (
+        {
+            "chunk_chars": OLLAMA_CHUNK_CHARS,
+            "max_workers": 1,
+            "max_output_tokens": OLLAMA_MAX_OUTPUT_TOKENS,
+            # H9-o: prazo por chamada pelo tamanho do modelo (pelo nome: aqui nao se abre conexao).
+            "timeout": ollama_timeout_for(model_id),
+        }
+        if spec.is_local
+        else {}
+    )
     config = LlmConfig(
         provider=spec.provider,
         channel=channel,
         api_key=key,
-        model_id=choice.model_id or DEFAULT_MODEL,
+        model_id=model_id,
         project=(choice.project.strip() or (vertex.project if vertex else "")),
         location=choice.location or DEFAULT_LOCATION,
         credentials_path=(choice.credential_path.strip() or (vertex.credential_path if vertex else "")),
+        **extra,
     )
     return EngineDecision(
         True, channel, (), key=key, config=config, key_source=key.source if key else ""
@@ -334,7 +453,8 @@ def build_discoverer(
         raise LlmConfigError("Motor LLM bloqueado: " + (decision.blocked_message() or "sem decisao."))
     config = decision.config
     overrides = {}
-    if max_workers is not None:
+    if max_workers is not None and config.provider != "ollama":
+        # Canal local: uma chamada por vez (a maquina e uma so); o numero pedido e ignorado.
         overrides["max_workers"] = max(1, max_workers)
     if chunk_chars is not None:
         overrides["chunk_chars"] = max(500, chunk_chars)
@@ -359,10 +479,14 @@ def build_offline_discoverer(
     Nao precisa de chave nem de aviso (nada sai da maquina) e nao cria modelo.
     """
 
-    spec = CHANNELS.get(channel)
+    spec = channel_spec(channel)
     if spec is None:
         raise LlmConfigError(f"Canal desconhecido: {channel!r}.")
+    if spec.is_local and model_id in ("", DEFAULT_MODEL):
+        model_id = OLLAMA_DEFAULT_MODEL
     config = LlmConfig(provider=spec.provider, channel=channel, model_id=model_id)
+    if spec.is_local:
+        config = replace(config, chunk_chars=OLLAMA_CHUNK_CHARS, max_workers=1, max_output_tokens=OLLAMA_MAX_OUTPUT_TOKENS)
     if chunk_chars is not None:
         config = replace(config, chunk_chars=max(500, chunk_chars))
     return LangExtractDiscoverer(config, cache_dir=cache_dir, offline=True)
@@ -383,9 +507,20 @@ def confirmation_lines(
     So informa; o Operador decide. Os nomes de arquivo aparecem aqui (e so aqui): a AUDITORIA
     exportavel nao os leva."""
 
-    spec = CHANNELS.get(decision.channel)
-    lines = [f"Canal: {decision.channel} ({spec.label if spec else '?'})"]
+    spec = channel_spec(decision.channel)
     config = decision.config
+    if spec is not None and spec.is_local:
+        lines = [f"Canal: {decision.channel} ({spec.label})", LOCAL_SENDS_NOTHING + "."]
+        if config is not None:
+            lines.append(f"Modelo: {config.model_id} (janela de contexto {config.num_ctx} tokens)")
+        lines.append(
+            f"Arquivos desta rodada ({len(plan.files)}): {_thousands(plan.total_chars)} caracteres lidos "
+            "pelo modelo local; nada sai desta máquina."
+        )
+        for name, message in plan.errors:
+            lines.append(f"  - {name}: NÃO será lido ({message})")
+        return lines
+    lines = [f"Canal: {decision.channel} ({spec.label if spec else '?'})"]
     if config is not None and config.provider == "vertex":
         lines.append(f"Região do Vertex AI: {config.location} (projeto {config.project or '?'})")
     if config is not None:
@@ -412,6 +547,40 @@ def confirmation_lines(
     return lines
 
 
+def local_time_estimate(decision: EngineDecision, plan: SendPlan) -> str:
+    """H9-o: estimativa grosseira do tempo do LLM local nesta rodada (vazio fora do canal local).
+
+    Trechos fora do cache x segundos por trecho do modelo (medido nesta maquina, ou pelo tamanho do modelo). A
+    verificacao le o texto ja tokenizado de novo (quase o mesmo numero de trechos, parte no cache) e os trechos
+    vazios voltam em duas metades: por isso a faixa vai da descoberta so ate cerca do dobro. O motor local
+    (piso, OCR) soma alguns minutos fora desta conta."""
+
+    config = decision.config
+    if config is None or not is_local_channel(decision.channel):
+        return ""
+    pending = sum(max(0, item.chunks - item.cached_chunks) for item in plan.files)
+    total = sum(item.chunks for item in plan.files)
+    seconds = ollama_seconds_per_chunk(config.model_id)
+    if not pending:
+        return (
+            f"Estimativa (LLM local, {config.model_id}): os {total} trecho(s) da descoberta já estão no cache; "
+            "a verificação ainda pode chamar o modelo."
+        )
+    low = pending * seconds
+    high = low * (1 + max(1, plan.verification_rounds)) * 1.1
+    return (
+        f"Estimativa (LLM local, {config.model_id}): {pending} de {total} trecho(s) fora do cache × ~{seconds:.0f} s "
+        f"= {_duration(low)} na descoberta; com a verificação, até ~{_duration(high)}. Estimativa grosseira."
+    )
+
+
+def _duration(seconds: float) -> str:
+    minutes = max(1, round(seconds / 60))
+    if minutes < 60:
+        return f"{minutes} min"
+    return f"{minutes // 60} h {minutes % 60:02d} min"
+
+
 def audit_lines(
     decision: EngineDecision,
     choice: EngineChoice | None = None,
@@ -420,8 +589,21 @@ def audit_lines(
     """Linhas do bloco "motor" da AUDITORIA: canal, regiao, fonte da chave e a confirmacao da rodada.
     Nunca a chave."""
 
-    spec = CHANNELS.get(decision.channel)
+    spec = channel_spec(decision.channel)
     lines = [f"Canal: {decision.channel or ENGINE_LOCAL}"]
+    if spec is not None and spec.is_local:
+        if decision.config is not None:
+            lines.append(f"Modelo: {decision.config.model_id}")
+            lines.append(f"Janela de contexto (num_ctx): {decision.config.num_ctx} tokens")
+            # H9-o: o que pesa no tempo de um modelo maior, para a rodada ser comparavel e explicavel.
+            lines.append(
+                f"Prazo por chamada: {decision.config.timeout} s; raciocinio (think) desligado; modelo mantido "
+                f"carregado {decision.config.keep_alive} s entre chamadas; nova tentativa so apos falha de conexao "
+                "(tempo esgotado ou resposta fora do formato nao se repetem)."
+            )
+        lines.append(LOCAL_SENDS_NOTHING + ": o texto foi so ao Ollama em 127.0.0.1; nenhum provedor externo.")
+        lines.append("Sem aviso de envio nem confirmacao de rodada: nada saiu desta maquina.")
+        return lines
     if decision.config is not None:
         lines.append(f"Modelo: {decision.config.model_id}")
         if decision.config.provider == "vertex":
@@ -433,6 +615,11 @@ def audit_lines(
                     if decision.config.credentials_path
                     else "credencial padrao do gcloud"
                 )
+            )
+        if decision.config.provider == "openrouter":
+            lines.append(
+                "CANAL DE TESTE (OpenRouter): so o documento sintetico (SHA-256 conferido); "
+                "provider.data_collection = deny em cada pedido."
             )
     if spec is not None:
         lines.append(

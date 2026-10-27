@@ -113,12 +113,15 @@ def _alias_span(
                 return _with_key(span, target)
             return span
     elif span.entity_type == "BR_CNPJ":
-        digits = only_digits(span.value_from(text))
+        value = span.value_from(text)
+        digits = only_digits(value)
+        # H9-k: a raiz so liga numero com DV valido ou escrito no formato do CNPJ (barra); protocolo de 14 digitos nao.
+        rooted = is_valid_cnpj(digits) or "/" in value
         target = _match_known(digits, known_cnpj, text, span.start, require_label=False)
-        if not target:
+        if not target and rooted:
             target = _root_canonical(digits, known_cnpj)
         if target:
-            root_key = _root_canonical(digits, known_cnpj) or target
+            root_key = (_root_canonical(digits, known_cnpj) if rooted else "") or target
             if digits == target or _has_label(text, span.start, _CNPJ_LABEL) or root_key:
                 return _with_key(span, root_key)
             return span
@@ -270,6 +273,10 @@ def _filial_spans(
         compact = re.sub(r"^(?:CNPJ|MF)+", "", compact)
         digits = only_digits(match.group())
         key = compact if len(compact) >= 12 else digits
+        if not (is_valid_cnpj(key) or is_valid_cnpj(digits) or "/" in match.group()):
+            # H9-k: 14 digitos corridos sem DV (protocolo do SISBAJUD da mesma ordem) nao entram pela raiz; o CNPJ
+            # escrito no formato (com barra) segue tolerando DV de OCR.
+            continue
         target = _root_canonical(key, known_cnpj)
         if not target:
             continue

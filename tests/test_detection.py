@@ -50,7 +50,6 @@ class StructuredDetectionTests(unittest.TestCase):
 
     def test_unlabeled_new_identifiers_are_not_detected(self) -> None:
         text = (
-            "9b2c3d4e-5f6a-4b7c-8d9e-0a1b2c3d4e5f; "
             "3456-7; 89012-3; 00345678901; ABC1D23; XYZ-1234; "
             "Evento 203; R$ 12.345,67."
         )

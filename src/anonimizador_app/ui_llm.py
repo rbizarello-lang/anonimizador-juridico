@@ -32,12 +32,14 @@ from .llm_engine import (
     build_discoverer,
     check_engine,
     confirmation_lines,
+    is_local_channel,
+    local_time_estimate,
     warning_paragraphs,
 )
-from .llm_gate import RunPermit, SendPlan, safe_error
-from .llm_discovery import LlmConfigError
+from .llm_gate import RunPermit, SendPlan, file_sha256, gemma_lock_refusals, is_free_tier_gemma, safe_error
+from .llm_discovery import DEFAULT_MODEL, OLLAMA_DEFAULT_MODEL, LlmConfigError, OllamaModel, list_ollama_models
 from .pipeline import JobResult
-from .pipeline_llm import LLM_CACHE_SUBDIR, LlmJobResult, plan_send, run_llm_job
+from .pipeline_llm import LLM_CACHE_SUBDIR, LlmJobResult, fallback_split, plan_send, run_llm_job
 from .roster import KEEP, TOKENIZE
 from .roster_review import (
     ACTION_LABELS,
@@ -68,16 +70,41 @@ class EngineSession:
         self.choice = EngineChoice()
         self.decision = None
 
-    def button_label(self) -> str:
-        """Texto do botao de executar: diz o motor. Com LLM, as reticencias avisam que vem uma
-        confirmacao (canal, arquivos, caracteres) antes de qualquer envio."""
+    @property
+    def local_llm(self) -> bool:
+        """LLM local (Ollama em loopback, H9-b): ativo, mas nada sai da maquina e nao ha confirmacao de envio."""
 
+        return self.active and is_local_channel(self.decision.channel)
+
+    def button_label(self) -> str:
+        """Texto do botao de executar: diz o motor. Com LLM remoto, as reticencias avisam que vem uma
+        confirmacao (canal, arquivos, caracteres) antes de qualquer envio; o LLM local nao tem."""
+
+        # H9-o: o botao diz o motor E o modelo, para o Operador nao rodar o motor errado por engano.
+        if self.local_llm:
+            return f"Anonimizar lote · Local + LLM ({self.model_id()})"
         if self.active:
-            return f"Anonimizar lote com LLM · {self.decision.channel}…"
+            return f"Anonimizar lote · LLM {self.decision.channel} ({self.model_id()})…"
         return "Anonimizar lote · motor local"
 
+    def model_id(self) -> str:
+        config = self.decision.config if self.decision is not None else None
+        return config.model_id if config is not None else (self.choice.model_id or "?")
+
     def button_icon(self) -> str:
+        if self.local_llm:
+            return "memory"
         return "cloud_upload" if self.active else "play_arrow"
+
+
+def model_options(installed: list[OllamaModel], current: str) -> dict[str, str]:
+    """H9-o: opcoes do seletor de modelo (nome -> "nome (tamanho, parametros)"). O modelo escolhido entra mesmo
+    que nao esteja na lista (digitado antes, ou ainda nao baixado), para o seletor nao o perder."""
+
+    options = {model.name: model.label() for model in installed}
+    if current and current not in options:
+        options[current] = f"{current} (não encontrado no Ollama)"
+    return options
 
 
 def build_engine_section(session, *, on_change: Callable[[], None] = lambda: None) -> None:
@@ -89,7 +116,13 @@ def build_engine_section(session, *, on_change: Callable[[], None] = lambda: Non
     status = ui.label("").classes("aj-card-note")
 
     def refresh() -> None:
-        if engine.active:
+        if engine.local_llm:
+            status.text = (
+                f"LLM local escolhido: {engine.decision.channel}. Nada é enviado: o modelo roda nesta "
+                "máquina (Ollama, só loopback) e a rodada conta as tentativas de rede na AUDITORIA."
+            )
+            toggle.value = LLM
+        elif engine.active:
             status.text = (
                 f"LLM escolhido: {engine.decision.channel}. Nada é enviado até você confirmar cada "
                 "rodada (canal, arquivos e total de caracteres); a confirmação expira ao fim da rodada."
@@ -116,7 +149,7 @@ def build_engine_section(session, *, on_change: Callable[[], None] = lambda: Non
 
 def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
     engine: EngineSession = session.engine
-    draft = {"choice": engine.choice if engine.choice.channel else EngineChoice(channel="gemini-pago")}
+    draft = {"choice": engine.choice if engine.choice.channel else EngineChoice(channel="ollama-local")}
 
     def current() -> EngineChoice:
         return draft["choice"]
@@ -125,7 +158,7 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
         draft["choice"] = replace(draft["choice"], **changes)
 
     def on_channel(value: str) -> None:
-        set_choice(channel=value)
+        set_choice(channel=value, model_id=DEFAULT_MODEL)
         redraw()
 
     def on_field(**changes) -> None:
@@ -143,9 +176,10 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                 'flat round aria-label="Fechar"'
             )
         ui.label(
-            "O motor local segue sendo o padrão e o app sempre abre nele. Os dois canais ficam "
+            "O motor local segue sendo o padrão e o app sempre abre nele. Os canais remotos ficam "
             "cadastráveis aqui; a escolha vale apenas para esta sessão e NÃO autoriza envio: a cada "
-            "rodada o app pede a sua confirmação."
+            "rodada o app pede a sua confirmação. O LLM local (Ollama) não envia nada e não pede "
+            "confirmação."
         ).classes("aj-card-note")
         ui.select(
             {key: spec.label for key, spec in CHANNELS.items()},
@@ -170,7 +204,13 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
         decision = decide()
         reasons_box.clear()
         with reasons_box:
-            if decision.allowed:
+            if decision.allowed and is_local_channel(decision.channel):
+                with ui.row().classes("aj-callout info items-start"):
+                    ui.icon("check_circle")
+                    ui.label(
+                        "Configuração em ordem. LLM local: nada é enviado, o texto vai só ao Ollama desta máquina."
+                    )
+            elif decision.allowed:
                 with ui.row().classes("aj-callout info items-start"):
                     ui.icon("check_circle")
                     ui.label(
@@ -220,6 +260,43 @@ def open_engine_dialog(session, *, on_close: Callable[[], None]) -> None:
                     "Credencial: gcloud auth application-default login (ou o arquivo de conta de serviço "
                     "indicado em GOOGLE_APPLICATION_CREDENTIALS). A região aparece na confirmação de cada "
                     "rodada e na AUDITORIA; o app não a força."
+                ).classes("aj-card-note")
+
+        if spec is not None and spec.is_local:
+            with project_box:
+                ui.label("Modelo do Ollama").classes("aj-label")
+                # H9-o: lista dos modelos baixados (GET /api/tags so no loopback, sem ':cloud'); Ollama fora do
+                # ar ou recusado pelo portao: volta ao campo de texto.
+                installed = list_ollama_models()
+                current_model = choice.model_id if choice.model_id not in ("", DEFAULT_MODEL) else OLLAMA_DEFAULT_MODEL
+                if installed:
+                    options = model_options(installed, current_model)
+                    if current_model != choice.model_id:
+                        set_choice(model_id=current_model)
+                    ui.select(
+                        options,
+                        value=current_model,
+                        label="Modelo baixado no Ollama (pode digitar outro nome; nunca ':cloud')",
+                        with_input=True,
+                        new_value_mode="add-unique",
+                        on_change=lambda event: on_field(model_id=str(event.value or "").strip()),
+                    ).classes("w-full")
+                    ui.label(
+                        "Modelo maior lê melhor, mas aqui roda quase todo na CPU: 12–14B levam várias vezes o "
+                        "tempo do gemma4:e4b. O prazo de cada chamada cresce com o tamanho do modelo."
+                    ).classes("aj-card-note")
+                else:
+                    ui.input(
+                        "Modelo já baixado no Ollama (padrão gemma4:e4b; nunca ':cloud')",
+                        value=choice.model_id if choice.model_id != DEFAULT_MODEL else "",
+                        on_change=lambda event: on_field(model_id=(event.value or "").strip()),
+                    ).classes("w-full")
+                    ui.label(
+                        "Não foi possível listar os modelos do Ollama (fora do ar?). Digite o nome do modelo."
+                    ).classes("aj-card-note")
+                ui.label(
+                    "O Ollama precisa estar rodando em 127.0.0.1:11434. Se OLLAMA_HOST ou uma variável de "
+                    "proxy apontar para fora da máquina, o app recusa o canal."
                 ).classes("aj-card-note")
 
         key_box.clear()
@@ -333,8 +410,9 @@ async def run_llm_flow(
         return
     engine.decision = decision
 
+    local = is_local_channel(decision.channel)
     session.running = True
-    run_kicker.text = "Preparando o envio (LLM)"
+    run_kicker.text = "Preparando (LLM local)" if local else "Preparando o envio (LLM)"
     run_button.disable()
     progress.visible = True
     progress.value = 0
@@ -351,6 +429,14 @@ async def run_llm_flow(
 
     ticker = ui.timer(0.4, lambda: _tick(status, progress, state))
     discoverer = build_discoverer(decision, cache_dir=session.private_dir / LLM_CACHE_SUBDIR)
+    if decision.config is not None and is_free_tier_gemma(decision.channel, decision.config.model_id):
+        # v0.4.10: Gemma na Gemini API e sempre nivel gratuito: so o documento sintetico.
+        refusals = gemma_lock_refusals(decision.channel, decision.config.model_id, sources)
+        if refusals:
+            ticker.cancel()
+            _fail(session, status, progress, result_area, run_kicker, run_button, " ".join(refusals[:3]))
+            return
+        discoverer.synthetic_lock = tuple(file_sha256(path) for path in sources)
     try:
         plan = await run.io_bound(
             lambda: plan_send(
@@ -368,35 +454,58 @@ async def run_llm_flow(
         return
     ticker.cancel()
 
-    confirmed = await confirm_send(decision, plan)
-    if not confirmed:
-        status.text = "Envio cancelado. Nada foi enviado."
-        result_area.clear()
-        with result_area:
-            with ui.row().classes("aj-callout info items-start"):
-                ui.icon("info")
-                ui.label("Envio cancelado: nada foi enviado ao provedor. Use o motor local ou confirme a rodada.")
-        session.running = False
-        run_kicker.text = "Pronto para executar"
-        run_button.enable()
-        progress.visible = False
-        return
+    permit: RunPermit | None = None
+    extra_notes: list[str] = []
+    estimate = ""
+    if local:
+        # H9-b: LLM local. Nada sai da maquina: sem confirmacao de envio e sem RunPermit; so um aviso curto.
+        # H9-o: com o modelo e a estimativa de tempo (trechos fora do cache x segundos por trecho do modelo).
+        estimate = local_time_estimate(decision, plan)
+        ui.notify(
+            f"LLM local ({engine.model_id()}): nada é enviado. O texto vai só ao Ollama desta máquina."
+            + (f" {estimate}" if estimate else ""),
+            type="info",
+            timeout=15000,
+        )
+        # H9-o: a AUDITORIA registra o modelo exato (tamanho, quantizacao e digest do Ollama), se o Ollama o lista.
+        installed = await run.io_bound(list_ollama_models)
+        found = next((model for model in installed or [] if model.name == engine.model_id()), None)
+        if found is not None:
+            extra_notes.append(found.audit_line())
+        if estimate:
+            extra_notes.append(estimate)
+    else:
+        confirmed = await confirm_send(decision, plan)
+        if not confirmed:
+            status.text = "Envio cancelado. Nada foi enviado."
+            result_area.clear()
+            with result_area:
+                with ui.row().classes("aj-callout info items-start"):
+                    ui.icon("info")
+                    ui.label("Envio cancelado: nada foi enviado ao provedor. Use o motor local ou confirme a rodada.")
+            session.running = False
+            run_kicker.text = "Pronto para executar"
+            run_button.enable()
+            progress.visible = False
+            return
 
-    config = decision.config
-    permit = RunPermit.for_plan(
-        decision.channel,
-        plan,
-        region=config.location if config is not None and config.provider == "vertex" else "",
-        project=config.project if config is not None else "",
-    )
-    discoverer.permit = permit
-    engine.last_permit = permit
+        config = decision.config
+        permit = RunPermit.for_plan(
+            decision.channel,
+            plan,
+            region=config.location if config is not None and config.provider == "vertex" else "",
+            project=config.project if config is not None else "",
+        )
+        discoverer.permit = permit
+        engine.last_permit = permit
     run_kicker.text = "Executando (LLM)"
     result_area.clear()
     with result_area:
         with ui.row().classes("items-center gap-3"):
             ui.spinner(size="md", color="accent")
-            ui.label("Lendo o lote com o LLM…").classes("aj-muted")
+            ui.label(f"Lendo o lote com o LLM ({engine.model_id()})…").classes("aj-muted")
+        if estimate:
+            ui.label(estimate).classes("aj-card-note")
     state["message"], state["fraction"] = "Iniciando", 0.0
     ticker = ui.timer(0.4, lambda: _tick(status, progress, state))
     try:
@@ -408,7 +517,7 @@ async def run_llm_flow(
                 discoverer=discoverer,
                 settings=session.settings,
                 engine=decision.channel,
-                engine_notes=audit_lines(decision, engine.choice, permit),
+                engine_notes=[*audit_lines(decision, engine.choice, permit), *extra_notes],
                 on_progress=on_progress,
             )
         )
@@ -418,7 +527,8 @@ async def run_llm_flow(
               f"A execução falhou: {safe_error(exc, keep_message=isinstance(exc, LlmConfigError))}")
         return
     finally:
-        permit.finish()  # a confirmacao expira com a rodada, haja o que houver
+        if permit is not None:
+            permit.finish()  # a confirmacao expira com a rodada, haja o que houver
     ticker.cancel()
 
     engine.last, engine.last_files = result, list(sources)
@@ -500,11 +610,18 @@ def show_result(
                         "O LLM não leu algumas folhas. Elas passaram pelo motor local (nunca saem com "
                         "nome em claro por falha do LLM); confira essas folhas antes de enviar."
                     )
-                    for name, pages in result.fallback_pages.items():
-                        ui.label(
-                            f"Folhas tratadas pelo motor local por falha do LLM, em {name}: "
-                            + ", ".join(str(page) for page in pages)
-                        ).classes("aj-card-note")
+                    # v0.4.13: falha real do LLM e omissao do LLM (respondeu "sem nomes", o motor local achou) separadas.
+                    for name, (failed, omitted) in fallback_split(result).items():
+                        if failed:
+                            ui.label(
+                                f"Folhas tratadas pelo motor local por falha do LLM, em {name}: "
+                                + ", ".join(str(page) for page in failed)
+                            ).classes("aj-card-note")
+                        if omitted:
+                            ui.label(
+                                f"Folhas em que o LLM respondeu sem nomes e o motor local achou, em {name}: "
+                                + ", ".join(str(page) for page in omitted)
+                            ).classes("aj-card-note")
                     for name in result.held:
                         ui.label(
                             f"{name}: retido na pasta privada (quarentena), não exportado: o motor "

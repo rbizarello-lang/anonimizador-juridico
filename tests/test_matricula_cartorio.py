@@ -63,36 +63,17 @@ class OfficeKeyTests(unittest.TestCase):
 
 
 class MatriculaTokenTests(unittest.TestCase):
-    def test_same_number_in_two_offices_gets_two_tokens(self) -> None:
+    """H9-i: a matricula nao e mais trocada; o numero e o cartorio ficam em claro (o ``office_key`` segue no modulo)."""
+
+    def test_matricula_and_office_stay_in_clear(self) -> None:
         text = (
             "Imóvel da matrícula nº 12345 do 1º Registro de Imóveis de Joinville.\n"
             "Imóvel da matrícula nº 12345 do 2º Registro de Imóveis de Joinville.\n"
+            "Matrícula nº 777.\n"
         )
         out, mapping = _tokens(text)
-        first, second = out.splitlines()
-        self.assertIn("[MATRICULA_IMOVEL_1]", first)
-        self.assertIn("[MATRICULA_IMOVEL_2]", second)
-        self.assertEqual(len(mapping.records), 2)
-
-    def test_same_number_in_the_same_office_keeps_one_token(self) -> None:
-        text = (
-            "Matrícula nº 12345 do 1º Registro de Imóveis de Joinville.\n"
-            "Averbada na matrícula nº 12345 do 1º Registro de Imóveis de Joinville.\n"
-        )
-        out, mapping = _tokens(text)
-        self.assertEqual(out.count("[MATRICULA_IMOVEL_1]"), 2)
-        self.assertEqual(len(mapping.records), 1)
-
-    def test_without_an_office_the_behaviour_is_the_old_one(self) -> None:
-        text = "Matrícula nº 12345.\nOutra vez a matrícula nº 12345, sem cartório.\nMatrícula nº 777.\n"
-        out, mapping = _tokens(text)
-        self.assertEqual(out.count("[MATRICULA_IMOVEL_1]"), 2)
-        self.assertIn("[MATRICULA_IMOVEL_2]", out)
-        self.assertEqual([record.canonical for record in mapping.records], ["12345", "777"])
-
-    def test_the_office_name_is_never_part_of_the_token(self) -> None:
-        out, _mapping = _tokens("Matrícula nº 12345 do 1º Registro de Imóveis de Joinville.")
-        self.assertEqual(out, "Matrícula nº [MATRICULA_IMOVEL_1] do 1º Registro de Imóveis de Joinville.")
+        self.assertEqual(out, text)
+        self.assertEqual(len(mapping.records), 0)
 
 
 class OfficeNameInClearTests(unittest.TestCase):

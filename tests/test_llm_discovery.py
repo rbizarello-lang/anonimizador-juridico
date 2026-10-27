@@ -82,15 +82,19 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(LlmConfigError):
             discoverer._build_model()
 
-    def test_there_is_no_ollama_provider(self) -> None:
-        import inspect
-
-        from anonimizador_app import llm_discovery
-
-        self.assertNotIn("ollama", inspect.getsource(llm_discovery).casefold())
-        discoverer = LangExtractDiscoverer(LlmConfig(provider="ollama", channel="ollama-local"))
+    @unittest.skipUnless(HAS_LANGEXTRACT, "langextract nao instalado")
+    def test_ollama_provider_exists_only_behind_the_local_channel(self) -> None:
+        # H9-b (era "nao existe provedor Ollama", do I7): agora so existe pelo canal local, e so em loopback.
         with self.assertRaises(LlmConfigError):
-            discoverer._build_model()
+            LangExtractDiscoverer(LlmConfig(provider="ollama", channel=""))._build_model()
+        for channel in ("gemini-pago", "vertex-sp", "outro"):
+            with self.assertRaises(LlmConfigError, msg=channel):
+                LangExtractDiscoverer(LlmConfig(provider="ollama", channel=channel))._build_model()
+        model = LangExtractDiscoverer(LlmConfig(provider="ollama", channel="ollama-local"))._build_model()
+        self.assertEqual(model._model_url, "http://127.0.0.1:11434")
+        # Gemini/vertex com o canal do Ollama continua recusado.
+        with self.assertRaises(LlmConfigError):
+            LangExtractDiscoverer(LlmConfig(provider="gemini", channel="ollama-local"))._build_model()
 
     def test_the_key_is_passed_explicitly_and_the_module_reads_no_environment(self) -> None:
         import inspect
@@ -261,7 +265,9 @@ class LangExtractAdapterTests(unittest.TestCase):
 
         self.assertEqual(len(first.report.empty), 1)
         self.assertIn("Nada mais", text[first.report.empty[0][0] : first.report.empty[0][1]])
-        # A pagina sem entidade e reenviada na segunda rodada (a vazia nao esta no cache) e volta como vazia.
+        # A pagina sem entidade e reenviada na segunda rodada (a vazia nao esta no cache) e volta como vazia; o reenvio
+        # imediato da vazia (B6) ficou desligado por padrao (H9-j).
+        self.assertEqual(first.report.empty_retried, 0)
         self.assertEqual(len(calls), sent + 1)
         self.assertEqual(len(second.report.empty), 1)
         self.assertEqual(second.report.cached, second.report.chunks - 1)

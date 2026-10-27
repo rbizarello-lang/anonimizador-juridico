@@ -216,12 +216,20 @@ class LocalNerEngine:
         self.model_label = model_label
 
     def detect(self, text: str) -> list[EntitySpan]:
+        from . import run_timing
+
+        # H9-o: tempo do NER local e acerto de cache para a AUDITORIA.
+        with run_timing.stage("ner"):
+            return self._detect_timed(text, run_timing)
+
+    def _detect_timed(self, text: str, run_timing) -> list[EntitySpan]:
         key = self._cache_key(text) if self._cache_enabled() else None
         if key is None:
             self._note_use()
         if key is not None and self.cache_dir is not None:
             loaded = load_spans(self.cache_dir, key)
             if loaded is not None:
+                run_timing.count("ner_cache")
                 return loaded
         spans = self._detect_fresh(text)
         if key is not None and self.cache_dir is not None:
@@ -421,6 +429,9 @@ def _load_gliner() -> PredictFn:
 
     model = GLiNER.from_pretrained(GLINER_MODEL, revision=GLINER_REVISION, local_files_only=offline)
     _LOG.info("Motor local: GLiNER (%s)", GLINER_MODEL)
+    from . import run_timing
+
+    run_timing.note("ner_device", gliner_device(model))  # H9-o: cpu ou cuda, para a AUDITORIA
 
     def predict(text: str) -> Sequence[dict]:
         hits = model.predict_entities(text, list(GLINER_LABELS), threshold=0.0)
@@ -434,6 +445,18 @@ def _load_gliner() -> PredictFn:
         ]
 
     return predict
+
+
+def gliner_device(model: Any) -> str:
+    """H9-o: o dispositivo em que o GLiNER roda (``cpu``, ``cuda:0``...); ``?`` se nao der para saber."""
+
+    device = getattr(model, "device", None)
+    if device is None:
+        try:
+            device = next(model.parameters()).device
+        except Exception:  # noqa: BLE001 - so informativo
+            return "?"
+    return str(device)
 
 
 def _load_spacy_pt() -> PredictFn:
@@ -558,9 +581,14 @@ class CombinedEngine:
             if getattr(engine, "provider", "") == "targets":
                 target_engine = engine
         if target_engine is not None:
-            from .target_list import attach_list_canonicals
+            from .target_list import attach_list_canonicals, restore_orphan_partials, yield_partial_to_other_person
 
             spans = attach_list_canonicals(text, spans, target_engine)
+            # H9-o: pedaco de um listado dentro do nome mais longo de OUTRA pessoa cede a ele.
+            yielded: list = []
+            spans = yield_partial_to_other_person(text, spans, target_engine, yielded)
+            # v0.4.10: o pedaco volta se o nome longo perdeu no desempate (sobrenome orfao em claro).
+            return restore_orphan_partials(resolve_overlaps(spans), yielded)
         return resolve_overlaps(spans)
 
     def scan_residual(self, text: str) -> list[str]:

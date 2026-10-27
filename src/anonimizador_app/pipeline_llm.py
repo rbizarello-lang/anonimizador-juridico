@@ -27,6 +27,10 @@ o motor local roda em TODAS as folhas e o resultado final e a UNIAO do que o LLM
 apontaram. O LLM so acrescenta protecao: omissao parcial (o LLM acha o executado da folha 1 e esquece
 o socio da folha 2) ou mencao sem ancora no texto nao deixam nome em claro. A AUDITORIA e o LEIA-ME
 dizem se o piso estava ligado e quantas entidades ele acrescentou fora das folhas suspeitas.
+H9-c: a mencao do LLM passa por higiene (``llm_hygiene``: classe, ancora, minusculas, termo protegido, rotulo
+com numero, termo juridico, lugar, pessoa de uma palavra, token colado em numero) e as entradas dele passam pelo
+juizo do lote (agente publico, banco do SISBAJUD, rua com nome de pessoa) antes da troca. So mencao do proprio
+LLM e descartada; nada do motor local. A AUDITORIA leva so as contagens.
 O elenco com originais fica em ``privados``; a legenda exportavel (token -> tipo ->
 papel) nao leva nome.
 
@@ -48,6 +52,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from anonimizador_juridico import (
     EntitySpan,
@@ -57,7 +62,7 @@ from anonimizador_juridico import (
     pseudonymize,
     resolve_overlaps,
 )
-from anonimizador_juridico.pseudonymizer import PseudonymizationResult
+from anonimizador_juridico.pseudonymizer import PseudonymizationResult, fold_lexical
 
 from .audit import audit_map_records, audit_markdown, write_audit_report
 from .batch_propagation import BatchRoster
@@ -66,13 +71,38 @@ from .extraction_cache import CachedExtraction, default_cache_dir, load_or_extra
 from .extractors import ExtractedDocument, UnsupportedDocumentError
 from .fast_extract import FAST_EXTRACTOR_VERSION, extract_fast
 from .contextual import build_contextual_engine
-from .fidelity import FidelityDropStats, drop_protected_spans
+from .catalog import NER_LOCAL_RECOGNIZER
+from .fidelity import FidelityDropStats, drop_protected_spans, is_precedent_judge
+from .known_forms import KnownForms
+from .case_roster import CaseLink
+from . import features, lote_alerts, uncertainty
+from .final_guard import FinalGuard
+from .final_guard import audit_lines as guard_audit_lines
+from .name_join import join_person_names
+from .name_generation import conflicting_generation
+from .vehicle_names import is_vehicle_span
 from .gemini_detector import ContextualEngine
 from .geo_names import geo_context, is_geo_word
 from .llm_discovery import Discoverer, DiscoveryReport, LlmConfigError, page_of, page_ranges, split_chunks
 from .local_ner import reset_ner_status
+from .netblock import block_network
 from .llm_gate import FilePlan, GateError, SendPlan, safe_error, scrub_secrets
-from .lote_elenco import CompanyGroup, apply_company_groups, apply_groups
+from .llm_hygiene import PRIVATE_ROLES, LlmHygieneStats, filter_llm_mentions, public_agent_mention, role_counts
+from .public_agents import lot_public_agent, private_evidence
+from .address_heuristic import extend_address_tails
+from .lote_elenco import (
+    CompanyGroup,
+    append_denominations_section,
+    append_same_company_section,
+    append_family_section,
+    append_same_person_section,
+    partial_name_rows,
+    apply_company_groups,
+    apply_groups,
+    set_cnpj_roots,
+    same_cpf_rows,
+    same_person_lines,
+)
 from .lote_index import add_sheet_anchors
 from .pipeline import (
     PRIVATE_AUDIT_NAME,
@@ -88,14 +118,23 @@ from .pipeline import (
     write_lote_guides,
     write_outcomes_index,
 )
+from .file_names import export_stem, write_name_map
 from .ner_cache import default_ner_cache_dir
 from .propagation import RECOGNIZER as ROSTER_RECOGNIZER
-from .propagation import FoldedText, fold_with_index, spans_for_roster
-from .roster import KEEP, TOKENIZE, Mention, Roster
+from .propagation import FoldedText, fold_with_index, kept_name_ranges, spans_for_roster
+from .roster import KEEP, TOKENIZE, UNKNOWN_ROLE, Mention, Roster, entity_core, entity_key
+from .roster_identity import fuse_identities
+from .shared_names import append_shared_names_section, split_shared_names
+from .shared_names import audit_lines as shared_name_lines
+from .variant_propagation import RECOGNIZER as VARIANT_RECOGNIZER
+from .variant_propagation import VariantPropagator
+from .review_import import review_audit_lines
 from .rules import build_recognizers
-from .settings import AppSettings
+from . import run_timing
+from .run_notes import run_note_lines
+from .settings import AppSettings, case_list_lines, settings_for_operation
 from .version import ENGINE_LOCAL
-from .span_hygiene import sanitize_spans
+from .span_hygiene import comment_ranges, inside_comment, sanitize_spans
 
 LLM_CACHE_SUBDIR = "cache_llm"
 ROSTER_FILENAME = "elenco.json"
@@ -137,6 +176,10 @@ class LlmFileReport:
     fallback_pages: list[int] = field(default_factory=list)
     # Resposta vazia do LLM que o motor local confirmou sem nome (nada a acrescentar).
     empty_confirmed_pages: list[int] = field(default_factory=list)
+    # v0.4.13: ``fallback_pages`` separado em dois: folha em que o LLM FALHOU de fato (sem resposta, erro, fora
+    # do tempo) e folha em que ele respondeu "nao ha nomes" mas o motor local achou entidade (omissao do LLM).
+    failure_pages: list[int] = field(default_factory=list)
+    omission_pages: list[int] = field(default_factory=list)
     fallback_entities: int = 0
     # Preenchido quando o motor local nao pode tratar as folhas suspeitas: o arquivo fica retido.
     fallback_error: str = ""
@@ -148,6 +191,10 @@ class LlmFileReport:
     # Ocorrencias que o motor local apontou e o juizo do lote deixou fora do elenco, como no motor local:
     # nome em contexto de juiz ou procurador, instituicao do SISBAJUD.
     local_kept: int = 0
+    # H9-i lote B7: nomes que so o detector de nomes achou, numa folha que o LLM leu e respondeu sem aponta-los
+    # (o que o LLM retiraria), e quantos foram de fato retirados (so com ``llm_may_retract`` ligado).
+    retract_candidates: int = 0
+    retracted: int = 0
 
     @property
     def unverified(self) -> bool:
@@ -175,9 +222,12 @@ class LlmJobResult:
 
 def run_local_job(files: Sequence[str | Path], **kwargs) -> LlmJobResult:
     """Pipeline unico sem LLM: so o motor local acha os nomes, e o resto (elenco, troca, AUDITORIA, ELENCO)
-    e o mesmo do motor LLM. Com isso a deteccao e a unica diferenca entre os dois modos (H5)."""
+    e o mesmo do motor LLM. Com isso a deteccao e a unica diferenca entre os dois modos (H5).
 
-    return _run_llm_job(files, discoverer=None, **kwargs)
+    H9-d: roda com a rede bloqueada fora do loopback, como o canal local; a AUDITORIA registra a contagem."""
+
+    with block_network(allow_loopback=True) as attempts:
+        return _run_llm_job(files, discoverer=None, local_blocked=attempts, **kwargs)
 
 
 def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
@@ -195,10 +245,34 @@ def run_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs
         except GateError as exc:
             raise LlmConfigError(str(exc)) from None
     try:
+        if _is_local_llm(discoverer):
+            return _run_local_llm_job(files, discoverer=discoverer, **kwargs)
         return _run_llm_job(files, discoverer=discoverer, **kwargs)
     finally:
         if permit is not None:
             permit.finish()
+
+
+def _is_local_llm(discoverer: object) -> bool:
+    """Canal local (H9-b): o Ollama em loopback. Nada sai da maquina; nao tem confirmacao de rodada."""
+
+    return getattr(getattr(discoverer, "config", None), "provider", "") == "ollama"
+
+
+def _run_local_llm_job(files: Sequence[str | Path], *, discoverer: Discoverer, **kwargs) -> LlmJobResult:
+    """Rodada do canal local DENTRO do bloqueio de rede (H9-b): so o loopback abre socket; qualquer outra
+    tentativa (conexao, resolucao de nome, datagrama) e barrada e contada. A lista viva vai para o
+    descobridor, que a AUDITORIA le ao ser escrita; ao fim fica o total em ``blocked_attempts``.
+
+    O bloqueio troca as funcoes de ``socket`` do processo inteiro (todas as threads) enquanto dura."""
+
+    with block_network(allow_loopback=True) as attempts:
+        discoverer.attempts_live = attempts  # type: ignore[attr-defined]
+        try:
+            return _run_llm_job(files, discoverer=discoverer, **kwargs)
+        finally:
+            discoverer.blocked_attempts = len(attempts)  # type: ignore[attr-defined]
+            discoverer.attempts_live = None  # type: ignore[attr-defined]
 
 
 def _run_llm_job(
@@ -220,8 +294,12 @@ def _run_llm_job(
     on_progress: ProgressFn | None = None,
     fallback_engine: ContextualEngine | None = None,
     local_floor: bool | None = None,
+    local_blocked: list[str] | None = None,
 ) -> LlmJobResult:
     """Tres fases: descobre em todos os arquivos, confere, e so entao troca.
+
+    ``local_blocked``: no modo sem LLM, a lista viva das tentativas de rede barradas pelo bloqueio da rodada
+    (``run_local_job``); a AUDITORIA grava o total.
 
     O elenco e do processo inteiro, nao do arquivo: socio que so aparece com
     nome completo na PARTE_2 tambem e trocado na PARTE_1.
@@ -237,11 +315,45 @@ def _run_llm_job(
     todas as folhas e e a unica fonte de nomes; nao ha folha suspeita, verificacao nem papel do LLM.
     """
 
+    # v0.4.12: as chaves das mudancas da versao (config.json) valem durante a rodada.
+    with features.activate(settings or AppSettings()):
+        return _run_llm_job_inner(
+            files, export_root=export_root, private_root=private_root, discoverer=discoverer, settings=settings,
+            roster_path=roster_path, verification_rounds=verification_rounds, use_cache=use_cache,
+            extract_fn=extract_fn, extractor_version=extractor_version, write_legend=write_legend, engine=engine,
+            engine_notes=engine_notes, job_id=job_id, on_progress=on_progress, fallback_engine=fallback_engine,
+            local_floor=local_floor, local_blocked=local_blocked,
+        )
+
+
+def _run_llm_job_inner(
+    files: Sequence[str | Path],
+    *,
+    export_root: Path,
+    private_root: Path,
+    discoverer: Discoverer | None,
+    settings: AppSettings | None,
+    roster_path: Path | None,
+    verification_rounds: int,
+    use_cache: bool,
+    extract_fn: Callable[[Path], ExtractedDocument],
+    extractor_version: str,
+    write_legend: bool,
+    engine: str | None,
+    engine_notes: Sequence[str],
+    job_id: str | None,
+    on_progress: ProgressFn | None,
+    fallback_engine: ContextualEngine | None,
+    local_floor: bool | None,
+    local_blocked: list[str] | None,
+) -> LlmJobResult:
     sources = _dedupe_paths(files)
     if not sources:
         raise ValueError("Nenhum arquivo foi informado.")
+    uncertainty.reset()  # v0.4.12: avisos de incerteza desta rodada
 
     local_only = discoverer is None
+    run_timing.restart_clock()  # H9-o: a espera na confirmacao da rodada nao conta no tempo total
     engine_id = engine or (
         ENGINE_LOCAL if local_only else getattr(getattr(discoverer, "config", None), "channel", "") or "llm"
     )
@@ -252,13 +364,20 @@ def _run_llm_job(
     export_dir.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
-    active = settings or AppSettings()
+    # H9-l: so a lista do caso da operacao escolhida na aba Caso (sem escolha, a lista inteira).
+    active = settings_for_operation(settings or AppSettings())
     reset_ner_status()
     floor = local_only or bool(active.llm_local_floor if local_floor is None else local_floor)
     exclusions = tuple(active.exclusions)
     detector = StructuredDetector(recognizers=build_recognizers(active))
     mapping = PseudonymMap(token_labels=active.token_labels())
     roster = Roster.load(roster_path) if roster_path else Roster()
+    # H9-j: a fusao por CNPJ le o texto ja mascarado: o token [CNPJ_n] vale o CNPJ do mapa.
+    roster.cnpj_resolver = lambda: {
+        record.token: record.canonical for record in mapping.records if record.entity_type == "BR_CNPJ"
+    }
+    # H9-i lote B1: cada entrada da lista do caso tem UMA entrada no elenco (todas as grafias, um token).
+    case = CaseLink(active, roster, exclusions)
     for name in active.target_companies:
         roster.add_listed("empresa", name)
     for name in active.target_people:
@@ -276,6 +395,8 @@ def _run_llm_job(
     total = len(sources)
     states: list[_FileState] = []
     errors: dict[Path, FileOutcome] = {}
+    # H9-c: contagens da higiene das mencoes do LLM (AUDITORIA, so numeros).
+    hygiene = LlmHygieneStats()
     for index, source in enumerate(sources):
         _report(on_progress, f"Lendo {source.name} ({index + 1} de {total})", 0.5 * index / total)
         state = _guard(
@@ -292,9 +413,13 @@ def _run_llm_job(
                 cache_dir=cache_dir,
                 extract_fn=extract_fn,
                 extractor_version=extractor_version,
+                hygiene=hygiene,
+                case=case,
             ),
         )
         if state is not None:
+            # Depois da descoberta (o texto mascarado nao muda): a busca da lista do caso em todo o arquivo.
+            state.ids = case.apply(state.text, state.ids, state.anchored)
             states.append(state)
 
     for index, state in enumerate(states):
@@ -310,7 +435,15 @@ def _run_llm_job(
             0.5 + 0.1 * index / max(1, len(states)),
         )
         _apply_local_fallback(state, engine=local_engine, exclusions=exclusions, floor=floor)
-    batch = _review_local_names(states, roster=roster, exclusions=exclusions)
+    batch = _review_local_names(
+        states,
+        roster=roster,
+        exclusions=exclusions,
+        hygiene=hygiene,
+        case=case,
+        retract=bool(getattr(active, "llm_may_retract", False)),
+        judge_retract=not local_only,
+    )
 
     for index, state in enumerate(states if not local_only else ()):
         _report(
@@ -329,8 +462,16 @@ def _run_llm_job(
                 exclusions=exclusions,
                 rounds=verification_rounds,
                 batch=batch,
+                hygiene=hygiene,
+                fuse=lambda: fuse_roster_identities(roster, states),
+                case=case,
             ),
         )
+    if not local_only and verification_rounds:
+        # H9-j: as entradas que a verificacao acrescentou passam pelo mesmo juizo (agente publico, instituicao do
+        # SISBAJUD, rua com nome de pessoa). No teste de 16/10 o banco do extrato e um servidor entraram pela
+        # verificacao rotulados "terceiro" e foram trocados sem juizo.
+        _judge_llm_entries(states, roster, exclusions, hygiene, local_batch=batch)
 
     _report(on_progress, "Gravando textos, mapa e elenco", 0.95)
     outcomes: list[FileOutcome] = []
@@ -339,15 +480,43 @@ def _run_llm_job(
     occurrences: Counter[str] = Counter()
     refused_brands: Counter[tuple[str, str]] = Counter()
     held: list[str] = []
+    # H9-f: nome pseudonimizado de cada arquivo (o que vai para a pasta exportavel e para o texto da AUDITORIA).
+    shown: dict[str, str] = {}
+    # H9-f: variante aceita no elenco (marca curta, prenome, sobrenome em "familia X", OCR) vale em todo o lote.
+    variants = VariantPropagator(roster, exclusions)
+    variants.prepare((item.text, item.folded, item.anchored) for item in states)
+    # H9-h: IDs que o mapa e os arquivos do lote ja conhecem, trocados em toda ocorrencia (passada final).
+    final_drops: Counter[str] = Counter()
+    forms = KnownForms()
+    forms.add_mapping(mapping)
+    forms.add_case(case.rules)
+    for item in states:
+        forms.add_spans(item.text, item.ids)
+    # Troca final com o elenco completo do lote (so acrescenta tokens). v0.4.13: primeiro os spans de todos os arquivos,
+    # para a denominacao usada por duas empresas (CNPJ diferentes) ser separada por empresa no lote inteiro.
+    final: dict[Path, tuple[list[EntitySpan], list[tuple[str, str]]]] = {}
+    for source in sources:
+        if source in errors:
+            continue
+        state = next(item for item in states if item.source == source)
+        final[source] = _final_spans(
+            state.text, state.ids, roster, state.anchored, exclusions, state.folded, batch, variants, forms,
+            source.name, final_drops,
+        )
+    shared_found: list = []
+    if final and features.enabled("shared_company_names"):
+        order = list(final)
+        texts_by_source = {item.source: item.text for item in states}
+        split, shared_found = split_shared_names([(texts_by_source[source], final[source][0]) for source in order])
+        for source, entities in zip(order, split):
+            final[source] = (entities, final[source][1])
     for source in sources:
         if source in errors:
             outcomes.append(errors[source])
             continue
         state = next(item for item in states if item.source == source)
-        # Troca final com o elenco completo do lote (so acrescenta tokens).
-        entities, result, _offsets, refused = _tokenize(
-            state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
-        )
+        entities, refused = final[source]
+        result, _offsets = pseudonymize_with_offsets(state.text, entities, mapping)
         refused_brands.update(refused)
         state.report.unread_pages = [
             page
@@ -359,6 +528,7 @@ def _run_llm_job(
         if state.report.fallback_error:
             # Nem o motor local tratou as folhas que o LLM nao leu: o texto tem nome em claro e NAO vai
             # para a pasta exportavel (B1). Fica retido, na pasta privada do lote.
+            shown[source.name] = export_stem(source, mapping, sources.index(source) + 1) + ".md"
             held_path = _unique_path(map_path.parent / QUARANTINE_DIR, source.stem, ".md")
             held_path.parent.mkdir(parents=True, exist_ok=True)
             held_path.write_text(add_sheet_anchors(result.text, held_path.name), encoding="utf-8")
@@ -376,14 +546,18 @@ def _run_llm_job(
                 )
             )
             continue
-        markdown_path = _unique_path(export_dir, source.stem, ".md")
+        markdown_path = _unique_path(
+            export_dir, export_stem(source, mapping, sources.index(source) + 1), ".md"
+        )
+        uncertainty.collect(markdown_path.name, state.text, entities, mapping)  # v0.4.12: AVISOS.md
+        shown[source.name] = markdown_path.name
         # Ancora visivel por folha, depois da troca (igual ao motor local).
         final_text = add_sheet_anchors(result.text, markdown_path.name)
         markdown_path.write_text(final_text, encoding="utf-8")
         occurrences.update(
             entity.canonical_key
             for entity in entities
-            if entity.recognizer == ROSTER_RECOGNIZER and entity.canonical_key in roster
+            if entity.recognizer in {ROSTER_RECOGNIZER, VARIANT_RECOGNIZER} and entity.canonical_key in roster
         )
         occurrences.update(_kept_occurrences(state, roster, exclusions))
         outcome = FileOutcome(
@@ -406,6 +580,7 @@ def _run_llm_job(
 
     # Empresas ligadas por vinculo declarado levam o sufixo de grupo ([EMPRESA_3·G1]), como no motor local:
     # depois da troca de todos os arquivos e antes da AUDITORIA, do INDICE e do ELENCO (que leem o sufixo).
+    set_cnpj_roots(mapping)  # v0.4.15: CNPJ diferente de cada lado nao forma grupo
     groups = apply_company_groups([outcome.markdown_path for outcome, _state in written])
     notes: list[tuple[str, list[str]]] = []
     for outcome, state in written:
@@ -420,34 +595,93 @@ def _run_llm_job(
         map_path.parent / ROSTER_FILENAME,
         annotations={
             entry.key: {
-                "token": tokens.get(entry.key, ""),
-                "ocorrencias": occurrences.get(entry.key, 0),
+                "token": tokens.get(variants.links.get(entry.key, entry.key), ""),
+                "ocorrencias": occurrences.get(variants.links.get(entry.key, entry.key), 0),
             }
             for entry in roster.entries
         },
     )
     write_outcomes_index(export_dir, outcomes)
+    write_name_map(
+        map_path.parent,
+        ((outcome.markdown_path.name, outcome.source.name) for outcome in outcomes if outcome.ok and outcome.markdown_path),
+    )
     legend_path = (
         _append_llm_roles(export_dir, roster, tokens, occurrences, groups)
         if write_legend and not local_only
         else None
     )
-    write_llm_private_audit(map_path.parent, refused_brands, batch=batch, mapping=mapping, local_only=local_only)
+    if write_legend and legend_path is None:
+        # H9-n: modo local (ou LLM sem papel a listar): a secao "Pode ser a mesma pessoa" sai pelo mapa.
+        legend_path = append_same_person_section(
+            export_dir,
+            [(record.token, record.preferred()) for record in mapping.records if record.entity_type == "PERSON"],
+            [outcome.markdown_path for outcome in outcomes if outcome.ok and outcome.markdown_path],
+        )
+    if write_legend:
+        # H9-o: empresa com 2+ razoes sociais no mesmo token (so contagens, sem nomes).
+        legend_path = append_denominations_section(export_dir, mapping.records) or legend_path
+        # v0.4.11: empresa que pode ser a mesma (forma curta ou denominacao anterior) e o app nao uniu.
+        legend_path = append_same_company_section(export_dir, mapping.records, groups) or legend_path
+        legend_path = append_family_section(export_dir, mapping.records) or legend_path
+        # v0.4.13: a mesma denominacao usada por empresas diferentes (CNPJ diferentes), separada por empresa.
+        legend_path = append_shared_names_section(export_dir, shared_found, mapping.records) or legend_path
+    write_llm_private_audit(
+        map_path.parent,
+        refused_brands,
+        batch=batch,
+        mapping=mapping,
+        local_only=local_only,
+        fallback_pages={
+            shown.get(name, name): list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
+        },
+    )
     notes.insert(0, ("elenco (sem nomes)", roster_summary(roster)))
     notes.insert(1, ("marca de uma palavra (so contagens)", brand_guard_lines(refused_brands)))
     if batch is not None:
         notes.insert(2, ("elenco do lote: marca de uma palavra (so tokens e contagens)", batch.brand_report(mapping)))
+    notes.insert(1, ("variantes do elenco (so contagens)", variants.audit_lines()))
+    notes.insert(2, ("formas conhecidas (so contagens)", [forms.audit_line(), *shared_name_lines(shared_found)]))
+    notes.insert(
+        3,
+        (
+            "higiene final da troca (so contagens)",
+            [
+                f"Marca, modelo ou implemento de veiculo retirado da troca final (nao e empresa): {final_drops['veiculo']}",
+                f"Nome de julgador em citacao de precedente mantido em claro: {final_drops['ementa']}",
+                "Pedaco de nome da lista do caso dentro do nome de pessoa mantida em claro (nao trocado): "
+                f"{final_drops['lista_dentro_de_mantido']}",
+                *guard_audit_lines(
+                    Counter({key[7:]: count for key, count in final_drops.items() if key.startswith("guarda:")})
+                ),
+            ],
+        ),
+    )
     notes.insert(0, ("mapa.json", audit_map_records(mapping.records)))
     fallback_by_file = {
         name: list(item.fallback_pages) for name, item in reports.items() if item.fallback_pages
     }
-    fallback_notes = _fallback_lines(fallback_by_file, held)
-    floor_notes = _local_only_lines(reports) if local_only else _floor_lines(floor, reports)
+    # Texto exportavel (AUDITORIA, LEIA-ME): so o nome pseudonimizado; a tela segue com o nome real.
+    shown_reports = {shown.get(name, name): item for name, item in reports.items()}
+    # v0.4.13: falha real do LLM e omissao do LLM coberta pelo motor local em linhas separadas, por folha (o H9-j
+    # separava so por arquivo: um arquivo com uma falha contava todas as folhas de resposta vazia como falha).
+    split = {shown.get(name, name): _split_fallback(item) for name, item in reports.items() if item.fallback_pages}
+    fallback_notes = _fallback_lines(
+        {name: failed for name, (failed, _omitted) in split.items() if failed},
+        [shown.get(name, name) for name in held],
+        omitted={name: omitted for name, (_failed, omitted) in split.items() if omitted},
+    )
+    floor_notes = _local_only_lines(shown_reports) if local_only else _floor_lines(floor, shown_reports)
     guide_notes = [*floor_notes, *fallback_notes]
     secrets = _secrets_of(discoverer)
     network = getattr(discoverer, "network_check", None)
     if local_only:
         network_notes = ["Nenhuma chamada a provedor: nada saiu desta maquina."]
+        # H9-d: o modo local tambem roda com a rede bloqueada fora do loopback; o zero fica escrito.
+        network_notes.append(
+            "Tentativas de rede fora de loopback bloqueadas: "
+            f"{len(local_blocked) if local_blocked is not None else 'rodada sem bloqueio de rede'}"
+        )
         engine_line = "Motor: local (pipeline unico, sem LLM)"
     else:
         network_notes = (
@@ -458,10 +692,46 @@ def _run_llm_job(
         engine_line = f"Motor LLM: {engine_id}"
         # H6: chamadas, tokens (entrada, saida, raciocinio) e respostas cortadas; so contagens.
         network_notes = [*network_notes, *getattr(discoverer, "usage_lines", lambda: [])()]
-    notes.insert(0, ("motor", [engine_line, *engine_notes, *network_notes, *guide_notes]))
+        # v0.4.13: quanto o modelo escreve por chamada e respostas fora do formato (escolha de modelo local).
+        llm_output_notes = list(getattr(discoverer, "output_stats_lines", lambda: [])())
+        network_notes = [*network_notes, *llm_output_notes]
+        if _is_local_llm(discoverer):
+            # H9-b: o canal local roda com a rede bloqueada fora do loopback; tem de dar 0.
+            blocked = getattr(discoverer, "blocked_count", lambda: None)()
+            network_notes.append(
+                "LLM local (Ollama, loopback), nada enviado. Tentativas de rede fora de loopback "
+                f"bloqueadas: {blocked if blocked is not None else 'rodada sem bloqueio de rede'}"
+            )
+    # H9-c: higiene das mencoes do LLM e papel publico (so contagens).
+    hygiene_notes = [] if local_only else hygiene.audit_lines(*role_counts(roster))
+    # H9-m: revisao externa (Gemini) aplicada as listas depois do lote anterior (so contagens).
+    review_notes = review_audit_lines(map_path.parent.parent, identifier)
+    # H9-o: linhas sem operacao, etiquetas desligadas e o registro da revisao externa aplicada.
+    review_notes = [*review_notes, *run_note_lines(active, map_path.parent.parent, identifier)]
+    # H9-o: tempo de cada etapa e total (tambem na AUDITORIA privada, abaixo).
+    timing_notes = run_timing.take_lines()
+    review_notes = [*review_notes, *timing_notes]
+    notes.insert(
+        0,
+        (
+            "motor",
+            [engine_line, *engine_notes, *case_list_lines(active), *review_notes, *network_notes, *hygiene_notes,
+             *guide_notes],
+        ),
+    )
+    # H9-j: sigilo e evento citado fora do lote (so folhas e eventos).
+    notes.append(lote_alerts.audit_section([o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None]))
     # Defesa em profundidade: nem a chave nem nada com cara de chave entra na AUDITORIA.
     notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]
     write_audit_report(export_dir, notes, engine=engine_id)
+    run_timing.append_private(map_path.parent / PRIVATE_AUDIT_NAME, timing_notes)  # H9-o
+    if not local_only:
+        # v0.4.13: tokens gerados por chamada e respostas fora do formato tambem na AUDITORIA privada.
+        run_timing.append_private(
+            map_path.parent / PRIVATE_AUDIT_NAME,
+            [scrub_secrets(line, *secrets) for line in llm_output_notes],
+            title="Tokens gerados pelo LLM por chamada e respostas fora do formato",
+        )
     write_lote_guides(
         job_id=identifier,
         export_dir=export_dir,
@@ -578,13 +848,52 @@ def _extract_and_mask(
     )
     text = cached.document.markdown
     stats = FidelityDropStats()
+    ids, masked, masked_offsets = mask_text(
+        text, detector=detector, mapping=mapping, exclusions=exclusions, source_name=source.name, stats=stats
+    )
+    return cached, text, stats, ids, masked, masked_offsets
+
+
+def mask_text(
+    text: str,
+    *,
+    detector: StructuredDetector,
+    mapping: PseudonymMap,
+    exclusions: Sequence[str],
+    source_name: str = "",
+    stats: FidelityDropStats | None = None,
+) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap]:
+    """Acha os IDs nesta maquina e os mascara: o texto que (so ele) pode ir ao LLM. Uma so definicao, usada
+    pelo pipeline e pelo comparador de motores (H9-c), para que os dois leiam o mesmo texto e dividam o cache."""
+
     ids = detector.detect(text)
     ids = propagate_mapped_ids(text, ids, mapping=mapping)
     ids = resolve_overlaps(
-        drop_protected_spans(text, ids, exclusions, source_name=source.name, stats=stats)
+        drop_protected_spans(text, ids, exclusions, source_name=source_name, stats=stats)
     )
     masked, masked_offsets = pseudonymize_with_offsets(text, ids, mapping)
-    return cached, text, stats, ids, masked, masked_offsets
+    return ids, masked, masked_offsets
+
+
+class LlmTextMasker:
+    """O texto que o pipeline manda ao LLM, sem rodar o pipeline nem gravar nada: mesmo detector de IDs, mesmo
+    ``settings`` e um ``PseudonymMap`` que vive entre os textos (como no lote), na ordem em que sao passados."""
+
+    def __init__(self, settings: AppSettings | None = None) -> None:
+        active = settings or AppSettings()
+        self._detector = StructuredDetector(recognizers=build_recognizers(active))
+        self._mapping = PseudonymMap(token_labels=active.token_labels())
+        self._exclusions = tuple(active.exclusions)
+
+    def mask(self, text: str, source_name: str = "") -> tuple[str, OffsetMap]:
+        _ids, masked, offsets = mask_text(
+            text,
+            detector=self._detector,
+            mapping=self._mapping,
+            exclusions=self._exclusions,
+            source_name=source_name,
+        )
+        return masked.text, offsets
 
 
 def _discover_file(
@@ -599,6 +908,8 @@ def _discover_file(
     cache_dir: Path | None,
     extract_fn: Callable[[Path], ExtractedDocument],
     extractor_version: str,
+    hygiene: LlmHygieneStats | None = None,
+    case: CaseLink | None = None,
 ) -> _FileState:
     """Fase 1: extrai, acha os IDs aqui, mascara e manda o LLM descobrir o elenco."""
 
@@ -635,7 +946,12 @@ def _discover_file(
         ids=ids,
         stats=stats,
         folded=fold_with_index(text),
-        anchored=absorb_mentions(discovery.mentions, roster, masked_offsets, source="llm"),
+        anchored=absorb_mentions(
+            _clean_mentions(discovery.mentions, masked.text, roster, exclusions, hygiene, case=case),
+            roster,
+            masked_offsets,
+            source="llm",
+        ),
         report=LlmFileReport(discovery=discovery.report),
         failed_pages=[failed],
         suspect_pages=failed | empty,
@@ -663,7 +979,7 @@ def plan_send(
     sources = _dedupe_paths(files)
     if not sources:
         raise ValueError("Nenhum arquivo foi informado.")
-    active = settings or AppSettings()
+    active = settings_for_operation(settings or AppSettings())  # H9-l: o mesmo texto que a rodada mascara
     detector = StructuredDetector(recognizers=build_recognizers(active))
     mapping = PseudonymMap(token_labels=active.token_labels())
     cache_dir = default_cache_dir(Path(private_root)) if use_cache else None
@@ -724,8 +1040,12 @@ def _verify_file(
     exclusions: Sequence[str],
     rounds: int,
     batch: BatchRoster | None = None,
+    hygiene: LlmHygieneStats | None = None,
+    fuse: Callable[[], int] | None = None,
+    case: CaseLink | None = None,
 ) -> None:
-    """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco."""
+    """Fase 2: o LLM le o texto ja tokenizado; o que ainda identifica entra no elenco. ``fuse`` (H9-h): funde as
+    entradas novas que sao a mesma pessoa ou empresa de uma que ja existe, antes de tokenizar de novo."""
 
     _entities, result, offsets, _refused = _tokenize(
         state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
@@ -735,13 +1055,20 @@ def _verify_file(
         check = discoverer.discover(result.text)
         state.report.verification.append(check.report)
         state.failed_pages.append(_pages_of(result.text, check.report.failed))
-        extra = absorb_mentions(check.mentions, roster, offsets, source="verificacao")
+        extra = absorb_mentions(
+            _clean_mentions(check.mentions, result.text, roster, exclusions, hygiene, case=case),
+            roster,
+            offsets,
+            source="verificacao",
+        )
         after = _tokenizable_state(roster)
         changed = sum(1 for key, value in after.items() if before.get(key) != value)
         if not changed and not extra:
             return
         state.report.new_in_verification += changed + len(extra)
         state.anchored.extend(extra)
+        if fuse is not None:
+            fuse()
         _entities, result, offsets, _refused = _tokenize(
             state.text, state.ids, roster, state.anchored, exclusions, state.folded, mapping, batch
         )
@@ -831,25 +1158,38 @@ def _review_local_names(
     *,
     roster: Roster,
     exclusions: Sequence[str],
+    hygiene: LlmHygieneStats | None = None,
+    case: CaseLink | None = None,
+    retract: bool = False,
+    judge_retract: bool = True,
 ) -> BatchRoster | None:
     """Fase 2, do lote: os nomes do motor local passam pelo mesmo juizo do motor local
     (``BatchRoster.review``) antes de entrar no elenco. Nome visto em contexto de juiz ou procurador nao
-    entra; instituicao do SISBAJUD fica em claro; rua com nome de pessoa entra como endereco. O que o LLM
-    ja pos no elenco nao muda: este juizo so decide o que o motor local acrescenta.
+    entra; instituicao do SISBAJUD fica em claro; rua com nome de pessoa entra como endereco. Ate o H9-b o que
+    o LLM ja pos no elenco nao mudava; a partir do H9-c o mesmo juizo vale para as entradas dele.
 
     O que passa entra no elenco (origem ``motor_local``: aparece na revisao e propaga pelo lote). Entrada
     do elenco marcada ``manter`` vence o motor local (juiz, orgao). Folha em que o LLM FALHOU conta como
     tratada pelo motor local mesmo que ele nao ache nada; folha de resposta vazia (ou, sem rede, fora do
     cache) so conta se o motor local achar algo.
+
+    H9-c: as entradas que o LLM pos no elenco passam pelo mesmo juizo (``_judge_llm_entries``), antes dos nomes
+    do motor local, mesmo quando o motor local nao rodou em nenhuma folha.
     """
 
     ran = [state for state in states if state.local_ran]
-    if not ran:
+    batch = None
+    if ran:
+        batch = BatchRoster(exclusions)
+        for state in ran:
+            batch.add(state.text, [*state.ids, *state.local_names])
+        batch.review(state.text for state in ran)
+    # H9-h: as entradas do LLM que sao a mesma pessoa ou empresa viram uma so ANTES do juizo (uma acao so, pelos
+    # papeis e pelo juizo de todas as grafias juntas) e de novo depois dos nomes do motor local.
+    fuse_roster_identities(roster, states)
+    _judge_llm_entries(states, roster, exclusions, hygiene, local_batch=batch)
+    if batch is None:
         return None
-    batch = BatchRoster(exclusions)
-    for state in ran:
-        batch.add(state.text, [*state.ids, *state.local_names])
-    batch.review(state.text for state in ran)
     judged = {entity.key: entity for entity in batch.entities()}
 
     # Agrupamento do lote (H8): a entidade do BatchRoster, nao a grafia, e a unidade do elenco. Toda grafia
@@ -860,8 +1200,22 @@ def _review_local_names(
         report = state.report
         in_zone = _suspect_zone(state)
         for span in state.local_names:
+            listed_key = case.key_for_span(span, state.text) if case is not None else None
+            if listed_key is not None:
+                # H9-i lote B1: nome da lista do caso (chave ``alvo:`` ou forma da entrada): o token da entrada da
+                # lista, sem o juizo do lote (a lista vence).
+                state.anchored.append((span.start, span.end, listed_key))
+                if in_zone(span.start):
+                    report.fallback_entities += 1
+                    state.local_pages.add(page_of(state.text, span.start))
+                continue
             value = state.text[span.start : span.end]
             kind = _NAME_KINDS[span.entity_type]
+            if judge_retract and _llm_would_retract(state, span, roster, kind, in_zone):
+                report.retract_candidates += 1
+                if retract:
+                    report.retracted += 1
+                    continue
             canonical = value
             entity = judged.get(batch.key_for(span.entity_type, value))
             if entity is not None:
@@ -897,7 +1251,45 @@ def _review_local_names(
         treated = real_failure | (state.suspect_pages & state.local_pages)
         report.fallback_pages = sorted(treated)
         report.empty_confirmed_pages = sorted(state.suspect_pages - treated)
+        # v0.4.13: a folha de resposta vazia em que o motor local achou nome NAO e falha do LLM (e omissao dele).
+        # Sem rede, a folha fora do cache nao foi lida (nao e omissao): conta como falha se o motor local a tratou.
+        report.failure_pages = sorted(treated & set(state.failed_discovery))
+        report.omission_pages = sorted(treated - set(state.failed_discovery))
+    fuse_roster_identities(roster, states)
     return batch
+
+
+def _llm_would_retract(
+    state: _FileState,
+    span: EntitySpan,
+    roster: Roster,
+    kind: str,
+    in_zone: Callable[[int], bool],
+) -> bool:
+    """H9-i lote B7: o LLM leu esta folha, respondeu, e nao apontou este nome que SO o detector de nomes achou.
+
+    Nunca vale para o que nao e do detector de nomes (lista do caso, base de CNPJ, CPF/CNPJ, regra, cabecalho), para
+    folha que o LLM nao leu ou respondeu vazio (``in_zone``) nem para nome que o elenco ja tem (o LLM o apontou em
+    outro lugar do lote) ou que cruza uma mencao do LLM."""
+
+    if span.recognizer != NER_LOCAL_RECOGNIZER or in_zone(span.start):
+        return False
+    value = state.text[span.start : span.end]
+    if roster.lookup(kind, value) is not None:
+        return False
+    return not any(start < span.end and span.start < end for start, end, _key in state.anchored)
+
+
+def fuse_roster_identities(roster: Roster, states: Sequence[_FileState]) -> int:
+    """H9-h: funde as entradas do mesmo nome (``roster_identity``) e leva as ancoras de todos os arquivos para a
+    chave que ficou. Devolve quantas entradas foram absorvidas."""
+
+    resolver = getattr(roster, "cnpj_resolver", None)
+    removed = fuse_identities(roster, [state.text for state in states], resolver() if resolver else None)
+    if removed:
+        for state in states:
+            state.anchored[:] = [(start, end, removed.get(key, key)) for start, end, key in state.anchored]
+    return len(removed)
 
 
 def _suspect_zone(state: _FileState) -> Callable[[int], bool]:
@@ -962,13 +1354,59 @@ def _floor_lines(floor: bool, reports: dict[str, LlmFileReport]) -> list[str]:
     return lines
 
 
-def _fallback_lines(by_file: dict[str, list[int]], held: Sequence[str]) -> list[str]:
-    """Linhas da AUDITORIA e do LEIA-ME: so nome de arquivo e numero de folha, nunca texto."""
+def _no_llm_failure(report: "LlmFileReport") -> bool:
+    return not report.discovery.failed and not any(check.failed for check in report.verification)
+
+
+EMPTY_PAGES_PHRASE = "Folhas com resposta VAZIA do LLM, cobertas pelo motor local e pela lista do caso (o LLM nao falhou)"
+FAILURE_PAGES_PHRASE = "Folhas tratadas pelo motor local por falha do LLM"
+
+
+def _split_fallback(report: "LlmFileReport") -> tuple[list[int], list[int]]:
+    """v0.4.13: (folhas de falha real do LLM, folhas de omissao do LLM cobertas pelo motor local). Relatorio
+    sem a separacao: tudo e falha, salvo se o LLM nao falhou nenhuma vez (entao tudo e omissao)."""
+
+    if report.failure_pages or report.omission_pages:
+        return list(report.failure_pages), list(report.omission_pages)
+    if _no_llm_failure(report):
+        return [], list(report.fallback_pages)
+    return list(report.fallback_pages), []
+
+
+def fallback_split(result: "LlmJobResult") -> dict[str, tuple[list[int], list[int]]]:
+    """v0.4.13: por arquivo (nome real, para a tela e a CLI), (folhas de falha do LLM, folhas de omissao do LLM
+    cobertas pelo motor local)."""
+
+    return {
+        name: _split_fallback(report) for name, report in result.reports.items() if report.fallback_pages
+    }
+
+
+def _fallback_lines(
+    by_file: dict[str, list[int]],
+    held: Sequence[str],
+    empty_only: set[str] | None = None,
+    omitted: dict[str, list[int]] | None = None,
+) -> list[str]:
+    """Linhas da AUDITORIA e do LEIA-ME: so nome de arquivo e numero de folha, nunca texto.
+
+    v0.4.13: ``by_file`` sao as folhas de FALHA real do LLM e ``omitted`` as de resposta vazia em que o motor local
+    achou nome; cada grupo tem a sua linha (antes a omissao do LLM era contada como falha). ``empty_only`` segue
+    para quem chama sem ``omitted``: arquivo sem nenhuma falha do LLM tem as folhas contadas como omissao."""
 
     lines: list[str] = []
-    if by_file:
-        listed = "; ".join(f"{name}: {_pages_label(pages)}" for name, pages in by_file.items())
-        lines.append(f"Folhas tratadas pelo motor local por falha do LLM: {listed}.")
+    empty_only = empty_only or set()
+    failed_files = {name: pages for name, pages in by_file.items() if name not in empty_only and pages}
+    empty_files = {name: list(pages) for name, pages in by_file.items() if name in empty_only and pages}
+    for name, pages in (omitted or {}).items():
+        if pages:
+            empty_files[name] = sorted({*empty_files.get(name, []), *pages})
+    if failed_files:
+        listed = "; ".join(f"{name}: {_pages_label(pages)}" for name, pages in failed_files.items())
+        lines.append(f"{FAILURE_PAGES_PHRASE}: {listed}.")
+    if empty_files:
+        listed = "; ".join(f"{name}: {_pages_label(pages)}" for name, pages in empty_files.items())
+        lines.append(f"{EMPTY_PAGES_PHRASE}: {listed}.")
     if held:
         lines.append(
             "Arquivo(s) retido(s) em quarentena (pasta privada; nao exportado): "
@@ -1046,7 +1484,34 @@ def _tokenize(
     folded: FoldedText,
     mapping: PseudonymMap,
     batch: BatchRoster | None = None,
+    variants: VariantPropagator | None = None,
+    forms: KnownForms | None = None,
+    source_name: str = "",
+    vehicle_drops: Counter[str] | None = None,
 ) -> tuple[list[EntitySpan], PseudonymizationResult, OffsetMap, list[tuple[str, str]]]:
+    entities, refused = _final_spans(
+        text, ids, roster, anchored, exclusions, folded, batch, variants, forms, source_name, vehicle_drops
+    )
+    result, offsets = pseudonymize_with_offsets(text, entities, mapping)
+    return entities, result, offsets, refused
+
+
+def _final_spans(
+    text: str,
+    ids: Sequence[EntitySpan],
+    roster: Roster,
+    anchored: Sequence[tuple[int, int, str]],
+    exclusions: Sequence[str],
+    folded: FoldedText,
+    batch: BatchRoster | None = None,
+    variants: VariantPropagator | None = None,
+    forms: KnownForms | None = None,
+    source_name: str = "",
+    vehicle_drops: Counter[str] | None = None,
+) -> tuple[list[EntitySpan], list[tuple[str, str]]]:
+    """Os spans finais de um texto (sem trocar): v0.4.13, a troca do lote espera a denominacao compartilhada
+    (``shared_names``), que olha todos os arquivos antes."""
+
     spans = spans_for_roster(
         text,
         roster.entries,
@@ -1055,6 +1520,19 @@ def _tokenize(
         folded=folded,
     )
     spans, refused = drop_geo_brand_spans(text, spans)
+    # H9-i lote B5: o julgador da ementa ("Rel. Min. X, Segunda Turma, DJe") fica em claro mesmo que o elenco o
+    # tenha como particular (o LLM costuma rotula-lo "parte"); nome da lista do caso segue trocado.
+    judges = [
+        span
+        for span in spans
+        if span.entity_type == "PERSON"
+        and getattr(roster.get(span.canonical_key), "source", "") != "lista"
+        and is_precedent_judge(text, span.start, span.end)
+    ]
+    if judges:
+        spans = [span for span in spans if span not in judges]
+        if vehicle_drops is not None:
+            vehicle_drops["ementa"] += len(judges)
     if batch is not None:
         # O que o elenco do lote do motor local acrescenta, igual ao modo local: IDs ja vistos no lote e
         # a marca de uma palavra aprovada (H5). A marca leva a chave da empresa NO ELENCO deste pipeline,
@@ -1067,9 +1545,224 @@ def _tokenize(
             if entry is not None and entry.action == KEEP:
                 continue
             spans.append(replace(span, canonical_key=key))
-    entities = resolve_overlaps([*ids, *spans])
-    result, offsets = pseudonymize_with_offsets(text, entities, mapping)
-    return entities, result, offsets, refused
+    if variants is not None:
+        spans.extend(variants.spans(text, [*ids, *spans], folded))
+    merged = [*ids, *spans]
+    if variants is not None:
+        # H9-g: a marca curta ligada a uma razao social leva o token dela.
+        merged = variants.relink(merged)
+    # H9-i lote B (conferencia no lote real): o pedaco de uma entrada da lista do caso (grafia de OCR, particula) que
+    # cai DENTRO do nome inteiro de uma pessoa mantida em claro (agente publico) nao e trocado; o nome listado de
+    # 2+ palavras continua vencendo.
+    kept = kept_name_ranges(text, roster.entries, extra_keep=exclusions, folded=folded)
+    if kept:
+        inside = [
+            span
+            for span in merged
+            if getattr(roster.get(span.canonical_key), "source", "") == "lista"
+            # So o pedaco de uma palavra (grafia de OCR, particula): o nome listado de 2+ palavras dentro de uma forma
+            # mais longa que o elenco mantem (o LLM juntou palavras ao nome) continua trocado.
+            and len(_WORD_TOKEN.findall(text[span.start : span.end])) < 2
+            and any(
+                start <= span.start
+                and span.end <= end
+                and (end - start) > (span.end - span.start)
+                and not _holds_listed_name(text[start:end], roster.get(span.canonical_key))
+                for start, end in kept
+            )
+        ]
+        if inside:
+            merged = [span for span in merged if span not in inside]
+            if vehicle_drops is not None:
+                vehicle_drops["lista_dentro_de_mantido"] += len(inside)
+    if "<!--" in text:
+        # H9-j: nenhuma troca dentro de comentario HTML (o "em-branco=0" da cobertura virou "em-[PESSOA_1]=0").
+        comments = comment_ranges(text)
+        merged = [span for span in merged if not inside_comment(comments, span.start, span.end)]
+    # v0.4.15: o sobrenome de familia da lista do caso ([SOBRENOME_n], prioridade da lista) dentro do nome inteiro de uma
+    # pessoa do elenco cede a ele: o nome que o LLM achou ("Prenome Sobrenome", pessoa fora da lista) ficava com o
+    # prenome em claro e o sobrenome no token da familia.
+    people = [span for span in merged if span.entity_type == "PERSON"]
+    merged = [
+        span
+        for span in merged
+        if span.entity_type != "FAMILY_NAME"
+        or not any(
+            other.start <= span.start and span.end <= other.end and other.end - other.start > span.end - span.start
+            for other in people
+        )
+    ]
+    entities = resolve_overlaps(merged)
+    entities = split_person_company_overlap(text, entities, roster)
+    entities = extend_address_tails(text, entities)  # v0.4.15: complemento e bairro no token do endereco
+    if variants is not None:
+        # H9-g: palavra de nome colada no token da pessoa (``[PESSOA_2] Domenico``) entra no mesmo token.
+        entities = variants.extend_adjacent(text, entities)
+    # H9-i lote B4: o nome escrito por inteiro e um token so (dois pedacos encostados, sufixo de geracao solto).
+    entities, joined = join_person_names(
+        text,
+        entities,
+        is_listed=lambda key: getattr(roster.get(key), "source", "") == "lista",
+        generation_key=lambda key, value: _generation_key(roster, key, value),
+    )
+    if variants is not None:
+        variants.stats["nome_inteiro"] += joined
+    # H9-h: marca, modelo ou implemento de veiculo nao e empresa, venha o span de onde vier (motor local, propagacao
+    # do elenco, variante): a ultima higiene antes da troca.
+    vehicles = [
+        item for item in entities if item.entity_type == "ORGANIZATION" and is_vehicle_span(text, item.start, item.end)
+    ]
+    if vehicles:
+        entities = [item for item in entities if item not in vehicles]
+        if vehicle_drops is not None:
+            vehicle_drops["veiculo"] += len(vehicles)
+    # H9-k: guarda final (termo juridico, minuscula, lugar, prenome da lista, agente publico, banco, endereco que nao e
+    # endereco, cauda de nome de outra pessoa, grafia colada da lista), sobre o span de qualquer origem.
+    guard_counts: Counter[str] = Counter()
+    entities = FinalGuard(roster.entries).apply(text, entities, guard_counts)
+    if vehicle_drops is not None:
+        for reason, count in guard_counts.items():
+            vehicle_drops["guarda:" + reason] += count
+    entities = sorted([*entities, *birth_date_spans(text, entities)], key=lambda span: (span.start, span.end))
+    if forms is not None:
+        # H9-h: passada final de formas conhecidas (ID que o mapa ja tem, em toda ocorrencia fora dos spans).
+        entities = sorted(
+            [*entities, *forms.spans(text, entities, exclusions, source_name)], key=lambda span: (span.start, span.end)
+        )
+    return entities, refused
+
+
+_WORD_TOKEN = re.compile(r"[^\W\d_]+")
+
+
+_NUMERIC_DATE = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
+_BIRTH_REACH = 800
+
+
+def birth_date_spans(text: str, entities: Sequence[EntitySpan]) -> list[EntitySpan]:
+    """v0.4.10: a data de nascimento trocada ([NASCIMENTO_n]) e trocada tambem nas outras ocorrencias da MESMA data a
+    ate 800 caracteres (a mesma pessoa, a linha de baixo); antes uma saia em token e a vizinha em claro."""
+
+    found: list[EntitySpan] = []
+    taken = [(span.start, span.end) for span in entities]
+    for span in entities:
+        if span.entity_type != "BR_NASCIMENTO":
+            continue
+        match = _NUMERIC_DATE.match(text[span.start : span.end].strip())
+        if match is None:
+            continue
+        day, month, year = match.groups()
+        pattern = re.compile(rf"(?<![\d/.-])0?{int(day)}[/.-]0?{int(month)}[/.-]{year}(?![\d/.-]?\d)")
+        low, high = max(0, span.start - _BIRTH_REACH), min(len(text), span.end + _BIRTH_REACH)
+        for other in pattern.finditer(text, low, high):
+            start, end = other.start(), other.end()
+            if any(start < b and a < end for a, b in taken):
+                continue
+            taken.append((start, end))
+            found.append(replace(span, start=start, end=end, recognizer="NascimentoVizinho"))
+    return found
+
+
+def _generation_key(roster: Roster, key: str, value: str) -> str:
+    """v0.4.10: o token do nome com o sufixo de geracao ("[PESSOA_2] Filho"): o da propria entrada so se ela tem o
+    mesmo sufixo; senao o da entrada do filho/neto no elenco, ou uma chave nova (outra pessoa)."""
+
+    entry = roster.get(key)
+    if entry is not None and not conflicting_generation(entry.name, value):
+        return key
+    found = roster.lookup("pessoa", value)
+    if found is not None and not conflicting_generation(found.name, value):
+        return found.key
+    return entity_key("pessoa", value)
+
+
+def _holds_listed_name(kept_text: str, listed: object) -> bool:
+    """A forma mantida traz o nome inteiro (2+ palavras) da entrada da lista: e o nome listado, nao um pedaco de outra
+    pessoa; a lista vence (H9-i lote B)."""
+
+    if listed is None:
+        return False
+    folded = " ".join(fold_lexical(kept_text).split())
+    for value in (getattr(listed, "name", ""), *getattr(listed, "variants", ())):
+        form = " ".join(fold_lexical(value).split())
+        if len(_WORD_TOKEN.findall(form)) >= 2 and re.search(rf"(?<!\w){re.escape(form)}(?!\w)", folded):
+            return True
+    return False
+
+
+_NEXT_WORD_TOKEN = re.compile(r"[ 	]+([^\W\d_]+)")
+_SOCIETARY_WORDS = frozenset({"ltda", "me", "epp", "eireli", "sa"})
+
+
+def split_person_company_overlap(
+    text: str, chosen: Sequence[EntitySpan], roster: Roster
+) -> list[EntitySpan]:
+    """H9-h (revisao, R4): o sobrenome da pessoa e a primeira palavra da razao social do elenco ("Joel Martinez
+    Tavernard Agroflorestal"). O span da pessoa leva o sobrenome e a razao social, que nao acha onde comecar, ficava em
+    claro. Quando as ultimas palavras do span da pessoa sao as primeiras da razao social de uma empresa do elenco e o
+    resto da razao social vem logo depois no texto, a empresa leva o proprio token e a pessoa fica com o que sobra
+    antes dela (se sobrar nome)."""
+
+    firsts: dict[str, list[tuple[str, list[str]]]] = {}
+    for entry in roster.entries:
+        if entry.kind != "empresa" or entry.action != TOKENIZE:
+            continue
+        for value in (entry.name, *entry.variants):
+            words = _WORD_TOKEN.findall(fold_lexical(entity_core("empresa", value)))
+            words = [word for word in words if word not in _SOCIETARY_WORDS]
+            if len(words) >= 2:
+                firsts.setdefault(words[0], []).append((entry.key, words))
+    if not firsts:
+        return list(chosen)
+    result = list(chosen)
+    for span in list(result):
+        if span.entity_type != "PERSON" or not span.canonical_key:
+            continue
+        person = roster.get(span.canonical_key)
+        if person is None or person.kind != "pessoa" or person.action != TOKENIZE:
+            continue
+        tokens = [(m.start(), m.end(), fold_lexical(m.group())) for m in _WORD_TOKEN.finditer(text, span.start, span.end)]
+        for index in range(1, len(tokens)):
+            options = firsts.get(tokens[index][2])
+            if not options:
+                continue
+            tail = [word for _s, _e, word in tokens[index:]]
+            for key, words in options:
+                if tail != words[: len(tail)] or len(words) == len(tail):
+                    continue
+                cursor = span.end
+                for expected in words[len(tail) :]:
+                    match = _NEXT_WORD_TOKEN.match(text, cursor)
+                    if match is None or fold_lexical(match.group(1)) != expected:
+                        break
+                    cursor = match.end()
+                else:
+                    match = _NEXT_WORD_TOKEN.match(text, cursor)
+                    if match is not None and fold_lexical(match.group(1)) in _SOCIETARY_WORDS:
+                        cursor = match.end()
+                    start = tokens[index][0]
+                    others = [item for item in result if item is not span and item.start < cursor and start < item.end]
+                    person_end = span.start + len(text[span.start : start].rstrip())
+                    if others or person_end <= span.start:
+                        continue
+                    result[result.index(span)] = replace(span, end=person_end)
+                    company = roster.get(key)
+                    result.append(
+                        EntitySpan(
+                            start=start,
+                            end=cursor,
+                            entity_type=company.entity_type,
+                            score=span.score,
+                            recognizer=span.recognizer,
+                            canonical_key=key,
+                            alvo=company.name,
+                        )
+                    )
+                    break
+            else:
+                continue
+            break
+    return sorted(result, key=lambda item: (item.start, item.end, item.entity_type))
 
 
 def _roster_keys(batch: BatchRoster, roster: Roster) -> dict[str, str]:
@@ -1081,6 +1774,16 @@ def _roster_keys(batch: BatchRoster, roster: Roster) -> dict[str, str]:
         entry = roster.lookup(kind, entity.representative)
         if entry is not None:
             keys[entity.key] = entry.key
+    # v0.4.10: marca de 2+ razoes sociais que o elenco ja uniu (mesmo CNPJ: nome antigo e novo) leva o token da
+    # entrada unica; a marca que o elenco ja tem como entrada propria leva o token dela.
+    for word, owners in getattr(batch, "brand_owners", {}).items():
+        mapped = {keys.get(owner) for owner in owners}
+        if len(mapped) == 1 and None not in mapped:
+            keys[word] = mapped.pop()
+            continue
+        entry = roster.lookup("empresa", word)
+        if entry is not None:
+            keys[word] = entry.key
     return keys
 
 
@@ -1144,6 +1847,7 @@ def write_llm_private_audit(
     batch: BatchRoster | None = None,
     mapping: PseudonymMap | None = None,
     local_only: bool = False,
+    fallback_pages: dict[str, list[int]] | None = None,
 ) -> Path:
     """``AUDITORIA_PRIVADA.txt`` do lote: as palavras recusadas e a marca de uma palavra aprovada pelo elenco
     do lote, para o Operador conferir. Fica ao lado do ``mapa.json``, nunca na pasta dos textos."""
@@ -1168,6 +1872,15 @@ def write_llm_private_audit(
             *(f"- {line}" for line in batch.brand_report(mapping, private=True)),
             "",
         ]
+    if fallback_pages:
+        # H9-k: a AUDITORIA do lote corta a lista em 20 folhas; aqui vai inteira, para conferir cada folha que o LLM
+        # nao leu (resposta vazia ou falha) e o motor local cobriu.
+        lines.append("## Folhas tratadas pelo motor local (resposta vazia ou falha do LLM), lista completa")
+        lines += [
+            f"- {name}: {len(pages)} folha(s): {', '.join(str(page) for page in sorted(pages))}"
+            for name, pages in fallback_pages.items()
+        ]
+        lines.append("")
     path = Path(private_dir) / PRIVATE_AUDIT_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1192,6 +1905,265 @@ def pseudonymize_with_offsets(
         orig_ends.append(entity.end)
         shift = token_end - entity.end
     return result, OffsetMap(tuple(new_starts), tuple(new_ends), tuple(orig_ends))
+
+
+def _clean_mentions(
+    mentions: Iterable[Mention],
+    text: str,
+    roster: Roster,
+    exclusions: Sequence[str],
+    stats: LlmHygieneStats | None,
+    *,
+    case: CaseLink | None = None,
+) -> list[Mention]:
+    """H9-c: higiene das mencoes do LLM (``llm_hygiene``), a mesma em todos os canais, antes do elenco.
+    So descarta mencao do proprio LLM que nao e nome de pessoa, empresa ou endereco; o motor local nao passa
+    por aqui. ``text`` e o texto que o LLM leu (as posicoes sao dele)."""
+
+    known = [
+        value
+        for entry in roster.entries
+        if entry.kind == "pessoa"
+        for value in (entry.name, *entry.variants)
+    ]
+    companies = [
+        value
+        for entry in roster.entries
+        if entry.kind == "empresa" and len(entry.name.split()) >= 2
+        for value in (entry.name, *entry.variants)
+        if len(value.split()) >= 2
+    ]
+    if case is not None:
+        companies += [entry.original for entry in case.engine.entries if entry.kind == "empresa"]
+    if case is None:
+        return filter_llm_mentions(
+            mentions, text, stats, extra_keep=exclusions, known_people=known, known_companies=companies
+        )
+    # H9-i lote B1: a mencao que casa com uma entrada da lista do caso vai para ela e nao passa pela higiene (termo
+    # protegido, palavra comum, papel); a que a higiene apara (papel colado, token) e conferida de novo depois.
+    listed, rest = case.route(mentions, text)
+    cleaned = filter_llm_mentions(
+        rest, text, stats, extra_keep=exclusions, known_people=known, known_companies=companies
+    )
+    more, cleaned = case.route(cleaned, text)
+    return [*listed, *more, *cleaned]
+
+
+# H9-e: "endereco" entra como ORGANIZATION so para a posicao de instituicao financeira (SISBAJUD): no 8b, seis
+# bancos viraram [ENDERECO_n] porque o LLM os classificou como endereco.
+_JUDGED_TYPES = {"pessoa": "PERSON", "empresa": "ORGANIZATION", "endereco": "ORGANIZATION"}
+
+
+def _judge_llm_entries(
+    states: Sequence[_FileState],
+    roster: Roster,
+    exclusions: Sequence[str],
+    stats: LlmHygieneStats | None,
+    local_batch: BatchRoster | None = None,
+) -> None:
+    """H9-c: o juizo do lote (``BatchRoster.review``: agente publico por contexto de "assinado por"/cargo,
+    instituicao do SISBAJUD, rua com nome de pessoa) tambem sobre as entradas que o LLM pos no elenco.
+    Antes so o NER passava por ele. Entrada julgada agente publico ou instituicao financeira vira ``manter``
+    (``Roster.lock_keep``: "entrada manter vence", nenhuma mencao posterior a desfaz); rua com nome de pessoa
+    passa a endereco. Entrada fixada pelo usuario e lista de alvos nao mudam.
+
+    H9-h: o veredito do motor local e o do juizo DEPOIS da revisao do lote dele (``local_batch``: todos os textos
+    em que o motor rodou, nao so os que tiveram deteccao), e vale para todas as grafias da entrada: se alguma
+    delas o motor local manteria (cargo, instituicao), o "manter negado por o motor local trocar" nao se aplica.
+
+    Usa um ``BatchRoster`` so para julgar (nao o do pipeline): as entidades do LLM nao entram na marca de uma
+    palavra nem na propagacao de IDs do lote, que seguem sendo do motor local."""
+
+    keys = {key for state in states for _s, _e, key in state.anchored}
+    candidates = [
+        entry
+        for key in sorted(keys)
+        if (entry := roster.get(key)) is not None
+        and entry.kind in _JUDGED_TYPES
+        and entry.action == TOKENIZE
+        and not entry.pinned
+        and entry.source != "lista"
+    ]
+    if not candidates:
+        return
+    # H9-f: juizo estrito da assinatura (socio assina contrato digitalmente) e verdicto do motor local sozinho.
+    judge = BatchRoster(exclusions, strict_signature=True)
+    local_entities = {item.key: item for item in local_batch.entities()} if local_batch is not None else {}
+    for state in states:
+        spans = list(state.local_names)
+        for start, end, key in state.anchored:
+            entry = roster.get(key)
+            if entry is None or entry.kind not in _JUDGED_TYPES or not 0 <= start < end <= len(state.text):
+                continue
+            spans.append(
+                EntitySpan(start=start, end=end, entity_type=_JUDGED_TYPES[entry.kind], score=0.9, recognizer="LlmMention")
+            )
+        judge.add(state.text, spans)
+    judge.review(state.text for state in states)
+    judged = {entity.key: entity for entity in judge.entities()}
+    for entry in candidates:
+        entity_type = _JUDGED_TYPES[entry.kind]
+        entity = _joint_verdict(judged, judge, entity_type, entry)
+        if entity is None:
+            continue
+        if _local_engine_tokenizes(entry, local_batch, local_entities):
+            # O LLM so acrescenta protecao: o que o motor local tambem achou e vai trocar nao vira "manter".
+            if stats is not None:
+                stats.lote_motor_local += 1
+            continue
+        if entry.kind == "pessoa" and entity.public_agent and _private_occurrence(entry, states):
+            # v0.4.11: homonimo (o mesmo nome com CPF, qualificacao ou rotulo de parte em alguma ocorrencia): o nome nao
+            # fica em claro no lote inteiro; a ocorrencia com o cargo colado fica em claro pela guarda final.
+            if stats is not None:
+                stats.lote_privado += 1
+            continue
+        if entry.kind == "pessoa" and entity.public_agent and _private_party(entry, states):
+            # Papeis so privados do LLM (parte, socio, terceiro...) e CPF ou qualificacao de pessoa em algum
+            # contexto: nunca vira "manter" pelo juizo do lote.
+            if stats is not None:
+                stats.lote_privado += 1
+            continue
+        if entry.kind == "pessoa" and entity.is_street:
+            addresses = [
+                roster.add_mention(
+                    Mention(kind="endereco", text=value, canonical=entry.name), source=entry.source
+                )
+                for value in (entry.name, *entry.variants)
+            ]
+            street = next((item for item in addresses if item is not None), None)
+            if street is not None and roster.lock_keep(entry.key):
+                for state in states:
+                    state.anchored.extend(
+                        (start, end, street.key) for start, end, key in list(state.anchored) if key == entry.key
+                    )
+                if stats is not None:
+                    stats.lote_rua += 1
+        elif entry.kind == "pessoa" and entity.public_agent:
+            if roster.lock_keep(entry.key) and stats is not None:
+                stats.lote_publico += 1
+        elif entry.kind in {"empresa", "endereco"} and entity.financial:
+            if roster.lock_keep(entry.key) and stats is not None:
+                stats.lote_financeiro += 1
+    # v0.4.10: a regra do julgador e do agente publico do motor local tambem para a entrada do LLM: TODAS as
+    # ocorrencias logo depois de Relator(a), Desembargador(a), Juiz(a), Procurador da Fazenda Nacional (ou com o
+    # cargo logo depois), sem CPF nem qualificacao de particular: fica em claro.
+    for entry in candidates:
+        if entry.kind != "pessoa" or entry.action != TOKENIZE:
+            continue
+        spots = [
+            (state.text, start, end)
+            for state in states
+            for start, end, key in state.anchored
+            if key == entry.key and 0 <= start < end <= len(state.text)
+        ]
+        if not spots:
+            continue
+        # v0.4.11 (decisao do Operador: nenhum agente publico vira token): basta o cargo colado em ALGUMA ocorrencia do
+        # nome, desde que nenhuma ocorrencia (ancorada ou nao, em qualquer arquivo) tenha prova de particular.
+        occurrences = _occurrences(entry, states) + spots
+        if not lot_public_agent(occurrences):
+            if not all(public_agent_mention(text, start, end) for text, start, end in spots):
+                continue
+            if _private_party(entry, states) or any(private_evidence(*item) for item in occurrences):
+                continue
+        if roster.lock_keep(entry.key) and stats is not None:
+            stats.agente_publico += 1
+
+
+# H9-g: "socio" e "empresario" na frase nao provam que o NOME e de particular (o procurador da Fazenda que
+# "requereu a citacao do socio" ficava trocado). Prova: CPF a ate 40 caracteres do nome, ou a qualificacao de
+# pessoa logo depois dele ("Fulano, brasileiro, casado", "Fulano, empresario, residente em ...").
+_PRIVATE_CPF = re.compile(r"(?i)\bcpf\b|\[CPF_\d+|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
+_PRIVATE_QUALIFICATION_AFTER = re.compile(
+    r"(?i)^[\s,;(–—-]*(?:[^\W\d_]+(?:-[^\W\d_]+)?[\s,;]+)?"
+    r"(?:brasileir[oa]|casad[oa]|solteir[oa]|divorciad[oa]|vi[uú]v[oa]|residente|domiciliad[oa]|nascid[oa]|"
+    r"portador(?:a)?)\b"
+)
+_EVIDENCE_REACH = 40
+
+
+def _joint_verdict(judged: dict, judge: BatchRoster, entity_type: str, entry) -> SimpleNamespace | None:
+    """H9-h: o veredito do juizo sobre TODAS as grafias da entrada (nome e variantes) juntas: agente publico,
+    instituicao financeira ou rua em qualquer uma vale para a entrada. ``None`` se nenhuma grafia foi julgada."""
+
+    found = []
+    for value in (entry.name, *entry.variants):
+        entity = judged.get(judge.key_for(entity_type, value))
+        if entity is not None and entity not in found:
+            found.append(entity)
+    if not found:
+        return None
+    return SimpleNamespace(
+        public_agent=any(item.public_agent for item in found),
+        financial=any(item.financial for item in found),
+        is_street=any(item.is_street for item in found),
+    )
+
+
+def _local_engine_tokenizes(entry, batch: BatchRoster | None, local: dict) -> bool:
+    """O motor local, DEPOIS do juizo do lote dele (``batch.review`` em ``_review_local_names``: o mesmo que
+    decide o que o modo so local deixa em claro), de fato trocaria este nome? Se o motor local nao o achou, ou
+    o juizo o manteria (agente publico, instituicao financeira) ou o retiparia como rua, nao troca (H9-h)."""
+
+    if batch is None:
+        return False
+    entity_type = _JUDGED_TYPES[entry.kind]
+    found = []
+    for value in (entry.name, *entry.variants):
+        entity = local.get(batch.key_for(entity_type, value))
+        if entity is not None:
+            found.append(entity)
+    if not found:
+        return False
+    return not any(item.public_agent or item.financial or item.is_street for item in found)
+
+
+_SENTENCE_END = re.compile(r"\n|[.;]\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])")
+
+
+def _evidence_window(text: str, start: int, end: int) -> tuple[int, int]:
+    """Janela da mesma frase: ate 40 caracteres antes e ate 40 depois do nome, sem atravessar quebra de linha
+    nem fim de frase (o CPF da frase vizinha nao qualifica quem vem depois)."""
+
+    lo = max(text.rfind("\n", 0, start) + 1, start - _EVIDENCE_REACH)
+    hi = min(len(text), end + _EVIDENCE_REACH)
+    cut = _SENTENCE_END.search(text, end, hi)
+    return lo, cut.start() if cut is not None else hi
+
+
+def _occurrences(entry, states: Sequence[_FileState]) -> list[tuple[str, int, int]]:
+    """Todas as ocorrencias do nome da entrada no lote (texto, inicio, fim)."""
+
+    return [
+        (state.text, span.start, span.end)
+        for state in states
+        for span in spans_for_roster(state.text, [entry], folded=state.folded)
+    ]
+
+
+def _private_occurrence(entry, states: Sequence[_FileState]) -> bool:
+    """v0.4.11: alguma ocorrencia do nome tem prova de particular (CPF, qualificacao, OAB, rotulo de parte)."""
+
+    return any(private_evidence(*item) for item in _occurrences(entry, states))
+
+
+def _private_party(entry, states: Sequence[_FileState]) -> bool:
+    """Todos os papeis conhecidos do LLM para a entrada sao privados e ela tem CPF ou qualificacao de pessoa
+    (brasileiro, casado, residente...) perto de alguma ocorrencia (ancorada ou nao), em qualquer arquivo."""
+
+    roles = {role for role in entry.roles if role != UNKNOWN_ROLE}
+    if not roles or not roles <= PRIVATE_ROLES:
+        return False
+    for state in states:
+        for span in spans_for_roster(state.text, [entry], folded=state.folded):
+            lo, hi = _evidence_window(state.text, span.start, span.end)
+            if _PRIVATE_CPF.search(state.text[lo:hi]):
+                return True
+            if _PRIVATE_QUALIFICATION_AFTER.match(state.text[span.end : hi]):
+                return True
+            if any(item.entity_type == "BR_CPF" and lo <= item.start < hi for item in state.ids):
+                return True
+    return False
 
 
 def absorb_mentions(
@@ -1233,6 +2205,13 @@ def roster_summary(roster: Roster) -> list[str]:
     ]
     if pinned:
         lines.append(f"Decisoes do usuario aplicadas: {pinned}")
+    reasons = roster.identity_reasons
+    lines.append(
+        f"Entradas fundidas por identidade: {roster.identity_merges} (igual normalizado {reasons.get('igual', 0)}, "
+        f"OCR {reasons.get('ocr', 0)}, nome canonico do LLM {reasons.get('canonico', 0)}"
+        + (f", mesmo CNPJ {reasons['cnpj']}" if reasons.get("cnpj") else "")
+        + ")"
+    )
     return lines
 
 
@@ -1285,6 +2264,15 @@ def _file_notes(
             f"{len(discovery.empty)} resposta(s) vazia(s) (nao guardada(s) no cache), "
             f"{discovery.ungrounded} mencao(oes) sem ancora no texto"
         ),
+        (
+            f"Trechos vazios reenviados ao LLM: {discovery.empty_retried}; "
+            f"com entidade na segunda vez: {discovery.empty_recovered}"
+        ),
+        (
+            "Nomes so do detector de nomes que o LLM leu e nao apontou: "
+            f"{report.retract_candidates}; retirados: {report.retracted}"
+            + ("" if report.retracted else " (opcao llm_may_retract desligada ou nada a retirar)")
+        ),
     ]
     for number, check in enumerate(report.verification, start=1):
         notes.append(
@@ -1298,11 +2286,13 @@ def _file_notes(
     if reasons:
         notes.append("Motivos de falha: " + " | ".join(reasons[:5]))
     if report.fallback_pages:
-        notes.append(
-            "Folhas tratadas pelo motor local por falha do LLM: "
-            + _pages_label(report.fallback_pages)
-            + f" ({report.fallback_entities} entidade(s) apontada(s) pelo motor local)."
-        )
+        # v0.4.13: falha real e omissao do LLM em linhas separadas, cada uma com as suas folhas.
+        failed, omitted = _split_fallback(report)
+        if failed:
+            notes.append(f"{FAILURE_PAGES_PHRASE}: " + _pages_label(failed) + ".")
+        if omitted:
+            notes.append(f"{EMPTY_PAGES_PHRASE}: " + _pages_label(omitted) + ".")
+        notes.append(f"Entidades apontadas pelo motor local nessas folhas: {report.fallback_entities}.")
     if report.empty_confirmed_pages:
         notes.append(
             "Resposta vazia do LLM, sem nome segundo o motor local: "
@@ -1347,6 +2337,39 @@ def _token_order(token: str) -> tuple[str, int]:
     return label, int(number) if number.isdigit() else 0
 
 
+def _partial_name_rows(
+    roster: Roster, tokens: dict[str, str], documents: Sequence[tuple[str, str]] = ()
+) -> list[tuple[str, list[str], str]]:
+    """H9-j: token de pessoa cujo nome (todas as palavras) cabe dentro do nome de outro token de pessoa: "pode ser a
+    mesma pessoa". So tokens e o tipo de ligacao (prenome, sobrenome, parte do nome); nenhum nome sai daqui. A regra e
+    a do modo local (``partial_name_rows``: sem pai x filho nem grafias que o texto compara)."""
+
+    people = []
+    for entry in roster.to_tokenize():
+        token = tokens.get(entry.key)
+        if token is None or entry.kind != "pessoa":
+            continue
+        people.append((token, entry.name))
+    rows = partial_name_rows(people, documents)
+    rows.sort(key=lambda row: _token_order(row[0]))
+    return rows
+
+
+# v0.4.10: papel generico ("parte", "terceiro") nao acrescenta nada ao lado de um especifico ("socio", "advogado").
+_GENERIC_ROLES = ("parte", "terceiro")
+
+
+def _role_summary(roles: Sequence[str]) -> str:
+    """Os papeis do LLM sem o desconhecido e sem o generico quando ha um especifico; no maximo 3."""
+
+    known = [role for role in dict.fromkeys(roles) if role and role != "desconhecido"]
+    specific = [role for role in known if role not in _GENERIC_ROLES]
+    shown = specific or known
+    if len(shown) > 3:
+        return ", ".join(shown[:3]) + f" (+{len(shown) - 3})"
+    return ", ".join(shown) or "-"
+
+
 def _append_llm_roles(
     export_dir: Path,
     roster: Roster,
@@ -1365,8 +2388,7 @@ def _append_llm_roles(
         token = tokens.get(entry.key)
         if token is None:
             continue
-        roles = ", ".join(role for role in entry.roles if role != "desconhecido") or "-"
-        rows.append((token, entry.kind, roles, occurrences.get(entry.key, 0)))
+        rows.append((token, entry.kind, _role_summary(entry.roles), occurrences.get(entry.key, 0)))
     if not rows:
         return None
     rows.sort(key=lambda row: _token_order(row[0]))
@@ -1380,6 +2402,17 @@ def _append_llm_roles(
         "|---|---|---|---|",
         *(f"| {token} | {kind} | {roles} | {count} |" for token, kind, roles, count in rows),
     ]
+    documents = [
+        (path.name, path.read_text(encoding="utf-8"))
+        for path in sorted(Path(export_dir).glob("*.md"))
+        if path.name not in {LEGEND_FILENAME, "INDICE.md", "INSTRUCOES_IA.md"}
+    ]
+    partial = _partial_name_rows(roster, tokens, documents)
+    # H9-n: tambem os tokens de pessoa ao lado do mesmo CPF; secao vazia diz "Nenhum caso detectado".
+    seen = {(token, tuple(others)) for token, others, _how in partial}
+    partial += [row for row in same_cpf_rows(documents) if (row[0], tuple(row[1])) not in seen]
+    partial.sort(key=lambda row: _token_order(row[0]))
+    lines += ["", *same_person_lines(partial)]
     path = export_dir / LEGEND_FILENAME
     existing = path.read_text(encoding="utf-8").rstrip("\n") if path.is_file() else ""
     # O token de empresa de um grupo leva o sufixo tambem aqui, como no resto do ELENCO.md.

@@ -205,7 +205,7 @@ class Ciclo2LabeledOcrTests(unittest.TestCase):
     def test_matriculas_plural_list_is_detected(self) -> None:
         text = "as matrículas nº 294; nº 301 e o pedido. Uniao."
         types = self._types(text)
-        self.assertIn("BR_MATRICULA_IMOVEL", types)
+        self.assertNotIn("BR_MATRICULA_IMOVEL", types)  # H9-i: matricula fica sempre em claro
 
 
 if __name__ == "__main__":

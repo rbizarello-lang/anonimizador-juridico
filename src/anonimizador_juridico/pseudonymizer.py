@@ -32,10 +32,24 @@ _TOKEN_LABELS = {
     "BR_NASCIMENTO": "NASCIMENTO",
     "BR_TITULO_ELEITOR": "TITULO",
     "BR_PIS": "PIS",
+    "BR_CTPS": "CTPS",
+    "BR_NIRE": "NIRE",
+    "BR_CNH": "CNH",
+    "BR_URL": "URL",
+    "BR_CDA": "CDA",
+    "BR_REGISTRO_CIVIL": "REGISTRO_CIVIL",
+    "BR_CADASTRO_RURAL": "CADASTRO_RURAL",
+    "BR_REGISTRO_JUNTA": "REGISTRO_JUNTA",
+    "BR_IP": "IP",
+    "BR_PROCESSO_ADMINISTRATIVO": "PROCESSO_ADMINISTRATIVO",
     "BR_EPROC": "EPROC",
     "PERSON": "PESSOA",
     "ORGANIZATION": "EMPRESA",
     "LOCATION": "ENDERECO",
+    # v0.4.11: sobrenome de familia ("familia X", "patronimico X"): token proprio, nunca o de uma pessoa.
+    "FAMILY_NAME": "SOBRENOME",
+    # v0.4.15: prenome solto de 2+ pessoas do lote: token de prenome, nunca o de uma pessoa so.
+    "FIRST_NAME": "PRENOME",
 }
 
 _PIX_LABEL = re.compile(
@@ -164,9 +178,19 @@ def canonicalize(entity_type: str, value: str) -> str:
         "BR_NASCIMENTO",
         "BR_TITULO_ELEITOR",
         "BR_PIS",
+        "BR_CTPS",
+        "BR_NIRE",
+        "BR_CNH",
+        "BR_PROCESSO_ADMINISTRATIVO",
+        "BR_CADASTRO_RURAL",
+        "BR_REGISTRO_JUNTA",
     }:
         return only_digits(value)
+    if entity_type == "BR_CDA":
+        return re.sub(r"[^0-9A-Z]", "", value.upper())
     if entity_type == "BR_PIX":
+        if re.fullmatch(r"E\d{20}[0-9A-Za-z]{11}", value.strip()):
+            return value.strip().upper()  # EndToEndId (alfanumerico)
         return re.sub(r"[^0-9a-f]", "", _PIX_LABEL.sub("", value, count=1).casefold())
     if entity_type == "BR_PLACA":
         compact = re.sub(r"[^A-Z0-9]", "", _PLACA_LABEL.sub("", value, count=1).upper())
@@ -204,10 +228,31 @@ class MapRecord:
     canonical: str
     originals: list[str] = field(default_factory=list)
     alvo: str = ""
+    # H9-j: quantas vezes cada grafia foi trocada (para a forma preferida na reversao).
+    counts: dict[str, int] = field(default_factory=dict)
 
     def add_original(self, value: str) -> None:
         if value not in self.originals:
             self.originals.append(value)
+        self.counts[value] = self.counts.get(value, 0) + 1
+
+    def preferred(self) -> str:
+        """A grafia para reverter o token (H9-j): o grupo de grafias mais frequente (iguais salvo acento e caixa) e,
+        dentro dele, a que tem acento e caixa mista ("Helena" antes de "HELENA" e "Helena")."""
+
+        if not self.originals:
+            return ""
+        groups: dict[str, list[str]] = {}
+        for value in self.originals:
+            groups.setdefault(fold_lexical(" ".join(value.split())), []).append(value)
+        best = max(groups.values(), key=lambda items: sum(self.counts.get(item, 1) for item in items))
+
+        def score(value: str) -> tuple[int, int, int, int]:
+            accented = int(value != fold_lexical(value) and any(ord(char) > 127 for char in value))
+            mixed = int(not value.isupper() and any(char.isupper() for char in value))
+            return (accented, mixed, self.counts.get(value, 1), -value.count("\n"))
+
+        return " ".join(max(best, key=score).split())
 
 
 class PseudonymMap:
@@ -274,6 +319,24 @@ class PseudonymMap:
                 return token
         return None
 
+    def _cpf_mask_alias(self, canonical: str) -> str | None:
+        """CPF mascarado do gov.br ("MASK:123456", o miolo) recebe o token do CPF completo com o mesmo miolo, se for um so;
+        o CPF completo que chega depois de um mascarado com o mesmo miolo reaproveita o token do mascarado."""
+
+        if canonical.startswith("MASK:"):
+            core = canonical[5:]
+            tokens = {
+                token
+                for (kind, other), token in self._index.items()
+                if kind == "BR_CPF" and len(other) == 11 and other[3:9] == core
+            }
+        elif len(canonical) == 11 and canonical.isdigit():
+            token = self._index.get(("BR_CPF", f"MASK:{canonical[3:9]}"))
+            tokens = {token} if token else set()
+        else:
+            return None
+        return next(iter(tokens)) if len(tokens) == 1 else None
+
     def resolve(
         self,
         entity_type: str,
@@ -285,6 +348,8 @@ class PseudonymMap:
         canonical = canonical_key or canonicalize(entity_type, value)
         key = (entity_type, canonical)
         existing = self._index.get(key)
+        if existing is None and entity_type == "BR_CPF":
+            existing = self._cpf_mask_alias(canonical)
         if existing is None and entity_type == "LOCATION" and not canonical_key:
             existing = self._location_alias(canonical)
         if existing:
@@ -303,6 +368,7 @@ class PseudonymMap:
             canonical=canonical,
             originals=[value],
             alvo=alvo,
+            counts={value: 1},
         )
         self._insert(record)
         return token
@@ -320,6 +386,8 @@ class PseudonymMap:
                 "entity_type": record.entity_type,
                 "canonical": record.canonical,
                 "originals": list(record.originals),
+                # H9-j: a grafia para reverter o token (acento e caixa da forma mais frequente).
+                "preferida": record.preferred(),
             }
             if record.alvo:
                 item["alvo"] = record.alvo

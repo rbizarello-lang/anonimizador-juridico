@@ -149,7 +149,9 @@ class IdentityGainsTests(unittest.TestCase):
             ("CICRANO FICTICIO", P, 6),
             ("FULANA BELTRANA FICTICIA SOUZA", P, 1),
         )
-        self.assertTrue(_same(roster, P, "FULANA BELTRANA FICTICIA", "FULANA BELTRANA FICTICIA TAVARES"))
+        # v0.4.10: nome de 3+ palavras que e o comeco de outro mais longo fica separado (mae x filha com o sobrenome
+        # do marido: matriz v0.4.9, sintetico).
+        self.assertFalse(_same(roster, P, "FULANA BELTRANA FICTICIA", "FULANA BELTRANA FICTICIA TAVARES"))
         self.assertFalse(_same(roster, P, "FULANA BELTRANA FICTICIA CICRANO FICTICIO", "CICRANO FICTICIO"))
         self.assertFalse(_same(roster, P, "FULANA BELTRANA FICTICIA SOUZA", "FULANA BELTRANA FICTICIA TAVARES"))
 

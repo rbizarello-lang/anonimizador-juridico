@@ -10,14 +10,15 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
 from .coverage import parse_coverage
 from .extractors import ExtractedDocument, extract_document
-from .fast_extract import FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
+from .invisible_chars import normalize_invisible
+from .fast_extract import FAST_DOCX_CACHE_SUFFIX, FAST_EXTRACTOR_VERSION, FAST_OCR_REUSABLE_FROM, extract_fast
 
 CACHE_SUBDIR = "cache_extracao"
 _OCR_PAGES = re.compile(r"<!--\s*ocr-paginas:\s*(\d+)", re.IGNORECASE)
@@ -46,6 +47,20 @@ def docling_extractor_version() -> str:
 
 def default_extractor_version(*, prefer_docling: bool = False) -> str:
     return docling_extractor_version() if prefer_docling else FAST_EXTRACTOR_VERSION
+
+
+def docx_aware_version(path: str | Path, version: str) -> str:
+    """Versao que entra na chave do cache: .docx extraido pelo leitor rapido leva o sufixo proprio de docx
+    (H9-g); PDF, texto e os demais extratores seguem com a versao que vieram."""
+
+    if Path(path).suffix.lower() == ".docx" and version == FAST_EXTRACTOR_VERSION:
+        return version + FAST_DOCX_CACHE_SUFFIX
+    if version == FAST_EXTRACTOR_VERSION:
+        # v0.4.12: chave do OCR desligada no config.json (recortes, limpeza) = cache proprio, nunca o da leitura ligada.
+        from .features import extractor_suffix
+
+        return version + extractor_suffix()
+    return version
 
 
 def cache_key(file_bytes: bytes, version: str) -> str:
@@ -87,8 +102,34 @@ def load_or_extract(
     ``version_string`` deve identificar o extrator, para não misturar caches.
     """
 
+    # H9-o: tempo da extracao (e acerto de cache) para a AUDITORIA.
+    from . import run_timing
+
+    with run_timing.stage("extracao"):
+        result = _load_or_extract(
+            path,
+            cache_dir=cache_dir,
+            use_cache=use_cache,
+            version_string=version_string,
+            prefer_docling=prefer_docling,
+            extract_fn=extract_fn,
+        )
+    if result.cached:
+        run_timing.count("extracao_cache")
+    return result
+
+
+def _load_or_extract(
+    path: str | Path,
+    *,
+    cache_dir: Path | None,
+    use_cache: bool,
+    version_string: str | None,
+    prefer_docling: bool,
+    extract_fn: Callable[[Path], ExtractedDocument] | None,
+) -> CachedExtraction:
     source = Path(path)
-    version = version_string or default_extractor_version(prefer_docling=prefer_docling)
+    version = docx_aware_version(source, version_string or default_extractor_version(prefer_docling=prefer_docling))
     file_bytes = source.read_bytes()
     digest = cache_key(file_bytes, version)
     md_path = json_path = None
@@ -100,7 +141,8 @@ def load_or_extract(
         if use_cache and md_path.is_file() and json_path.is_file():
             meta = json.loads(json_path.read_text(encoding="utf-8"))
             extracted = ExtractedDocument(
-                markdown=md_path.read_text(encoding="utf-8"),
+                # H9-j: invisiveis do PDF viram espaco tambem no cache ja gravado (nada e reextraido).
+                markdown=normalize_invisible(md_path.read_text(encoding="utf-8")),
                 page_count=int(meta.get("paginas") or meta.get("page_count") or 0),
                 extractor=str(meta.get("extrator") or meta.get("extractor") or ""),
                 ocr_used=bool(meta.get("ocr_used")),
@@ -122,6 +164,9 @@ def load_or_extract(
             source,
             previous=_reusable_markdown(file_bytes, cache_dir, version) if use_cache else None,
         )
+    if extracted.markdown != normalize_invisible(extracted.markdown):
+        # H9-j: o cache novo ja sai sem os invisiveis do PDF.
+        extracted = replace(extracted, markdown=normalize_invisible(extracted.markdown))
     generated_at = datetime.now().isoformat(timespec="seconds")
     if cache_dir is not None and md_path is not None and json_path is not None:
         meta = {
@@ -141,6 +186,10 @@ def load_or_extract(
                 "escaneadas": coverage.scanned,
                 "vetoriais": coverage.vector,
                 "fonte_quebrada": coverage.broken_font,
+                "hibridas": coverage.hybrid,
+                "recortes": coverage.embedded,
+                "recortes_sem_texto": coverage.embedded_empty,
+                "recortes_falhos": coverage.embedded_failed,
                 "em_branco": coverage.blank,
                 "nao_lidas": list(coverage.unread),
             }
@@ -164,7 +213,12 @@ def _reusable_markdown(file_bytes: bytes, cache_dir: Path | None, version: str) 
     So a extracao rapida atual reaproveita: as folhas lidas por OCR vem dela e as nativas sao
     refeitas. Sem cache dessa versao, ``None`` e tudo roda como sempre."""
 
-    if cache_dir is None or version != FAST_EXTRACTOR_VERSION:
+    from .features import enabled
+
+    if cache_dir is None or not version.startswith(FAST_EXTRACTOR_VERSION):
+        return None
+    if enabled("ocr_cleanup"):
+        # v0.4.12: a limpeza do OCR muda a leitura das folhas escaneadas; o OCR antigo nao serve (verso espelhado).
         return None
     for older in FAST_OCR_REUSABLE_FROM:
         candidate = Path(cache_dir) / f"{cache_key(file_bytes, older)}.md"

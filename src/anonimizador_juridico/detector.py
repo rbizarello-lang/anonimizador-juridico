@@ -3,13 +3,10 @@ from __future__ import annotations
 import re
 from bisect import bisect_left
 from collections.abc import Iterable
-from dataclasses import replace
 
 from presidio_analyzer import PatternRecognizer
 
-from .pseudonymizer import canonicalize
 from .recognizers import build_structured_recognizers
-from .registry_office import office_key
 from .types import EntitySpan
 
 
@@ -20,7 +17,6 @@ _TYPE_PRIORITY = {
     "EMAIL_ADDRESS": 90,
     "BR_OAB": 85,
     "BR_RG": 85,
-    "BR_MATRICULA_IMOVEL": 85,
     "BR_PIX": 82,
     "BR_CONTA_BANCARIA": 82,
     "BR_RENAVAM": 82,
@@ -29,6 +25,20 @@ _TYPE_PRIORITY = {
     "BR_NASCIMENTO": 82,
     "BR_TITULO_ELEITOR": 82,
     "BR_PIS": 82,
+    "BR_CTPS": 82,
+    # Identificador rotulado vence o CPF/telefone que os mesmos digitos poderiam ser (NIRE e CNH tem
+    # 11 digitos como o CPF).
+    "BR_NIRE": 101,
+    "BR_CNH": 101,
+    # H9-f: URL com chave vence processo CNJ e CPF que ela traga na query (senao sobra &chave= em claro).
+    "BR_URL": 102,
+    # H9-i: numero de CDA e de processo administrativo vence o que os mesmos digitos poderiam ser (telefone, CPF).
+    "BR_CDA": 101,
+    "BR_REGISTRO_CIVIL": 101,
+    "BR_CADASTRO_RURAL": 101,
+    "BR_REGISTRO_JUNTA": 103,
+    "BR_IP": 101,
+    "BR_PROCESSO_ADMINISTRATIVO": 101,
     "BR_EPROC": 82,
     "BR_CEP": 80,
     "BR_PHONE": 70,
@@ -39,7 +49,10 @@ _TYPE_PRIORITY = {
 
 # Desempate por FONTE antes de tipo/score (P13). IDs Presidio ficam acima desta lista.
 SOURCE_RECOGNIZER_RANK = {
+    "ListaDoCaso": 700,
     "ListaDeAlvos": 500,
+    # H9-o: nome de pessoa (NER) que venceu o pedaco de um listado (``target_list.yield_partial_to_other_person``).
+    "NerAncoradoLista": 450,
     "CnpjLookup": 400,
     "HeaderHeuristic": 300,
     "HeuristicaEndereco": 300,
@@ -86,23 +99,10 @@ class StructuredDetector:
                             entity_type=result.entity_type,
                             score=result.score,
                             recognizer=recognizer.name,
+                            canonical_key=str((result.recognition_metadata or {}).get("canonical_key") or ""),
                         )
                     )
-        return [_matricula_with_office(text, span) for span in resolve_overlaps(candidates)]
-
-
-def _matricula_with_office(text: str, span: EntitySpan) -> EntitySpan:
-    """Matricula: a chave inclui o cartorio de registro de imoveis mais proximo ("1o Registro de Imoveis
-    de X" e "2o Registro de Imoveis de X" tem matriculas diferentes de mesmo numero). Sem cartorio por
-    perto a chave e o numero sozinho, como antes."""
-
-    if span.entity_type != "BR_MATRICULA_IMOVEL" or span.canonical_key:
-        return span
-    office = office_key(text, span.start, span.end)
-    if not office:
-        return span
-    number = canonicalize(span.entity_type, span.value_from(text))
-    return replace(span, canonical_key=f"{number}@{office}")
+        return resolve_overlaps(candidates)
 
 
 _PAGE_ANCHOR = re.compile(r"<!--\s*pagina-origem:\s*\d+\s*-->")

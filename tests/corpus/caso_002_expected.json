@@ -1,7 +1,7 @@
 {
   "expected_counts": {
     "BR_PROCESSO": 1,
-    "BR_PIX": 1,
+    "BR_PIX": 2,
     "BR_CONTA_BANCARIA": 2,
     "BR_RENAVAM": 1,
     "BR_PLACA": 1,
@@ -9,7 +9,7 @@
   },
   "expected_values": {
     "BR_PROCESSO": ["5004321-44.2024.4.04.7100"],
-    "BR_PIX": ["9b2c3d4e-5f6a-4b7c-8d9e-0a1b2c3d4e5f"],
+    "BR_PIX": ["9b2c3d4e-5f6a-4b7c-8d9e-0a1b2c3d4e5f", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"],
     "BR_CONTA_BANCARIA": ["3456-7", "89012-3"],
     "BR_RENAVAM": ["00345678901"],
     "BR_PLACA": ["ABC1D23"],
@@ -26,7 +26,6 @@
     "Uniao",
     "art. 185 do CTN",
     "12345678900",
-    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     "XYZ1A23"
   ],
   "known_contextual_entities_not_yet_covered": [

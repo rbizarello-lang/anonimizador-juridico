@@ -1,0 +1,584 @@
+# Ferramentas e sistemas do processo que NUNCA sao trocados por token (H9-i). Um termo por linha, minusculo; comparacao
+# sem diferenca de caixa. Entram em KEEP_TERMS (termo protegido inteiro) e, quando de uma palavra so, tambem protegem
+# o nome que os traz dentro. Para proteger um sistema novo, acrescente uma linha aqui; nao precisa mexer em codigo.
+# Dado generico; nenhum dado de caso.
+# Lista complementar do Operador (16/10/2026): sistemas, orgaos, tribunais e instituicoes financeiras. Expressao inteira;
+# palavra comum ou nome curto de empresa privada so entra na forma qualificada (ver GOVERNANCA). Fora da lista de
+# proposito: ME, MF, MP, PF, JF, TJ, DI, DW, CRC, CRI, CEP, DCP, SINAL, SDA, PGA, CORE, ANA, TM, SR, CC, EPE, BB, CAIXA.
+sisbajud
+renajud
+cnib
+infojud
+serasajud
+sniper
+censec
+ccs-bacen
+ccs bacen
+simba
+eproc
+pje
+e-cac
+ecac
+e cac
+regularize
+sida
+ccs
+siel
+infoseg
+crc-jud
+onr
+srei
+cenprot
+serp
+seeu
+jef
+comprot
+sief
+cadin
+fgts
+cef
+bacen
+bcb
+cvm
+coaf
+incra
+ibama
+dnit
+antt
+jucergs
+jucesc
+jucesp
+jucepar
+detran
+contran
+denatran
+senatran
+sped
+ecd
+ecf
+efd
+dctf
+dctfweb
+pgdas-d
+defis
+dirpf
+dirf
+doi
+dimob
+per/dcomp
+darf
+gps
+dae
+cno
+cei
+caepf
+cnae
+idpj
+lef
+ctn
+cpc
+cf
+stf
+stj
+tst
+trt
+carf
+csrf
+drj
+trf1
+trf2
+trf3
+trf4
+trf5
+trf6
+trt1
+trt2
+trt3
+trt4
+trt5
+trt6
+trt7
+trt8
+trt9
+trt10
+trt11
+trt12
+trt13
+trt14
+trt15
+trt16
+trt17
+trt18
+trt19
+trt20
+trt21
+trt22
+trt23
+trt24
+tjac
+tjal
+tjap
+tjam
+tjba
+tjce
+tjdft
+tjes
+tjgo
+tjma
+tjmt
+tjms
+tjmg
+tjpa
+tjpb
+tjpr
+tjpe
+tjpi
+tjrj
+tjrn
+tjrs
+tjro
+tjrr
+tjsc
+tjsp
+tjse
+tjto
+bacenjud
+ccs-simba
+siscoaf
+sinesp
+crcjud
+sinter
+indisponibilidade.org
+arisp
+ri digital
+saec
+e-notariado
+rensec
+rcto
+sister
+sisbens
+cetran
+renavam
+renach
+renainf
+sne
+cdt
+anac
+rab
+saci
+marinha do brasil
+capitania dos portos
+sisgemb
+tribunal marítimo
+siapec
+indea
+iagro
+cidasc
+adapar
+idaron
+adepara
+seapi
+plataforma de gestão agropecuária
+guia de trânsito animal
+gta
+pdpj
+pdpj-br
+projudi
+esaj
+e-saj
+themis
+apolo
+creta
+tucujuris
+pje-jt
+pje-calc
+pjecalc
+bnmp
+bnmp 2.0
+bnmp 3.0
+djen
+dje
+dejt
+diário da justiça eletrônico
+domicílio judicial eletrônico
+balcão virtual
+juizado especial federal
+turma recursal
+tru
+tnu
+puil
+cejusc
+nugep
+nugepnac
+gmf
+e-carta
+prevjud
+datajud
+codex
+comunicações processuais
+2. fazendários
+rfb
+pgfn
+dívida ativa
+saj
+sapiens
+super sapiens
+nexus
+dw-pgfn
+dossiê integrado
+sief-processos
+sief-web
+e-processo
+eprocesso
+fgts-dívida
+sispar
+sei
+sei-me
+sei-mf
+sistema de gestão da dívida ativa
+rating da dívida
+capag
+siafi
+siape
+siconfi
+comprasnet
+pncp
+redesim
+jucis
+sincor
+efd-contribuições
+efd-icms/ipi
+efd-reinf
+reinf
+e-financeira
+efinanceira
+decred
+dmed
+dirpj
+dipj
+dspj
+ditr
+cafir
+nirf
+sicar
+ada
+dcomp
+pgdas
+das
+dasn
+dasn-simei
+simei
+simples nacional
+cgsn
+e-social
+esocial
+gfip
+sefip
+caged
+rais
+cnis
+ncm
+cfop
+nf-e
+nfe
+nfs-e
+nfse
+ct-e
+cte
+mdf-e
+mdfe
+danfe
+dacte
+gru
+gare
+gnre
+siscomex
+radar
+portal único siscomex
+mercante
+vicomex
+duimp
+du-e
+3. órgãos
+autarquias
+conselhos
+ministério da fazenda
+ministério da economia
+secretaria especial da receita federal do brasil
+srfb
+procuradoria-geral da fazenda nacional
+prfn
+prfn1
+prfn2
+prfn3
+prfn4
+prfn5
+prfn6
+psfn
+pfn
+agu
+advocacia-geral da união
+pgf
+procuradoria-geral federal
+pgu
+pgbc
+drf
+arf
+alf
+inss
+instituto nacional do seguro social
+dataprev
+serpro
+previc
+susep
+banco central do brasil
+cmn
+bndes
+casa da moeda
+ministério público federal
+mpf
+mpe
+mpt
+pgr
+prr
+prm
+tcu
+tce
+tcm
+cgu
+controladoria-geral da união
+dpu
+defensoria pública da união
+dpe
+defensoria pública
+polícia federal
+dpf
+sr/pf
+prf
+polícia rodoviária federal
+polícia civil
+polícia militar
+receita estadual
+sefaz
+secretaria da fazenda
+pge
+procuradoria-geral do estado
+pgm
+procuradoria-geral do município
+funai
+icmbio
+anatel
+aneel
+anp
+anm
+dnpm
+anvisa
+ans
+antaq
+ancine
+inmetro
+inpi
+cade
+conab
+fnde
+capes
+cnpq
+ibge
+iphan
+suframa
+sudene
+sudam
+drei
+dnrc
+junta comercial
+jucemg
+jucerja
+juceb
+jucepe
+jucdf
+jucemat
+jucems
+juceg
+jucetins
+jucea
+jucepa
+jucema
+jucern
+jucepb
+jucese
+juceal
+jucec
+jucepi
+jucero
+jucerr
+jucap
+oab
+conselho federal da oab
+cfc
+crea
+confea
+cau
+crm
+cfm
+cro
+crf
+coren
+cra
+corecon
+correios
+ect
+empresa brasileira de correios e telégrafos
+b3
+brasil bolsa balcão
+cetip
+cblc
+operador nacional do sistema elétrico
+ons
+ccee
+supremo tribunal federal
+superior tribunal de justiça
+tribunal superior do trabalho
+tse
+tribunal superior eleitoral
+stm
+superior tribunal militar
+cnj
+conselho nacional de justiça
+cjf
+conselho da justiça federal
+csjt
+enfam
+trf
+trf-1
+trf-2
+trf-3
+trf-4
+trf-5
+trf-6
+tribunal regional federal
+jfrs
+jfsc
+jfpr
+jfsp
+jfrj
+jfmg
+jfdf
+seção judiciária
+subseção judiciária
+tribunal de justiça
+tribunal regional do trabalho
+tre
+tribunal regional eleitoral
+vara do trabalho
+vara federal
+vara de execuções fiscais
+vara cível
+vara empresarial
+vara de falências e recuperações judiciais
+banco do brasil
+caixa econômica federal
+banrisul
+banco do estado do rio grande do sul
+brde
+badesul
+badesc
+fomento paraná
+banco da amazônia
+basa
+banco do nordeste
+bnb
+brb
+banestes
+banese
+banpará
+itaú
+itaú unibanco
+bradesco
+banco bradesco
+santander
+banco santander
+btg pactual
+banco safra
+citibank
+hsbc
+banco votorantim
+banco bv
+banco pan
+daycoval
+banco alfa
+banco pine
+banco bmg
+bmg
+banco mercantil
+mercantil do brasil
+banco inter
+nubank
+nu pagamentos
+c6 bank
+banco c6
+banco original
+agiplan
+agibank
+banco modal
+modalmais
+xp investimentos
+banco xp
+genial investimentos
+sicredi
+banco cooperativo sicredi
+sicoob
+bancoob
+banco sicoob
+unicred
+ailos
+viacredi
+cresol
+credicoamo
+uniprime
+pagseguro
+pagbank
+mercado pago
+pagar.me
+cielo
+redecard
+getnet
+safrapay
+sumup
+infinitepay
+cloudwalk
+picpay
+paypal
+ebanx
+iugu
+asaas
+gerencianet
+banrisul vero
+alelo
+sodexo
+pluxee
+vr benefícios
+banco bs2
+banco neon
+banco next
+banco digio
+will bank
+efí s.a.
+efí bank
+rede s.a.
+itaú rede
+stone pagamentos
+ticket serviços
+ticket alimentação
+caixa econômica
+# H9-k (lote de 19/10/2026): instituicoes do extrato e assinador trocados por engano.
+assinador serpro
+b3 s.a
+b3 s.a.
+grupo xp
+corretoras xp
+xp corretora
+ouribank
+ouribank s.a
+bancoseguro
+bancoseguro s.a
+nu pagamentos s.a

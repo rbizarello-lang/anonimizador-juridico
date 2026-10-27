@@ -251,7 +251,10 @@ class TargetListAliasTests(unittest.TestCase):
             "Depois Valverde juntou peticao. Uniao permanece."
         )
         result = _apply(engine, text)
-        self.assertEqual(result.text.count("[PESSOA_1]"), 2)
+        # v0.4.14: o sobrenome de duas pessoas da lista nao vai mais para a da mencao completa mais proxima: leva o
+        # token do sobrenome da familia.
+        self.assertEqual(result.text.count("[PESSOA_1]"), 1)
+        self.assertIn("Depois [SOBRENOME_1] juntou", result.text)
         self.assertNotIn("[PESSOA_2]", result.text)
         self.assertNotIn("[EMPRESA_", result.text)
 
@@ -471,7 +474,7 @@ class TargetListCiclo5ParticleDenylistTests(unittest.TestCase):
         self.assertIn("[EMPRESA_1]", result.text)
 
     def test_campos_particle_does_not_eat_campo_mourao(self) -> None:
-        engine = TargetListEngine(people=["Claudia Maria Campos Hollerbach"])
+        engine = TargetListEngine(people=["Beatriz Helena Campos Vandresen"])
         text = "Subseção de Campo Mourão. CAMPOS juntou peticao."
         result = _apply(engine, text)
         self.assertIn("Campo Mourão", result.text)

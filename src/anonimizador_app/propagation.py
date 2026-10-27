@@ -19,7 +19,7 @@ from functools import lru_cache
 
 from anonimizador_juridico import EntitySpan
 
-from .gemini_detector import KEEP_TERMS, is_registry_office
+from .gemini_detector import KEEP_TERMS, is_registry_office, is_system_term
 from .roster import TOKENIZE, RosterEntry, entity_core, has_token
 
 RECOGNIZER = "ElencoLLM"
@@ -125,14 +125,15 @@ def propagable_variants(
     """Formas dobradas buscaveis no texto inteiro: duas palavras de conteudo ou mais."""
 
     found: list[str] = []
+    listed = entry.source == "lista"
     for value in (entry.name, *entry.variants):
-        if has_token(value) or is_protected(value, protected):
+        if has_token(value) or (is_protected(value, protected) and not (listed and is_system_term(value))):
             continue
         candidates = [fold_value(value)]
         if entry.kind == "empresa":
             candidates.append(entity_core("empresa", value).strip(_EDGE))
         for folded in candidates:
-            if len(folded) < 4 or folded in protected or folded in found:
+            if len(folded) < 4 or (folded in protected and not listed) or folded in found:
                 continue
             if len(_CONTENT_WORD.findall(folded)) < 2:
                 continue
@@ -172,10 +173,37 @@ def spans_for_roster(
         if entry is None or entry.action != TOKENIZE:
             continue
         start, end = _trim(text, start, end)
-        if end <= start or is_protected(text[start:end], protected):
+        if end <= start:
             continue
+        if is_protected(text[start:end], protected) and not (
+            entry.source == "lista" and is_system_term(text[start:end])
+        ):
+            continue  # a lista do caso vence a lista protegida de sistemas (H9-i lote B1)
         spans.append(_span(entry, start, end))
     return longest_first(spans)
+
+
+def kept_name_ranges(
+    text: str,
+    entries: Iterable[RosterEntry],
+    *,
+    extra_keep: Iterable[str] = (),
+    folded: FoldedText | None = None,
+) -> list[tuple[int, int]]:
+    """Ocorrencias (no texto original) do nome inteiro das entradas de pessoa ``manter`` (agente publico, banco...):
+    duas palavras de conteudo ou mais, como na propagacao. H9-i lote B: a lista do caso vence a lista protegida, mas
+    nao entra no meio do nome de quem o elenco mantem em claro."""
+
+    protected = protected_forms(extra_keep)
+    source = folded or fold_with_index(text)
+    ranges: list[tuple[int, int]] = []
+    for entry in entries:
+        if entry.action == TOKENIZE or entry.kind != "pessoa":
+            continue
+        for variant in propagable_variants(entry, protected):
+            for start, end in _find_all(source.text, variant):
+                ranges.append(source.to_original(start, end))
+    return ranges
 
 
 def longest_first(spans: Iterable[EntitySpan]) -> list[EntitySpan]:

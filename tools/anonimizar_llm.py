@@ -39,6 +39,20 @@ argumento ou rodada sem --confirmo-envio; 3 = alguma folha foi tratada pelo moto
 aceitar). O texto da folha que o LLM nao leu nunca sai em claro: o motor local o trata ou o arquivo fica
 retido na pasta privada.
 
+LLM local (H9-b): --canal ollama-local usa o Ollama desta maquina (127.0.0.1:11434). Nada sai da maquina:
+nao pede --confirmo-envio, nao imprime o aviso de sigilo e roda com a rede bloqueada fora do loopback
+(a AUDITORIA conta as tentativas; tem de dar 0). Modelo padrao qwen3:4b (--modelo; nunca ':cloud').
+
+  python tools/anonimizar_llm.py autos.pdf --canal ollama-local
+  python tools/anonimizar_llm.py autos.pdf --canal ollama-local --modelo qwen3:8b
+
+Canal de TESTE (H9-p): --canal openrouter-teste usa o OpenRouter (API compativel com a da OpenAI) e SO roda
+com o documento sintetico: o SHA-256 de cada arquivo tem de estar na lista do codigo (llm_gate.SYNTHETIC_SHA256),
+senao nada e lido nem enviado. Pede --confirmo-envio. --modelo e o id do OpenRouter (ex.: qwen/qwen3-30b-a3b).
+Chave: Gerenciador de Credenciais, servico AnonimizadorJuridico/openrouter (ou ANONIMIZADOR_OPENROUTER_CHAVE).
+
+  python tools/anonimizar_llm.py autos_sinteticos.pdf --canal openrouter-teste --modelo qwen/qwen3-30b-a3b --confirmo-envio
+
 A chave nunca vai para argumento de linha de comando, arquivo do projeto, log ou AUDITORIA.
 """
 
@@ -60,6 +74,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from anonimizador_app.credentials import (  # noqa: E402
     ENV_VAR,
+    OPENROUTER_ENV_VAR,
+    OPENROUTER_VAULT_SERVICE,
     ENV_VERTEX_CREDENTIAL,
     ENV_VERTEX_PROJECT,
     VAULT_SERVICE,
@@ -70,6 +86,7 @@ from anonimizador_app.credentials import (  # noqa: E402
     describe_vertex,
     load_vertex_setup,
     store_key,
+    store_openrouter_key,
     store_vertex_setup,
 )
 from anonimizador_app.llm_discovery import (  # noqa: E402
@@ -81,22 +98,40 @@ from anonimizador_app.llm_discovery import (  # noqa: E402
 )
 from anonimizador_app.llm_engine import (  # noqa: E402
     CHANNELS,
+    TEST_CHANNELS,
     WARNING_VERSION,
     EngineChoice,
     audit_lines,
     billing_note,
     build_discoverer,
     build_offline_discoverer,
+    channel_spec,
     check_engine,
     confirmation_lines,
+    is_local_channel,
     warning_text,
 )
-from anonimizador_app.llm_gate import RunPermit  # noqa: E402
+from anonimizador_app.llm_gate import (  # noqa: E402
+    RunPermit,
+    file_sha256,
+    gemma_lock_refusals,
+    is_free_tier_gemma,
+    synthetic_lock_refusals,
+)
 from anonimizador_app.local_ner import ner_fallback_warning  # noqa: E402
 from anonimizador_app.netblock import block_network  # noqa: E402
 from anonimizador_app.pipeline import default_export_dir, default_private_dir  # noqa: E402
-from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, plan_send, run_llm_job  # noqa: E402
+from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, fallback_split, plan_send, run_llm_job  # noqa: E402
 from anonimizador_app.settings import load_settings  # noqa: E402
+
+
+def _with_operation(settings, args):
+    """H9-l: ``--operacao`` vence a escolha da aba Caso; "todas" usa a lista inteira."""
+
+    chosen = getattr(args, "operacao", None)
+    if chosen is not None:
+        settings.case_operation = "" if chosen.strip().casefold() == "todas" else chosen.strip()
+    return settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,14 +141,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("arquivos", nargs="*", help="Arquivos do mesmo lote (mesmos tokens).")
     parser.add_argument(
         "--canal",
-        choices=tuple(CHANNELS),
-        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo. Sem canal, nada roda.",
+        choices=(*CHANNELS, *TEST_CHANNELS),
+        help="gemini-pago = Gemini API paga; vertex-sp = Vertex AI Sao Paulo; ollama-local = LLM local "
+        "(Ollama em 127.0.0.1, nada sai da maquina); openrouter-teste = SO TESTE, so o documento sintetico. "
+        "Sem canal, nada roda.",
     )
     parser.add_argument(
         "--confirmo-envio",
         action="store_true",
         help="Confirmo, para ESTA rodada, o envio ao provedor dos arquivos e do total de caracteres "
-        "listados (impressos antes). Sem esta opcao nada e enviado. Nao vale para a proxima rodada.",
+        "listados (impressos antes). Sem esta opcao nada e enviado. Nao vale para a proxima rodada. "
+        "Nao e exigida no canal ollama-local (nada sai da maquina).",
     )
     parser.add_argument(
         "--guardar-chave",
@@ -121,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pede a chave (sem mostrar) e guarda no Gerenciador de Credenciais do Windows.",
     )
     parser.add_argument("--apagar-chave", action="store_true", help="Apaga a chave guardada.")
+    parser.add_argument(
+        "--guardar-chave-openrouter",
+        action="store_true",
+        help="Pede a chave do OpenRouter (sem mostrar) e guarda no Gerenciador de Credenciais (canal de teste).",
+    )
     parser.add_argument(
         "--guardar-vertex",
         action="store_true",
@@ -147,7 +190,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--regiao", default=DEFAULT_LOCATION, help=f"Regiao do Vertex AI (padrao {DEFAULT_LOCATION})."
     )
     parser.add_argument("--paralelo", type=int, default=4, help="Chamadas simultaneas ao LLM (padrao 4).")
-    parser.add_argument("--trecho", type=int, default=4000, help="Caracteres por chamada.")
+    parser.add_argument(
+        "--operacao",
+        default=None,
+        help="H9-l: id da operacao do Nexus (so a lista dela); vazio = a escolhida na aba Caso; \"todas\" = lista inteira.",
+    )
+    parser.add_argument(
+        "--trecho",
+        type=int,
+        default=None,
+        help="Caracteres por chamada (padrao 4000; 2000 no canal ollama-local).",
+    )
     parser.add_argument(
         "--raciocinio",
         choices=sorted(THINKING_LEVELS),
@@ -206,6 +259,10 @@ def manage_key(args: argparse.Namespace) -> int | None:
             )
             key = store_key(value)
             print(f"Chave guardada no Gerenciador de Credenciais (servico {VAULT_SERVICE}); {key.source}.")
+        if args.guardar_chave_openrouter:
+            value = getpass.getpass("Chave do OpenRouter (nao aparece na tela): ")
+            key = store_openrouter_key(value)
+            print(f"Chave guardada no Gerenciador de Credenciais (servico {OPENROUTER_VAULT_SERVICE}); {key.source}.")
         if args.apagar_vertex:
             removed = delete_vertex_setup()
             print("Cadastro do Vertex AI apagado." if removed else "Nao havia cadastro do Vertex AI.")
@@ -217,7 +274,13 @@ def manage_key(args: argparse.Namespace) -> int | None:
     except CredentialsError as exc:
         print(f"Credencial: {exc}", file=sys.stderr)
         return 2
-    if args.apagar_chave or args.guardar_chave or args.apagar_vertex or args.guardar_vertex:
+    if (
+        args.apagar_chave
+        or args.guardar_chave
+        or args.guardar_chave_openrouter
+        or args.apagar_vertex
+        or args.guardar_vertex
+    ):
         return 0 if not args.arquivos else None
     return None
 
@@ -239,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     config_source = Path(args.config).expanduser() if args.config else private_root
     cache_dir = None if args.sem_cache else private_root / LLM_CACHE_SUBDIR
     channel = args.canal or ""
+    local = is_local_channel(channel)
 
     if args.sem_rede:
         return run_offline(args, channel, config_source, export_root, private_root, cache_dir)
@@ -251,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         credential_path=args.credencial,
     )
     decision = check_engine(choice, private_root=config_source)
-    if channel in CHANNELS:
+    if channel_spec(channel) is not None and not local:
         print(f"AVISO (versao {WARNING_VERSION}, canal {channel}), so informacao:", file=sys.stderr)
         print(warning_text(channel), file=sys.stderr)
         print(billing_note(channel), file=sys.stderr)
@@ -267,6 +331,29 @@ def main(argv: list[str] | None = None) -> int:
     missing = missing_files(args)
     if missing:
         return 2
+    lock: tuple[str, ...] = ()
+    if decision.channel in TEST_CHANNELS:
+        # H9-p: a trava ANTES de ler o arquivo: so o documento sintetico sai pelo canal de teste.
+        refusals = synthetic_lock_refusals(Path(item).expanduser() for item in args.arquivos)
+        if refusals:
+            print("Canal de teste recusado (so o documento sintetico pode ser enviado):", file=sys.stderr)
+            for reason in refusals:
+                print(f"  - {reason}", file=sys.stderr)
+            return 2
+        lock = tuple(file_sha256(Path(item).expanduser()) for item in args.arquivos)
+        print("Trava do canal de teste: todos os arquivos sao o documento sintetico (SHA-256 conferido).")
+    elif decision.config is not None and is_free_tier_gemma(decision.channel, decision.config.model_id):
+        # v0.4.10: Gemma na Gemini API e sempre nivel gratuito: a mesma trava do documento sintetico.
+        refusals = gemma_lock_refusals(
+            decision.channel, decision.config.model_id, (Path(item).expanduser() for item in args.arquivos)
+        )
+        if refusals:
+            print("Modelo Gemma recusado no gemini-pago (so o documento sintetico pode ser enviado):", file=sys.stderr)
+            for reason in refusals:
+                print(f"  - {reason}", file=sys.stderr)
+            return 2
+        lock = tuple(file_sha256(Path(item).expanduser()) for item in args.arquivos)
+        print("Trava do Gemma (nivel gratuito): todos os arquivos sao o documento sintetico (SHA-256 conferido).")
     discoverer = build_discoverer(
         decision,
         cache_dir=cache_dir,
@@ -274,7 +361,9 @@ def main(argv: list[str] | None = None) -> int:
         chunk_chars=args.trecho,
         thinking=args.raciocinio,
     )
-    settings = load_settings(config_source)
+    discoverer.synthetic_lock = lock
+    local = is_local_channel(decision.channel)
+    settings = _with_operation(load_settings(config_source), args)
     sources = [Path(item).expanduser() for item in args.arquivos]
     try:
         plan = plan_send(
@@ -289,12 +378,23 @@ def main(argv: list[str] | None = None) -> int:
     except LlmConfigError as exc:
         print(f"Configuracao: {exc}", file=sys.stderr)
         return 2
-    print("O QUE ESTA RODADA VAI ENVIAR AO PROVEDOR:")
+    print("LLM LOCAL (Ollama, loopback), NADA ENVIADO; arquivos desta rodada:" if local else "O QUE ESTA RODADA VAI ENVIAR AO PROVEDOR:")
     for line in confirmation_lines(decision, plan):
         print("  " + line)
     if not plan.files:
         print("Nenhum arquivo pode ser enviado.", file=sys.stderr)
         return 2
+    if local:
+        # H8: nada sai da maquina; sem confirmacao de envio e sem RunPermit.
+        return run_and_report(
+            args,
+            discoverer,
+            export_root,
+            private_root,
+            config_source,
+            engine=decision.channel,
+            engine_notes=audit_lines(decision, choice, None),
+        )
     if not args.confirmo_envio:
         print(
             "Nada foi enviado. Confira a lista acima e, se decidir enviar, repita o comando com "
@@ -322,7 +422,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def report_gate(decision) -> int:
     print(f"Canal: {decision.channel or '(nenhum)'}")
-    if decision.channel == "vertex-sp":
+    if is_local_channel(decision.channel):
+        print("LLM local: Ollama em 127.0.0.1:11434; sem chave, sem projeto, nada sai da maquina.")
+    elif decision.channel in TEST_CHANNELS:
+        print(
+            f"Chave do OpenRouter: {decision.key_source or 'nenhuma chave guardada'} "
+            f"(variavel {OPENROUTER_ENV_VAR} ou Gerenciador de Credenciais, servico {OPENROUTER_VAULT_SERVICE})"
+        )
+        print("Canal de TESTE: so roda com o documento sintetico (SHA-256 conferido antes de ler o arquivo).")
+    elif decision.channel == "vertex-sp":
         setup = load_vertex_setup()
         print(
             f"Vertex AI: {describe_vertex(setup)} "
@@ -357,7 +465,7 @@ def run_offline(
     private_root: Path,
     cache_dir: Path | None,
 ) -> int:
-    if channel not in CHANNELS:
+    if channel_spec(channel) is None:
         print("--sem-rede precisa do --canal da rodada anterior (o cache e por canal).", file=sys.stderr)
         return 2
     if not args.arquivos or missing_files(args):
@@ -392,7 +500,7 @@ def run_and_report(
     engine_notes: list[str],
 ) -> int:
     sources = [Path(item).expanduser() for item in args.arquivos]
-    settings = load_settings(config_source)
+    settings = _with_operation(load_settings(config_source), args)
     started = time.perf_counter()
     try:
         result = run_llm_job(
@@ -423,6 +531,9 @@ def run_and_report(
     print(f"Tempo: {elapsed:.1f}s")
     for line in getattr(discoverer, "usage_lines", lambda: [])():
         print(line)
+    blocked = getattr(discoverer, "blocked_attempts", None) if is_local_channel(engine) else None
+    if blocked is not None:
+        print(f"Tentativas de rede fora de loopback bloqueadas: {blocked}")
     for name, report in result.reports.items():
         found = report.discovery
         print(
@@ -435,14 +546,29 @@ def run_and_report(
     ner_warning = ner_fallback_warning()
     if ner_warning:
         print(f"AVISO NER: {ner_warning}", file=sys.stderr)
-    for name, pages in result.fallback_pages.items():
-        print(
-            f"FALLBACK {name}: folhas tratadas pelo motor local por falha do LLM: "
-            + ", ".join(str(page) for page in pages),
-            file=sys.stderr,
-        )
+    # v0.4.13: falha real do LLM e omissao do LLM coberta pelo motor local em linhas separadas.
+    for name, (failed, omitted) in fallback_split(result).items():
+        if failed:
+            print(
+                f"FALLBACK {name}: folhas tratadas pelo motor local por falha do LLM: "
+                + ", ".join(str(page) for page in failed),
+                file=sys.stderr,
+            )
+        if omitted:
+            print(
+                f"FALLBACK {name}: folhas em que o LLM respondeu sem nomes e o motor local achou: "
+                + ", ".join(str(page) for page in omitted),
+                file=sys.stderr,
+            )
     if not job.export_allowed:
         print(f"NAO ENVIE AINDA: {job.export_block_reason}", file=sys.stderr)
+        return 1
+    if blocked:
+        print(
+            f"ALERTA: {blocked} tentativa(s) de rede fora de loopback foram bloqueadas durante a rodada "
+            "local (veja a AUDITORIA); confira antes de usar o resultado.",
+            file=sys.stderr,
+        )
         return 1
     if result.fallback_pages and not args.aceitar_fallback:
         print(

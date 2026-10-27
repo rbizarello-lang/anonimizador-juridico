@@ -35,11 +35,109 @@ Tres abas:
   painel de execucao (resumo do caso, destinos, motor local) e resultado
   (indicadores, trechos trocados por tipo, pastas, previa com os tokens
   destacados)
-- **Caso** — empresas, pessoas e CPF/CNPJ da carteira; importa a planilha do Nexus
+- **Caso** — empresas, pessoas e CPF/CNPJ da carteira; importa a planilha do Nexus e a revisao do Gemini
 - **Regras** — tags ligadas, regex estreita, termos protegidos, base CNPJ, experimentos
 
 O botao **?** do cabecalho abre "Como funciona" (principio de fidelidade,
 tags, extracao de PDF, leitura externa).
+
+Revisao do Gemini (aba Caso, desde a 0.4.7): cole no cartao **Revisao do Gemini**
+a resposta inteira do revisor externo (linhas `TROCAR | tipo | texto | folha`,
+`MANTER | [MARCA_n] | motivo`, `UNIR | [MARCA_A] | [MARCA_B] | motivo`), escolha o
+lote de referencia (padrao: o mais recente da pasta privada com `mapa.json`) e clique
+em **Conferir revisao**. O app confere cada linha contra o texto exportado e o mapa
+desse lote e mostra o destino proposto (caixas da aba Caso ou termos protegidos) e a
+situacao (aceita, rejeitada com motivo, decidir). Nada muda ate **Aplicar marcadas**;
+UNIR e "decidir" vem desmarcadas. A resposta colada e o que foi aplicado ficam em
+`<pasta privada>\revisoes\` (privado), e a AUDITORIA do lote seguinte diz quantas
+linhas foram aplicadas.
+
+Desde a 0.4.8: a TROCAR aceita um 5º campo com o nome completo (texto ou marca,
+`TROCAR | pessoa | Fulano | 13 | [PESSOA_3]`); numa linha "decidir" de pessoa ou
+empresa, digite o nome principal e a linha vira grafia dele. Pedaço de nome (iniciais,
+sobrenome sem prenome, palavra única) nunca entra como pessoa nova. Grafia cadastrada em
+"Outras grafias" casa sozinha, mesmo prenome comum (municipio, mes e palavra do
+dicionario continuam pedindo apoio).
+
+Desde a 0.4.9: a conferencia e o que se aplica valem na operacao escolhida na aba Caso;
+marca no 5º campo e traduzida pelo mapa (nada com colchetes e gravado); pai e filho
+(Filho/Junior/Neto/Sobrinho/Segundo), MANTER de escritorio de advocacia e data como
+endereco nunca saem marcados; UNIR so sai marcada com o mesmo `[CPF_n]` ao lado das
+duas marcas.
+
+Desde a 0.4.10: pai e filho, avo e neto, mae e filha nunca caem no mesmo token (lista,
+LLM, elenco); o pedaco listado nao fica orfao quando o nome longo perde; o mesmo CNPJ
+une o nome antigo a entrada da lista; o que o LLM devolve e validado (data, codigo eproc,
+linha de folha, "familia X", titulos nas bordas, empresa como pessoa, julgador e
+procurador publico em claro); Gemma no gemini-pago so com o documento sintetico; o INDICE
+traz a secao "Processos citados".
+
+Desde a 0.4.11: nenhum agente publico (juiz, desembargador, relator, procurador, servidor,
+oficial) vira token, pela ocorrencia (cargo colado ao nome); o advogado das partes segue
+trocado. Empresa: o mesmo CNPJ, a declaracao ("doravante", "atual/antiga denominacao") e a
+forma curta de UMA razao social unem; radical comum fica separado. "familia X" leva
+[SOBRENOME_n]; cartorio, protocolo e titulo de peca nunca sao [ENDERECO_n]; a pessoa com e
+sem nome do meio e um token so (pai/filho, mae/filha seguem separados).
+
+Desde a 0.4.12: a imagem colada numa folha de texto (recorte de matricula, contrato, tela)
+cobrindo 5% ou mais da folha e lida por OCR e entra no ponto dela; a AUDITORIA conta as
+imagens lidas, as sem texto e as nao lidas. Nada some em silencio: leitura incerta do OCR
+fica no texto como "«[OCR incerto, fl. N: ...]»", o verso espelhado como "«[verso: ...]»" e
+a imagem nao lida como "«[imagem não lida, fl. N]»". Nome da lista deturpado pelo OCR casa
+com tolerancia (so nas folhas de OCR; prenome diferente nunca casa; grafia perto de dois
+nomes nao casa nenhum) e numero com O/l/S no lugar do digito tambem (CPF/CNPJ so com DV).
+Cartorarios e o nome do cartorio ficam em claro; "Min. X", "empresa executada" e o contato
+do orgao publico no cabecalho tambem. O AVISOS.md (exportavel) diz folha, token e motivo de
+cada casamento tolerante e de cada trecho incerto. Seis chaves no config.json desligam cada
+mudanca: ocr_embedded_images, ocr_cleanup, ocr_fuzzy_names, ocr_fuzzy_numbers,
+notary_public_agents, case2_false_positives (todas ligadas por padrao).
+
+Desde a 0.4.13: a razao social usada por duas empresas (CNPJ diferentes, em epocas diferentes)
+deixa de ser um token so: cada ocorrencia vai para a empresa do trecho (CNPJ colado, "na epoca
+denominada", outro nome da empresa ligado por "denominacao anterior" ou a mesma folha) e a que
+o texto nao decide fica num token proprio; o ELENCO diz quais tokens sao a mesma denominacao.
+O pedaco de nome que o LLM acha (sobrenome, prenome, razao social sem "Ltda") entra no token
+da UNICA entrada do elenco a que pertence (dois donos possiveis: fica separado). Quem assina o
+carimbo da Junta Comercial ("SECRETARIO GERAL", mesmo deturpado pelo OCR) fica em claro. Cada
+chamada ao LLM local tem prazo total (prazo do modelo + 60 s), uma nova tentativa e, depois de
+tres chamadas seguidas sem resposta, os trechos restantes vao direto ao motor local: a rodada
+termina com aviso. A AUDITORIA (exportavel e privada) traz os tokens gerados por chamada (media,
+maximo, total) e as respostas fora do formato, e separa a folha em que o LLM falhou da folha em
+que ele respondeu "sem nomes" e o motor local achou. Tres chaves novas no config.json:
+shared_company_names, llm_subform_link, stamp_public_agents (ligadas).
+
+Desde a 0.4.14: o sobrenome que duas ou mais pessoas da lista do caso tem em comum, casado
+sozinho, nao vai mais para a pessoa da mencao completa mais proxima (a irma, a tia e o pai
+ficavam com o token de uma pessoa so). Os pedacos da lista colados a ele decidem ("Prenome
+Segundo Sobrenome" escrito sem o ultimo nome vai para a unica pessoa que tem todos); senao ele
+leva o token de sobrenome da familia ([SOBRENOME_n], explicado no ELENCO tambem no motor local).
+O nome inteiro de outra pessoa achado pelo NER vence o sobrenome da lista mesmo partido por uma
+quebra de linha, e os pedacos colados da mesma pessoa viram um token so (nada de
+"[PESSOA_5] [PESSOA_5] [PESSOA_5]").
+
+Tambem na 0.4.14, numeros que ficavam em claro passam a ser trocados pela palavra-gatilho ao
+lado (a matricula de imovel tambem foi trocada na 0.4.14; desde a 0.4.15 volta a ficar em
+claro, decisao do Operador): conta com "numero" ("conta corrente numero X", "contas de numeros X e Y") e a segunda tabela
+do CCS na mesma folha, RG de SC/PR em qualquer grafia depois de "identidade"/"RG" ("2/R-123.456",
+"2R-123 456", "nr2/R-1.234.567"), NIRE pela Junta Comercial ("sob o no X" antes ou depois de
+"Junta Comercial", "NIRE.X", os 11 digitos do carimbo ao lado de "JUNTA COMERCIAL") e o
+registro do carimbo ("CERTIFICO O REGISTRO EM data SOB No X"). O motor local tambem faz a
+passada final de formas conhecidas: o ID provado com rotulo e trocado onde aparecer escrito igual.
+
+Desde a 0.4.15, no caminho com LLM: o nome canonico que o LLM da a uma grafia de empresa so a liga a
+empresa quando e o mesmo nome (sufixo, acento, OCR, palavras coladas, dominio); a marca ou a forma curta
+que o LLM atribuiu a duas empresas diferentes fica com token proprio; duas empresas com raiz de CNPJ
+diferente colada no texto nunca se fundem nem entram no mesmo grupo ·Gn; e o nome inteiro de uma pessoa
+que o LLM achou vence o [SOBRENOME_n] da lista do caso.
+
+No motor local (0.4.15): o prenome escrito sozinho de uma pessoa do lote leva o token dela (de duas ou
+mais pessoas: [PRENOME_n], explicado no ELENCO); a sigla que abre a razao social da lista (3 ou 4 letras,
+sozinha em caixa alta) e a razao social antiga escrita em caixa alta depois de "denominacao", "titulos de
+estabelecimento" ou "nome fantasia" viram token de empresa (a marca, token proprio); complemento (sala, apto., galpao, loja...) e
+bairro colados ao endereco entram no mesmo [ENDERECO_n]; o advogado da lista "Procurador(es):" do eproc e o
+nome logo antes da OAB sao trocados como os outros; o usuario do sistema ("USUARIO: X" da RFB, "Usuario:
+... - X - PROCURADOR -" do eproc) e o autor da referencia bibliografica ficam em claro; e o prenome dentro de
+nome de lugar ("Colonia Dona X") nao vira pessoa.
 
 ## Saidas
 
@@ -95,8 +193,7 @@ Deteccao 2.3: rua com nome de pessoa vira [ENDERECO_n] (nao [PESSOA_n]), e banco
 ou instituicao de pagamento listado no SISBAJUD fica em claro em todo o lote.
 
 Deteccao 2.4: o rotulo fica no texto, fora do token, e o valor inteiro fica dentro
-("Banco/Agencia: [CONTA_n]", "Debcad: [CONTA_n]", "Matricula n [MATRICULA_IMOVEL_n]",
-"CEP: [CEP_n]"; lista de matriculas, um token por numero). O papel da parte fica
+("Banco/Agencia: [CONTA_n]", "Debcad: [CONTA_n]", "CEP: [CEP_n]"). O papel da parte fica
 fora do token ("executada [EMPRESA_n]"). CNPJ com a filial partida pela quebra da
 coluna e CEP de 8 digitos em tabela de enderecos passam a ser detectados.
 
@@ -162,7 +259,7 @@ X", "X/SC", linha de endereco, cabecalho em CAIXA ALTA) fica como estava. Cada l
 `AUDITORIA_PRIVADA.txt` na pasta privada, com as palavras-marca aprovadas e as recusadas
 para voce conferir; a `AUDITORIA.txt` dos textos so tem tokens e contagens.
 
-Deteccao 2.7: o token da matricula distingue o cartorio. A matricula 12.345 do 1o Registro
+Deteccao 2.10 (H9-i): a matricula de imovel ficava SEMPRE em claro (decisao do Operador; trocada so na 0.4.14, em claro de novo desde a 0.4.15: `MATRICULA_EM_CLARO` em `recognizers.py`). CDA, processo administrativo, CAR/CCIR/CIB, registro da Junta, IP, CPF mascarado e OAB sao trocados. Historico, deteccao 2.7: o token da matricula distingue o cartorio. A matricula 12.345 do 1o Registro
 de Imoveis e a do 2o Registro de Imoveis sao tokens diferentes; vale a mencao do cartorio
 mais proxima (numero de ordem e lugar: "2o Oficio", "da Comarca de X"). Sem cartorio por
 perto, o token continua sendo por numero. O nome do cartorio, oficio ou tabelionato fica
@@ -181,7 +278,7 @@ maquina nova o modelo ainda nao esta no cache local; baixe-o uma vez, de proposi
 com `python tools\instalar_modelo_ner.py --baixar` (sem a opcao, so mostra o que
 baixaria). Sem o modelo o app cai no spaCy PT, como antes, e avisa no log.
 
-A versao em uso aparece no cabecalho da janela ("v0.4.1 · codigo ...") e no
+A versao em uso aparece no cabecalho da janela ("v0.4.4 · codigo ...") e no
 topo da `AUDITORIA.txt` e dos `LEIA-ME.txt` de cada lote. Se a janela mostrar
 um codigo diferente do esperado, feche o app e abra de novo. Se uma copia
 anterior tiver travado ao fechar (viva, sem janela), o proximo clique a
@@ -210,6 +307,22 @@ A API esta suspensa por decisao do Operador (07/10/2026): o caminho local e medi
 3. **LeNER dentro do app** (H8, em avaliacao): `--motor app-local+lener` mede o motor local inteiro com o
    BERT do LeNER-Br somado ao GLiNER, pelos mesmos filtros. Para usar no app, `"extra_ner": "lener"` no
    `config.json` (desligado por padrao) e `pip install transformers`.
+4. **LLM local contra o gabarito** (H9-b): `--motor app-local+ollama --modelo-ollama qwen3:4b` roda o motor
+   local mais o canal `ollama-local` sobre o mesmo texto (a uniao), e grava a resposta de cada trecho no
+   cache do pipeline (`saidas\privados\cache_llm`, por modelo). O progresso por documento sai no stderr e o
+   JSON privado e regravado a cada motor.
+5. **Reaplicar o pipeline sobre as respostas de uma medicao, sem chamar o modelo** (H9-c/H9-d): a higiene,
+   o papel publico e o juizo do lote agem depois do modelo, entao mudar uma regra do app nao exige rodar a
+   IA de novo. Para o cache gravado pelo `comparar_motores` anterior ao H9-c (texto cru, pasta
+   `cache_llm_local`):
+   ```
+   python tools\reaplicar_cache.py <PDFs do lote> --modelo gemma4:e4b
+   ```
+   Gera o lote exportavel pelo canal local em modo sem rede (nenhum modelo e criado; a AUDITORIA conta as
+   tentativas de rede, que tem de dar 0); trecho sem resposta no cache cai no piso local. Para cache ja
+   gravado sobre o texto mascarado (`cache_llm`), basta `anonimizar_llm.py <PDFs> --canal ollama-local
+   --modelo <modelo> --sem-rede --verificacao 0`. Depois, as reguas: `medir_vazamento.py <gabarito> <lote
+   local> <lote do modelo>` e `medir_estrutura.py <PDFs> <lote>`.
 
 ## Pipeline unico (aceite pendente)
 
@@ -262,8 +375,14 @@ confirmacao (so contagens), o canal, a regiao e o endpoint conferido.
 **Canais.** Os dois sao cadastraveis (tela e linha de comando): `gemini-pago`
 (Gemini API, chave de projeto do Google Cloud **com faturamento**; sem garantia de
 residencia de dados) e `vertex-sp` (Vertex AI, projeto institucional). O canal
-gratuito, o canal vazio e qualquer outro sao recusados; o antigo `ollama-local` foi
-retirado. A rota de teste e de producao e a mesma: o Operador escolhe os arquivos,
+gratuito, o canal vazio e qualquer outro sao recusados. Em teste (H8) ha tambem o
+`ollama-local`: LLM local pelo Ollama em `127.0.0.1:11434`, so loopback, **sem envio**
+(sem aviso de sigilo e sem confirmacao de rodada), com a rede bloqueada fora do loopback
+durante a rodada e a contagem de tentativas na AUDITORIA (tem de dar 0); modelo padrao
+`qwen3:4b`, modelo `:cloud` recusado, `OLLAMA_HOST` fora do loopback e proxy recusados
+(`tools\anonimizar_llm.py --canal ollama-local`; detalhes e limites na GOVERNANCA, H9-b; o
+`ollama-local` do I7 foi retirado e este e o substituto, com outro desenho). A rota de
+teste e de producao dos canais remotos e a mesma: o Operador escolhe os arquivos,
 testa com a API paga e troca para a institucional quando ela estiver disponivel.
 
 **Chave (gemini-pago).** Nunca em arquivo do projeto, `config.json`, log ou

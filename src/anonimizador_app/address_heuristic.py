@@ -12,6 +12,7 @@ from collections.abc import Iterable
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
 
+from .address_guard import initial_not_street
 from .gemini_detector import is_kept_term
 
 RECOGNIZER = "HeuristicaEndereco"
@@ -19,7 +20,10 @@ _SCORE = 0.90
 
 # "R" sem ponto so abrevia Rua antes de palavra: "R E G I S T R O" (cabecalho espacado) e
 # "R D ATIVA" (celula de tabela) nao sao logradouro.
-_VIA = r"(?:Rua|R\.|R\s+(?=[A-ZÁ-Ú]{2})|Avenida|Ave\.?|Av\.|Avn\.|Alameda|Travessa|Pra[cç]a|P[cç]\.)"
+_VIA = (
+    r"(?:Rua|R\.|R\s+(?=[A-ZÁ-Ú]{2})|Avenida|Ave\.?|Av\.|Avn\.|Alameda|Travessa|Pra[cç]a|P[cç]\."
+    r"|Rodovia|Rod\.|Estrada|Servid[ãa]o|Loteamento|Beco)"
+)
 _NUMBER_MARK = r"(?:n[º°o.]?\s*|n[uú]mero\s+)?"
 # Nome do logradouro: nao atravessa celula de tabela ("|") nem vao de coluna (3+ espacos).
 _NAME = r"(?:(?![^\S\n]{3})[^,\n|])"
@@ -40,6 +44,56 @@ _VIA_NUMBER = re.compile(
     rf"{_PREDIAL}"
     r")\b"
 )
+
+# H9-h: logradouro cujo NOME e um numero ("Rua 2070, 235, Centro", "Rua 1500, nº 10", "Avenida 3, 45"): via, numero do
+# logradouro, virgula (ou ponto e virgula) e o numero predial. Sem o segundo numero nao e endereco ("Rua 12").
+_VIA_NUMERADA = re.compile(
+    r"(?ix)"
+    r"(?:(?<=^)|(?<=[\s,;:(]))"
+    r"("
+    rf"{_VIA}"
+    r"\s*\d{1,5}"
+    r"\s*[,;]\s*"
+    rf"{_NUMBER_MARK}"
+    r"(?<![A-Za-z0-9/])"
+    rf"{_PREDIAL}"
+    r")\b"
+)
+
+# H9-i: logradouro com nome proprio SEM numero predial ("Rua Fulano de Tal", "Estrada Municipal Fulano", "Rio Fulano",
+# "Servidao Fulano", "Loteamento Fulano", "Linha Fulano", "bairro Fulano"): o logradouro inteiro, com o nome, e um
+# endereco so; o nome de pessoa dentro dele nao vira PESSOA. A palavra de via aceita qualquer caixa, exceto as
+# ambiguas com palavra comum (Rio, Linha, Praca), que exigem a inicial maiuscula ou a caixa alta.
+_VIA_NOME_FIXA = (
+    r"(?i:Rua|R\.|Avenida|Av\.|Avn\.|Travessa|Tv\.|Alameda|Rodovia|Rod\.|Servid[ãa]o|Loteamento|Beco|Bairro"
+    r"|Estrada(?:[ \t]+(?:Municipal|Estadual|Federal|Geral|Vicinal|Rural))?)"
+)
+_VIA_NOME_AMBIGUA = (
+    r"(?:Pra[cç]a|PRA[CÇ]A|Rio|RIO|Linha|LINHA|Gleba|GLEBA|Localidade|LOCALIDADE|Distrito|DISTRITO|Acesso|ACESSO)"
+)
+_NOME_CAIXA = "A-ZÁÀÂÃÉÊÍÓÔÕÚÇ"
+_NOME_TITULO = r"(?:Dra?|Prof[a]?|Cel|Gen|Pres|Eng|Cap|Mal|Sen|Dep|Ver|Pe|Sto|Sta|Des|Min)\."
+_NOME_PALAVRA = rf"(?:{_NOME_TITULO}|[{_NOME_CAIXA}][\wÀ-ÿ'’\-]*)"
+_NOME_CONECTIVO = r"(?i:d[aeo]s?|e)"
+# Palavra que abre outro campo ou outra via: o nome do logradouro para antes dela.
+_NOME_PARADA = (
+    r"(?i:Bairro|Cidade|Munic[ií]pio|Comarca|CEP|Complemento|N[uú]mero|Telefone|CPF|CNPJ|Estado|Distrito|Rua|Avenida"
+    r"|Travessa|Alameda|Rodovia|Estrada|Beco|Loteamento|Servid[ãa]o|Rio|Linha|inscrit[oa]|portador[a]?|brasileir[oa]|residente|domiciliad[oa]"
+    r"|Ltda|Epp|Eireli|Me)"
+)
+_VIA_NOME = re.compile(
+    r"(?:(?<=^)|(?<=[\s,;:(]))"
+    rf"((?:{_VIA_NOME_FIXA}|{_VIA_NOME_AMBIGUA})"
+    r"[ \t]+"
+    rf"(?P<nome>(?!{_NOME_CONECTIVO}\b|{_NOME_PARADA}\b){_NOME_PALAVRA}"
+    rf"(?:[ \t]+(?:{_NOME_CONECTIVO}[ \t]+)?(?!{_NOME_PARADA}\b){_NOME_PALAVRA}){{0,5}}))"
+    r"(?![\wÀ-ÿ])",
+    re.MULTILINE,
+)
+# Bairro de nome comum ("bairro Centro"): nao e logradouro de pessoa.
+_NOME_GENERICO = frozenset("centro industrial comercial rural urbano velho novo nova alto baixo".split())
+_CODIGO_DEPOIS = re.compile(r"[.,]?[ \t]*[A-Za-z]{0,3}\d{2,}[/\-]\d")
+_VIA_COMUM = re.compile(r"(?i)^(?:pra[cç]a|rio|linha|gleba|localidade|distrito|acesso|beco)\b")
 
 _VIA_ONLY = re.compile(
     rf"(?imx)"
@@ -111,6 +165,7 @@ class AddressHeuristicEngine:
 
     def detect(self, text: str) -> list[EntitySpan]:
         spans = list(_spans_via_number(text, self.extra_keep))
+        spans.extend(_spans_named_via(text, self.extra_keep))
         spans.extend(_spans_broken_number(text, self.extra_keep))
         spans.extend(_spans_wrapped_via(text, self.extra_keep))
         spans.extend(_spans_receita_form(text, self.extra_keep))
@@ -121,13 +176,15 @@ class AddressHeuristicEngine:
         return []
 
 
-def _ok_span(text: str, start: int, end: int, extra_keep: Iterable[str]) -> bool:
+def _ok_span(text: str, start: int, end: int, extra_keep: Iterable[str], minimum: int = 8) -> bool:
     if end <= start or end > len(text):
         return False
     value = text[start:end]
     collapsed = re.sub(r"\s+", " ", value).strip()
-    if len(collapsed) < 8:
+    if len(collapsed) < minimum:
         return False
+    if initial_not_street(text, start):
+        return False  # v0.4.11: "A. R. Souza Neto": o "R." e inicial de prenome, nao "Rua"
     if _BARE_VIA.match(collapsed):
         return False
     if is_kept_term(collapsed, extra_keep):
@@ -154,9 +211,35 @@ def _make_span(start: int, end: int) -> EntitySpan:
 
 def _spans_via_number(text: str, extra_keep: Iterable[str]) -> list[EntitySpan]:
     found: list[EntitySpan] = []
-    for match in _VIA_NUMBER.finditer(text):
+    for pattern in (_VIA_NUMBER, _VIA_NUMERADA):
+        for match in pattern.finditer(text):
+            start, end = match.start(1), match.end(1)
+            if not _ok_span(text, start, end, extra_keep):
+                continue
+            found.append(_make_span(start, end))
+    return found
+
+
+def _spans_named_via(text: str, extra_keep: Iterable[str]) -> list[EntitySpan]:
+    """Logradouro com nome proprio e sem numero predial (H9-i): "Rua Fulano de Tal", "Estrada Municipal Fulano", "Rio
+    Fulano", "bairro Fulano". Quando o numero vem junto, o padrao via+numero (mais longo) vence."""
+
+    from .geo_names import is_geo_name
+
+    found: list[EntitySpan] = []
+    for match in _VIA_NOME.finditer(text):
         start, end = match.start(1), match.end(1)
-        if not _ok_span(text, start, end, extra_keep):
+        value = re.sub(r"\s+", " ", text[start:end]).strip()
+        name = match.group("nome")
+        if sum(char.isalpha() for char in name) < 3:
+            continue
+        if _VIA_COMUM.match(value) and is_geo_name(value):
+            continue  # "Rio Grande", "Rio Branco": municipio, nao logradouro
+        if value.casefold().startswith("bairro") and name.casefold() in _NOME_GENERICO:
+            continue
+        if _CODIGO_DEPOIS.match(text, end):
+            continue  # carimbo de cartorio ("Av. X de Y. B00/810."): o nome vem seguido de codigo, nao de endereco
+        if not _ok_span(text, start, end, extra_keep, minimum=7):
             continue
         found.append(_make_span(start, end))
     return found
@@ -299,3 +382,73 @@ def _find_form_number(
         index += 1
         seen += 1
     return None
+
+
+# v0.4.15: complemento e bairro logo depois do endereco ja trocado ("[ENDERECO_1], apto. 602", ", sala 5", ", Galpao C 07",
+# ", bairro Centro"): entram no mesmo token. O complemento e a palavra-gatilho e ate 3 palavras curtas de letras e
+# digitos; o bairro, a palavra "bairro" e ate 5 palavras de nome. O endereco vizinho separado so por virgula (o bairro
+# que o detector ja trocou a parte) tambem entra.
+_TAIL_SEPARATOR = r"[ \t]*(?:,|[-–](?=[ \t\n]))[ \t]*\n?[ \t]*"
+_TAIL_GAP = r"(?:[ \t]+|[ \t]*\n[ \t]*)"
+_TAIL_COMPLEMENT = re.compile(
+    _TAIL_SEPARATOR
+    + r"(?i:casa|sala|salas|sl\.|apto\.?|apartamento|ap\.|conjunto|conj\.|cj\.|galp[ãa]o|bloco|bl\.|loja|lj\.|box"
+    r"|andar|lote|quadra|qd\.|fundos|t[ée]rreo|sobreloja)(?![^\W\d_])"
+    r"(?:(?:" + _TAIL_GAP + r")?(?:n[º°o]\.?[ \t]*)?(?:\d[\w/-]{0,5}|[A-Z](?:\d[\w/-]{0,4})?)(?![\w/-])){0,3}"
+)
+_TAIL_DISTRICT = re.compile(
+    _TAIL_SEPARATOR
+    + r"(?i:bairro)[ \t]*:?" + _TAIL_GAP + r"[A-ZÀ-Ý0-9][^\W_]*(?:" + _TAIL_GAP
+    + r"(?:(?i:d[aeo]s?|e)[ \t]+)?[A-ZÀ-Ý0-9][^\W_]*){0,4}"
+)
+_TAIL_JOIN = re.compile(_TAIL_SEPARATOR + r"$")
+
+
+def extend_address_tails(text: str, spans: Iterable[EntitySpan]) -> list[EntitySpan]:
+    """O span de endereco (LOCATION) estendido sobre o complemento, o bairro e o endereco vizinho colado por virgula."""
+
+    from dataclasses import replace
+
+    ordered = sorted(spans, key=lambda span: (span.start, span.end))
+    dropped: set[int] = set()
+    result: list[EntitySpan] = []
+    for index, span in enumerate(ordered):
+        if index in dropped:
+            continue
+        if span.entity_type != "LOCATION":
+            result.append(span)
+            continue
+        end = span.end
+        for _ in range(6):
+            match = _TAIL_COMPLEMENT.match(text, end) or _TAIL_DISTRICT.match(text, end)
+            if match is not None and match.end() > end:
+                blocked = any(
+                    other.start < match.end() and end < other.end
+                    for position, other in enumerate(ordered)
+                    if position != index and position not in dropped
+                )
+                if not blocked:
+                    end = match.end()
+                    continue
+            nearby = next(
+                (
+                    position
+                    for position in range(index + 1, len(ordered))
+                    if position not in dropped
+                    and ordered[position].start >= end
+                    and ordered[position].start - end <= 6
+                ),
+                None,
+            )
+            if (
+                nearby is not None
+                and ordered[nearby].entity_type == "LOCATION"
+                and _TAIL_JOIN.fullmatch(text[end : ordered[nearby].start])
+                and text[end : ordered[nearby].start].strip()
+            ):
+                dropped.add(nearby)
+                end = ordered[nearby].end
+                continue
+            break
+        result.append(replace(span, end=end) if end != span.end else span)
+    return result

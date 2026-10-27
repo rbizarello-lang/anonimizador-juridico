@@ -11,7 +11,10 @@ decide antes, na tela e na CLI; aqui se confere de novo, onde o texto sai da maq
   fica em aviso;
 - ``check_network_point`` (I4): o canal e um dos cadastrados, o host do endpoint e o oficial da Google
   para ele, e nenhuma variavel do SDK redireciona o trafego; ``verify_client_endpoint`` confere o
-  endereco do cliente ja criado.
+  endereco do cliente ja criado;
+- (H9-b) canal ``ollama-local``: so o loopback ``127.0.0.1`` na porta 11434 do Ollama; o endereco e
+  comparado com uma lista fixa (nenhum parser de URL decide), variavel que aponte para outro lugar,
+  proxy e modelo ``:cloud`` sao recusados.
 
 Nada aqui abre rede.
 """
@@ -36,6 +39,10 @@ class GateError(RuntimeError):
 CHANNEL_PROVIDERS: dict[str, str] = {
     "gemini-pago": "gemini",
     "vertex-sp": "vertex",
+    # H9-b: LLM local (Ollama) so em loopback; nada sai da maquina.
+    "ollama-local": "ollama",
+    # H9-p: SO TESTE. OpenRouter (API compativel com a da OpenAI), trancado no documento sintetico.
+    "openrouter-teste": "openrouter",
 }
 
 
@@ -155,12 +162,15 @@ class RunPermit:
 # ---------------------------------------------------------------------------------------------------
 
 GEMINI_HOST = "generativelanguage.googleapis.com"
+OPENROUTER_HOST = "openrouter.ai"
+OPENROUTER_BASE_URL = f"https://{OPENROUTER_HOST}/api/v1"
 _MULTI_REGIONAL = frozenset({"us", "eu"})
 _REGION = re.compile(r"^(?:global|us|eu|[a-z]{2,}(?:-[a-z]+[0-9]+)?)$")
 _PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{2,62}$")
 # O unico formato de host aceito, por provedor (alem de ser o esperado para o canal e a regiao).
 _ALLOWED_HOST = {
     "gemini": re.compile(r"^generativelanguage\.googleapis\.com$"),
+    "openrouter": re.compile(r"^openrouter\.ai$"),
     "vertex": re.compile(
         r"^(?:aiplatform\.googleapis\.com|[a-z]+(?:-[a-z]+[0-9]+)-aiplatform\.googleapis\.com|"
         r"aiplatform\.(?:us|eu)\.rep\.googleapis\.com)$"
@@ -176,6 +186,71 @@ REPLAY_ENV = ("GOOGLE_GENAI_CLIENT_MODE", "GOOGLE_GENAI_REPLAYS_DIRECTORY", "GOO
 # o app avisa (confirmacao e AUDITORIA) e nao recusa.
 PROXY_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
 CERT_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+# ---------------------------------------------------------------------------------------------------
+# H9-b: canal local (Ollama em loopback)
+# ---------------------------------------------------------------------------------------------------
+
+OLLAMA_PORT = 11434
+OLLAMA_HOST_IP = "127.0.0.1"
+# Os unicos enderecos aceitos, comparados como TEXTO (o I7 retirou o canal porque o "so localhost" usava um
+# parser de URL e o cliente HTTP outro). Sem caminho, sem https, sem outra porta.
+OLLAMA_LOOPBACK_URLS = (
+    f"http://127.0.0.1:{OLLAMA_PORT}",
+    f"http://localhost:{OLLAMA_PORT}",
+    f"http://[::1]:{OLLAMA_PORT}",
+)
+# Variaveis do ambiente que dizem onde esta o Ollama (a do servidor e a que o LangExtract le sozinho).
+OLLAMA_ENV = ("OLLAMA_HOST", "OLLAMA_BASE_URL")
+_OLLAMA_HOST_FORM = re.compile(
+    rf"^(?:http://)?(?:127\.0\.0\.1|localhost|\[::1\]|::1)(?::{OLLAMA_PORT})?/?$", re.IGNORECASE
+)
+_OLLAMA_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
+def is_ollama_loopback_url(value: object) -> bool:
+    """``True`` so para um dos tres enderecos fixos (comparacao de texto, uma barra final tolerada)."""
+
+    if not isinstance(value, str):
+        return False
+    return value.strip().rstrip("/").lower() in OLLAMA_LOOPBACK_URLS
+
+
+def ollama_refusals(env: Mapping[str, str] | None = None) -> list[str]:
+    """Recusas do canal local pelo ambiente: variavel que aponta o Ollama para fora do loopback e proxy
+    (o cliente HTTP, ``requests``, honra proxy). Diz so o NOME da variavel, nunca o valor."""
+
+    environment = _environment(env)
+    refusals: list[str] = []
+    for name in OLLAMA_ENV:
+        for variant in (name, name.lower()):
+            value = (environment.get(variant) or "").strip()
+            if value and not _OLLAMA_HOST_FORM.match(value):
+                refusals.append(
+                    f"A variavel {variant} aponta o Ollama para fora desta maquina (o canal local so "
+                    "aceita loopback, porta 11434): remova-a ou ajuste-a antes de usar o canal."
+                )
+    refusals.extend(
+        f"A variavel de proxy {name} esta definida: o cliente HTTP do canal local a honraria e o texto "
+        "poderia sair da maquina. Remova-a (ou esvazie-a) antes de usar o canal."
+        for name in _defined(environment, PROXY_ENV)
+    )
+    return list(dict.fromkeys(refusals))
+
+
+def ollama_model_refusal(model_id: str) -> str:
+    """Modelo recusado no canal local (vazio = aceito). O Ollama roda os modelos ``:cloud`` na nuvem dele."""
+
+    name = (model_id or "").strip()
+    if not _OLLAMA_MODEL.match(name):
+        return "Nome de modelo do Ollama invalido (use, por exemplo, gemma4:e4b)."
+    if "cloud" in name.casefold():
+        return (
+            "Modelo com 'cloud' no nome e recusado: o Ollama roda esse modelo na nuvem dele, e o canal "
+            "local nao envia texto para fora desta maquina."
+        )
+    return ""
 
 
 def _environment(env: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -233,6 +308,8 @@ def expected_host(provider: str, location: str = "") -> str:
 
     if provider == "gemini":
         return GEMINI_HOST
+    if provider == "openrouter":
+        return OPENROUTER_HOST
     if provider == "vertex":
         if location == "global":
             return "aiplatform.googleapis.com"
@@ -254,6 +331,12 @@ class NetworkCheck:
     warnings: tuple[str, ...] = ()
 
     def audit_lines(self) -> list[str]:
+        if self.provider == "ollama":
+            return [
+                f"Endpoint conferido no ponto da rede: {self.base_url} (canal {self.channel}); "
+                "LLM local (Ollama, loopback), nada enviado.",
+                *(f"Aviso de rede: {warning}" for warning in self.warnings),
+            ]
         lines = [f"Endpoint conferido no ponto da rede: {self.host} (canal {self.channel})"]
         if self.region:
             lines.append(f"Regiao do Vertex AI usada na chamada: {self.region}")
@@ -268,15 +351,35 @@ def check_network_point(
     location: str = "",
     project: str = "",
     env: Mapping[str, str] | None = None,
+    model_id: str = "",
+    port: int = OLLAMA_PORT,
 ) -> NetworkCheck:
     """Reconfere, onde o texto sai da maquina: o canal e um dos cadastrados (e o provedor e o dele), o
     host e o oficial da Google para esse canal, e nenhuma variavel do SDK redireciona o trafego.
-    Levanta ``GateError``. A regiao do Vertex AI nao e forcada: aparece na confirmacao e na AUDITORIA."""
+    Levanta ``GateError``. A regiao do Vertex AI nao e forcada: aparece na confirmacao e na AUDITORIA.
+
+    Canal ``ollama-local`` (H9-b): o host e sempre ``127.0.0.1``; ``port`` so muda em teste (parametro
+    explicito do chamador, nunca variavel de ambiente)."""
 
     if channel not in CHANNEL_PROVIDERS:
         raise GateError("Canal nao cadastrado: o texto so sai por gemini-pago ou vertex-sp.")
     if CHANNEL_PROVIDERS[channel] != provider:
         raise GateError(f"O provedor nao e o do canal {channel}: o envio foi recusado.")
+    if provider == "ollama":
+        refusals = ollama_refusals(env)
+        model_problem = ollama_model_refusal(model_id) if model_id else ""
+        if model_problem:
+            refusals.append(model_problem)
+        if refusals:
+            raise GateError(" ".join(refusals))
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise GateError("Porta do Ollama invalida.")
+        return NetworkCheck(
+            channel=channel,
+            provider=provider,
+            host=OLLAMA_HOST_IP,
+            base_url=f"http://{OLLAMA_HOST_IP}:{port}",
+        )
     refusals = env_refusals(env)
     if refusals:
         raise GateError(" ".join(refusals))
@@ -294,7 +397,7 @@ def check_network_point(
         channel=channel,
         provider=provider,
         host=host,
-        base_url=f"https://{host}/",
+        base_url=OPENROUTER_BASE_URL if provider == "openrouter" else f"https://{host}/",
         region=region,
         warnings=tuple(env_warnings(env)),
     )
@@ -354,6 +457,7 @@ def verify_client_endpoint(model: object, check: NetworkCheck) -> None:
 _SECRET_PATTERNS = (
     re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),
     re.compile(r"ya29\.[0-9A-Za-z._\-]{20,}"),
+    re.compile(r"sk-or-[0-9A-Za-z_\-]{16,}"),
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{16,}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
@@ -392,3 +496,82 @@ def safe_error(exc: BaseException, *secrets: str, keep_message: bool = False) ->
         if message:
             summary += f": {message}"
     return summary
+
+
+# ---------------------------------------------------------------------------------------------------
+# H9-p: trava do canal de teste (openrouter-teste): so o documento sintetico sai por ele
+# ---------------------------------------------------------------------------------------------------
+#
+# A lista fica no CODIGO (e nao num arquivo ao lado do PDF): acrescentar um hash exige mudar o fonte, o que
+# aparece no git. Um PDF real tem outro SHA-256 e e recusado antes de qualquer leitura ou envio.
+
+SYNTHETIC_SHA256: frozenset[str] = frozenset(
+    {
+        # autos_sinteticos.pdf (Teste anonimiza/sintetico), 100% ficticio; envio autorizado pelo Operador.
+        "1b16179e9fc2fe2a02cd4990528497a5a8c2dabae8a8b9341f10de540c711ec8",
+    }
+)
+
+
+def file_sha256(path) -> str:
+    import hashlib
+    from pathlib import Path
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def synthetic_lock_refusals(paths, allowed: frozenset[str] = SYNTHETIC_SHA256) -> list[str]:
+    """Arquivos que o canal de teste recusa (vazio = todos sao o documento sintetico). So o nome, nunca o texto."""
+
+    from pathlib import Path
+
+    refusals: list[str] = []
+    items = list(paths)
+    if not items:
+        return ["Nenhum arquivo: o canal de teste so roda com o documento sintetico."]
+    for item in items:
+        path = Path(item)
+        try:
+            digest = file_sha256(path)
+        except OSError:
+            refusals.append(f"{path.name}: nao foi possivel ler o arquivo para conferir o SHA-256.")
+            continue
+        if digest not in allowed:
+            refusals.append(
+                f"{path.name}: SHA-256 fora da lista do canal de teste (so o documento sintetico pode sair por ele)."
+            )
+    return refusals
+
+
+# ---------------------------------------------------------------------------------------------------
+# v0.4.10: Gemma pela Gemini API e SEMPRE nivel gratuito (pagina de precos do Google, 20/10/2026: nivel pago "Not
+# available"; no gratuito "Used to improve our products: Yes"), mesmo com a conta paga. No canal gemini-pago o modelo
+# "gemma-*" so roda com a trava do documento sintetico; autos reais nunca saem sob os termos gratuitos.
+# ---------------------------------------------------------------------------------------------------
+
+GEMMA_PREFIX = "gemma-"
+GEMMA_CHANNEL = "gemini-pago"
+
+
+def is_free_tier_gemma(channel: str, model_id: str) -> bool:
+    """O modelo e Gemma no canal gemini-pago (sempre nivel gratuito na Gemini API)?"""
+
+    model = (model_id or "").strip().casefold()
+    if model.startswith("models/"):
+        model = model[len("models/") :]
+    return (channel or "").strip().casefold() == GEMMA_CHANNEL and model.startswith(GEMMA_PREFIX)
+
+
+def gemma_lock_refusals(channel: str, model_id: str, paths, allowed: frozenset[str] = SYNTHETIC_SHA256) -> list[str]:
+    """Arquivos que o canal gemini-pago recusa com modelo Gemma (vazio = nao e Gemma, ou todos sao o sintetico)."""
+
+    if not is_free_tier_gemma(channel, model_id):
+        return []
+    return [
+        "Gemma na Gemini API e sempre nivel gratuito (o Google pode usar o texto): " + reason
+        for reason in synthetic_lock_refusals(paths, allowed)
+    ]

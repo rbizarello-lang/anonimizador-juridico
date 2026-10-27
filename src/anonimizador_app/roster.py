@@ -19,6 +19,8 @@ from pathlib import Path
 
 from anonimizador_juridico.pseudonymizer import fold_lexical
 
+from .name_generation import conflicting_generation
+
 TOKENIZE = "tokenizar"
 KEEP = "manter"
 
@@ -125,6 +127,46 @@ _COMPANY_TAIL = re.compile(
     r"(?:[\s,.\-–—]+(?:ltda|me|epp|eireli|s/?a|s\.a|sa|cia|companhia)\.?)+$"
 )
 _PERSON_TITLE = re.compile(r"^(?:dr|dra|sr|sra|srta|exmo|exma)\.?\s+")
+_COMPANY_WORD = re.compile(r"[a-z0-9]+")
+_COMPANY_CONNECTIVES = frozenset({"de", "da", "do", "das", "dos", "e"})
+_GLUED_SUFFIX = re.compile(r"(?:ltda|eireli|epp|me|sa)+$")
+_DOMAIN = re.compile(r"(?i)www\.|https?:|\.com\b|\.br\b")
+
+
+def _company_words(value: str) -> list[str]:
+    return [word for word in _COMPANY_WORD.findall(entity_core("empresa", value)) if word not in _COMPANY_CONNECTIVES]
+
+
+def company_canonical_fits(text: str, canonical: str) -> bool:
+    """v0.4.15: a grafia ``text`` e o MESMO nome que o canonico ``canonical`` que o LLM deu (nao uma forma curta, nem
+    outra empresa): mesmas palavras, palavras coladas ("ALFABETALTDA"), erro de OCR (mesmo numero de palavras e
+    semelhanca >= 0,85, ou as letras coladas com semelhanca >= 0,9) ou o dominio do site com as duas primeiras palavras
+    do nome ("www.alfabeta.com.br")."""
+
+    from difflib import SequenceMatcher
+
+    mine, theirs = _company_words(text), _company_words(canonical)
+    if not mine or not theirs or mine == theirs:
+        return True
+    compact_mine = _GLUED_SUFFIX.sub("", "".join(mine)) or "".join(mine)
+    compact_theirs = _GLUED_SUFFIX.sub("", "".join(theirs)) or "".join(theirs)
+    if compact_mine == compact_theirs:
+        return True
+    glued = [_GLUED_SUFFIX.sub("", "".join(_COMPANY_WORD.findall(entity_core("empresa", value)))) for value in (text, canonical)]
+    if glued[0] and glued[0] == glued[1]:
+        return True  # palavras coladas, com o conectivo ("ALFADEPECASLTDA")
+    if _DOMAIN.search(text):
+        return len("".join(theirs[:2])) >= 5 and "".join(theirs[:2]) in compact_mine
+    if len(mine) == 1 and len(mine[0]) >= 4 and len(theirs) >= 2:
+        # A marca de uma palavra (a primeira do nome, ou ela com erro de OCR) segue para a propagacao de variante (H9-g),
+        # que tem as travas de radical comum e de outra razao social escrita no lote.
+        return mine[0] == theirs[0] or (
+            len(mine[0]) >= 5 and SequenceMatcher(None, mine[0], theirs[0]).ratio() >= 0.85
+        )
+    ratio = SequenceMatcher(None, compact_mine, compact_theirs).ratio()
+    if len(mine) == len(theirs) and ratio >= 0.85:
+        return True
+    return abs(len(compact_mine) - len(compact_theirs)) <= 2 and ratio >= 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,9 +265,15 @@ def normalize_role(raw: str) -> str:
 
 
 def policy_action(roles: Iterable[str]) -> str:
-    """Um papel que tokeniza basta: na duvida entre dois papeis, protege a pessoa."""
+    """Um papel que tokeniza basta: na duvida entre dois papeis, protege a pessoa.
 
-    actions = [ROLE_POLICY.get(role, TOKENIZE) for role in roles]
+    H9-c: o papel ``desconhecido`` (mencao sem papel: a do motor local, a da verificacao, o papel que o modelo
+    inventou) nao decide nada quando a entidade ja tem papel conhecido. Antes ele valia como "tokeniza" e
+    desfazia o ``manter`` do papel publico que o proprio LLM atribuiu (magistrado, servidor...)."""
+
+    listed = list(roles)
+    known = [role for role in listed if role != UNKNOWN_ROLE]
+    actions = [ROLE_POLICY.get(role, TOKENIZE) for role in (known or listed)]
     if not actions:
         return TOKENIZE
     return TOKENIZE if TOKENIZE in actions else KEEP
@@ -269,6 +317,15 @@ class Roster:
     def __init__(self, entries: Iterable[RosterEntry] = ()) -> None:
         self._entries: dict[str, RosterEntry] = {}
         self._by_variant: dict[tuple[str, str], str] = {}
+        # H9-c: entradas que o juizo do lote mandou manter (so em memoria: nao vai para o ``elenco.json``).
+        # Nenhuma mencao posterior (verificacao, motor local) as devolve a ``tokenizar``.
+        self._locked_keep: set[str] = set()
+        # H9-h: quantas entradas a fusao por identidade (``merge``) absorveu (AUDITORIA).
+        self.identity_merges = 0
+        # H9-h (restrita): por que cada fusao aconteceu (AUDITORIA): igual normalizado, OCR ou nome canonico do LLM.
+        self.identity_reasons: dict[str, int] = {"igual": 0, "ocr": 0, "canonico": 0}
+        # v0.4.15: (tipo, grafia dobrada) -> nomes canonicos (dobrados) que o LLM afirmou para ela (so empresa).
+        self._claims: dict[tuple[str, str], set[str]] = {}
         for entry in entries:
             self._put(entry)
 
@@ -315,6 +372,18 @@ class Roster:
         canonical = mention.canonical.strip()
         if not canonical or has_token(canonical):
             canonical = text
+        if kind == "empresa" and entity_core(kind, canonical) != entity_core(kind, text):
+            # v0.4.15: o nome canonico do LLM e uma AFIRMACAO, nao prova. Para empresa ele so liga a grafia que e o mesmo
+            # nome (sufixo, acento, OCR, palavras coladas, dominio); "Marca X" com canonico "Outra Empresa Ltda" ficava
+            # com o token da outra empresa em todo o lote. A forma curta segue para ``fuse_llm_subforms`` (com as travas
+            # de radical comum e CNPJ). A mesma grafia afirmada de duas empresas fica contestada (``contested``).
+            self._claims.setdefault((kind, entity_core(kind, text)), set()).add(entity_core(kind, canonical))
+            listed = self._entries.get(entity_key(kind, canonical))
+            # A lista do caso (com as "Outras grafias" do Operador) e decisao do Operador: o canonico dela vale.
+            if not company_canonical_fits(text, canonical) and getattr(listed, "source", "") != "lista":
+                canonical = text
+        if kind == "pessoa" and conflicting_generation(canonical, text):
+            canonical = text  # v0.4.10: o nome canonico do pai nunca leva o filho (nem o inverso)
         role = normalize_role(mention.role) if mention.role else UNKNOWN_ROLE
         entry = self._find(kind, canonical, text)
         if entry is None:
@@ -331,11 +400,13 @@ class Roster:
             self._absorb(entry, grounded, "")
         return entry
 
-    def add_listed(self, kind: str, name: str) -> RosterEntry | None:
-        """Nome que o usuario listou (lista de alvos): sempre tokeniza."""
+    def add_listed(self, kind: str, name: str, role: str = "") -> RosterEntry | None:
+        """Nome que o usuario listou (lista de alvos): sempre tokeniza. ``role``: o papel da planilha (so elenco)."""
 
         mention = Mention(kind=kind, text=name, role="parte", canonical=name)
         entry = self.add_mention(mention, source="lista")
+        if entry is not None and role:
+            self._absorb(entry, "", normalize_role(role))
         if entry is not None and not entry.pinned:
             entry.action = TOKENIZE
         return entry
@@ -343,9 +414,12 @@ class Roster:
     def _find(self, kind: str, canonical: str, text: str) -> RosterEntry | None:
         for value in (canonical, text):
             key = self._by_variant.get((kind, entity_core(kind, value)))
-            if key is not None:
+            if key is not None and not (kind == "pessoa" and conflicting_generation(self._entries[key].name, text)):
                 return self._entries[key]
-        return self._entries.get(entity_key(kind, canonical))
+        entry = self._entries.get(entity_key(kind, canonical))
+        if entry is not None and kind == "pessoa" and conflicting_generation(entry.name, text):
+            return None
+        return entry
 
     def _absorb(self, entry: RosterEntry, variant: str, role: str) -> None:
         if variant and variant not in entry.variants:
@@ -353,8 +427,102 @@ class Roster:
             self._index_variant(entry, variant)
         if role and role not in entry.roles:
             entry.roles.append(role)
-        if not entry.pinned:
+        if not entry.pinned and entry.key not in self._locked_keep:
             entry.action = policy_action(entry.roles)
+
+    def merge(self, survivor: str, absorbed: Iterable[str]) -> RosterEntry | None:
+        """H9-h: absorve as entradas ``absorbed`` em ``survivor`` (mesma entidade, ver ``roster_identity``): um
+        token so, os nomes todos viram variantes, os papeis se somam. Acao: "manter" vence com cargo publico
+        confirmado ou quando todas eram "manter"; senao, tokenizar. A entrada que fica trava o "manter" (memoria)."""
+
+        from .roster_identity import merged_action
+
+        target = self._entries.get(survivor)
+        if target is None:
+            return None
+        members = [target]
+        locks = [survivor in self._locked_keep]
+        for key in absorbed:
+            other = self._entries.pop(key, None)
+            if other is None or other is target:
+                continue
+            members.append(other)
+            locks.append(key in self._locked_keep)
+            self._locked_keep.discard(key)
+            for value in (other.name, *other.variants):
+                if value and value != target.name and value not in target.variants:
+                    target.variants.append(value)
+            for role in other.roles:
+                if role not in target.roles:
+                    target.roles.append(role)
+            self.identity_merges += 1
+        if len(members) == 1:
+            return target
+        action = merged_action(members, locks)
+        target.action = action
+        if action == KEEP:
+            self._locked_keep.add(survivor)
+        else:
+            self._locked_keep.discard(survivor)
+        self._by_variant = {}
+        for entry in self._entries.values():
+            self._index_variant(entry, entry.name)
+            for variant in entry.variants:
+                self._index_variant(entry, variant)
+        return target
+
+    def contested(self, kind: str, value: str) -> bool:
+        """v0.4.15: o LLM afirmou esta grafia como de 2+ empresas diferentes (nomes canonicos que nao sao o mesmo nome,
+        nem forma curta um do outro)? Entao nenhuma fusao por forma curta a liga a uma delas."""
+
+        claims = sorted(self._claims.get((kind, entity_core(kind, value)), ()))
+        for index, first in enumerate(claims):
+            for second in claims[index + 1 :]:
+                if company_canonical_fits(first, second):
+                    continue
+                short, long = sorted((_company_words(first), _company_words(second)), key=len)
+                if short and long[: len(short)] == short:
+                    continue
+                return True
+        return False
+
+    def drop_variant(self, key: str, value: str) -> bool:
+        """v0.4.11: tira uma grafia da entrada (forma curta ambigua entre duas empresas) e refaz o indice."""
+
+        entry = self._entries.get(key)
+        if entry is None or value not in entry.variants or value == entry.name:
+            return False
+        entry.variants.remove(value)
+        self._by_variant = {}
+        for item in self._entries.values():
+            self._index_variant(item, item.name)
+            for variant in item.variants:
+                self._index_variant(item, variant)
+        return True
+
+    def retype(self, key: str, kind: str) -> None:
+        """H9-h (revisao, R2): a entrada com sufixo societario e empresa, nao pessoa. Troca o tipo e refaz o indice."""
+
+        entry = self._entries.get(key)
+        if entry is None or entry.kind == kind or entry.pinned or kind not in CLASS_TO_ENTITY:
+            return
+        entry.kind = kind
+        self._by_variant = {}
+        for item in self._entries.values():
+            self._index_variant(item, item.name)
+            for variant in item.variants:
+                self._index_variant(item, variant)
+
+    def lock_keep(self, key: str) -> bool:
+        """Marca a entrada como ``manter`` por juizo do lote; vale mesmo que mencoes novas tragam outro papel.
+        Nao mexe em entrada fixada pelo usuario nem na lista de alvos."""
+
+        entry = self._entries.get(key)
+        if entry is None or entry.pinned or entry.source == "lista":
+            return False
+        entry.action = KEEP
+        self._locked_keep.add(key)
+        return True
 
     def to_dict(self, annotations: Mapping[str, Mapping] | None = None) -> dict:
         """``annotations``: por chave, campos so de leitura (token, ocorrencias) para revisar a mao."""

@@ -100,18 +100,24 @@ def system_vault() -> Vault | None:
     return keyring  # type: ignore[return-value]
 
 
-def load_key(*, env: Mapping[str, str] | None = None, vault: Vault | None = None) -> ApiKey | None:
+def load_key(
+    *,
+    env: Mapping[str, str] | None = None,
+    vault: Vault | None = None,
+    env_var: str = ENV_VAR,
+    service: str = VAULT_SERVICE,
+) -> ApiKey | None:
     """A chave guardada, ou ``None``. Cofre com defeito conta como ausente (nao quebra a tela)."""
 
     environment = os.environ if env is None else env
-    from_env = (environment.get(ENV_VAR) or "").strip()
+    from_env = (environment.get(env_var) or "").strip()
     if from_env:
         return ApiKey(from_env, SOURCE_ENV)
     store = vault if vault is not None else system_vault()
     if store is None:
         return None
     try:
-        stored = store.get_password(VAULT_SERVICE, VAULT_USER)
+        stored = store.get_password(service, VAULT_USER)
     except Exception:  # noqa: BLE001 - sem backend, cofre bloqueado etc.
         return None
     if stored and stored.strip():
@@ -119,7 +125,9 @@ def load_key(*, env: Mapping[str, str] | None = None, vault: Vault | None = None
     return None
 
 
-def store_key(value: str, *, vault: Vault | None = None) -> ApiKey:
+def store_key(
+    value: str, *, vault: Vault | None = None, env_var: str = ENV_VAR, service: str = VAULT_SERVICE
+) -> ApiKey:
     """Guarda a chave no Gerenciador de Credenciais. Nunca em arquivo do projeto."""
 
     cleaned = (value or "").strip()
@@ -129,10 +137,10 @@ def store_key(value: str, *, vault: Vault | None = None) -> ApiKey:
     if store is None:
         raise CredentialsError(
             "Gerenciador de Credenciais indisponivel (pacote keyring ausente). "
-            f"Defina a variavel de ambiente {ENV_VAR}."
+            f"Defina a variavel de ambiente {env_var}."
         )
     try:
-        store.set_password(VAULT_SERVICE, VAULT_USER, cleaned)
+        store.set_password(service, VAULT_USER, cleaned)
     except Exception as exc:  # noqa: BLE001
         raise CredentialsError(
             f"Nao foi possivel guardar no Gerenciador de Credenciais ({type(exc).__name__})."
@@ -155,6 +163,19 @@ def delete_key(*, vault: Vault | None = None) -> bool:
             f"Nao foi possivel apagar do Gerenciador de Credenciais ({type(exc).__name__})."
         ) from None
     return True
+
+
+# H9-p: chave do OpenRouter (canal openrouter-teste, SO TESTE com o documento sintetico). Mesmo cofre, outro servico.
+OPENROUTER_ENV_VAR = "ANONIMIZADOR_OPENROUTER_CHAVE"
+OPENROUTER_VAULT_SERVICE = "AnonimizadorJuridico/openrouter"
+
+
+def load_openrouter_key(*, env: Mapping[str, str] | None = None, vault: Vault | None = None) -> ApiKey | None:
+    return load_key(env=env, vault=vault, env_var=OPENROUTER_ENV_VAR, service=OPENROUTER_VAULT_SERVICE)
+
+
+def store_openrouter_key(value: str, *, vault: Vault | None = None) -> ApiKey:
+    return store_key(value, vault=vault, env_var=OPENROUTER_ENV_VAR, service=OPENROUTER_VAULT_SERVICE)
 
 
 def describe_source(key: ApiKey | None) -> str:

@@ -242,7 +242,7 @@ class PipelineLlmTests(unittest.TestCase):
         self.assertIn("<!-- pagina-origem: 2 -->\n[fl. 2]\n", text)
         self.assertTrue((folder / "INDICE.md").is_file())
         index = (folder / "INDICE.md").read_text(encoding="utf-8")
-        self.assertIn("## autos.md", index)
+        self.assertIn("## doc_1.md", index)
         cast = (folder / "ELENCO.md").read_text(encoding="utf-8")
         self.assertIn("# Elenco do lote (sem nomes)", cast)
         self.assertIn("## Papéis atribuídos pelo LLM", cast)
@@ -393,26 +393,21 @@ class StructureParityTests(unittest.TestCase):
         texts = {o.source.name: o.markdown_path.read_text(encoding="utf-8") for o in result.job.outcomes}
         return result, texts
 
-    def test_companies_with_the_same_cnpj_get_the_group_suffix(self) -> None:
+    def test_companies_with_the_same_cnpj_are_one_entry(self) -> None:
+        # H9-j (decisao do Operador de 17/10, substitui o E13 neste ponto): o mesmo CNPJ colado as duas razoes sociais
+        # prova a mesma pessoa juridica (troca de nome); antes eram dois tokens com o sufixo de grupo ·G1.
         entities = [
             ("empresa", "ALFA TRANSPORTES FICTICIOS LTDA", "parte"),
             ("empresa", "BETA LOGISTICA FICTICIA LTDA", "parte"),
         ]
         result, texts = self._lote({"a.md": COVER_ALFA, "b.md": COVER_BETA}, entities)
 
-        self.assertIn("[EMPRESA_1·G1]", texts["a.md"])
-        self.assertIn("[EMPRESA_2·G1]", texts["b.md"])
+        self.assertIn("[EMPRESA_1]", texts["a.md"])
+        self.assertIn("[EMPRESA_1]", texts["b.md"])
         self.assertNotIn("ALFA TRANSPORTES", texts["a.md"])
-        cast = (result.job.export_dir / "ELENCO.md").read_text(encoding="utf-8")
-        self.assertIn("G1", cast)
-        # A tabela de papeis do LLM (no fim do ELENCO) tambem leva o sufixo; o mapa privado, nao.
-        section = cast.split("## Papéis atribuídos pelo LLM", 1)[1]
-        self.assertIn("| [EMPRESA_1·G1] |", section)
-        self.assertIn("| [EMPRESA_2·G1] |", section)
-        mapa = result.job.map_path.read_text(encoding="utf-8")
-        self.assertNotIn("·G", mapa)
-        guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
-        self.assertIn("Sufixo de grupo", guide)
+        self.assertNotIn("BETA LOGISTICA", texts["b.md"])
+        audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
+        self.assertIn("mesmo CNPJ 1", audit)
 
     def test_one_word_company_that_is_a_city_does_not_eat_the_court_or_the_address(self) -> None:
         text = (
@@ -456,11 +451,13 @@ class StructureParityTests(unittest.TestCase):
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
         self.assertIn("recusada", audit)
         self.assertNotIn("Joinville", audit)
-        private = (result.job.map_path.parent / "AUDITORIA_PRIVADA.txt").read_text(encoding="utf-8")
-        self.assertIn("Joinville", private)
+        # H9-c: a mencao de uma palavra que e nome de municipio nem chega ao elenco (higiene das mencoes do LLM);
+        # a trava de marca (``drop_geo_brand_spans``) segue para o que vem do motor local e da marca do lote.
+        self.assertIn("geografia 3", audit)
+        self.assertTrue((result.job.map_path.parent / "AUDITORIA_PRIVADA.txt").is_file())
         self.assertFalse((result.job.export_dir / "AUDITORIA_PRIVADA.txt").exists())
 
-    def test_registry_number_is_keyed_by_the_office_and_the_office_stays(self) -> None:
+    def test_registry_number_and_the_office_stay_in_clear(self) -> None:
         text = (
             "<!-- pagina-origem: 1 -->\n\n"
             "Imóvel da matrícula nº 12345 do 1º Registro de Imóveis de Joinville.\n"
@@ -471,8 +468,8 @@ class StructureParityTests(unittest.TestCase):
 
         self.assertIn("1º Registro de Imóveis de Joinville", body)
         self.assertIn("2º Registro de Imóveis de Joinville", body)
-        self.assertNotIn("12345", body)
-        self.assertEqual(len(set(re.findall(r"\[MATRICULA_IMOVEL_\d+\]", body))), 2)
+        self.assertEqual(body.count("12345"), 2)  # H9-i: matricula em claro
+        self.assertEqual(re.findall(r"\[MATRICULA_IMOVEL_\d+\]", body), [])
 
 
 PAGE_2_NAMES = [("PERSON", "MARLENE OLIVEIRA SAMPAIO"), ("PERSON", "Olavo Ricardo Teixeira")]
@@ -519,9 +516,9 @@ class LlmFailureFallbackTests(unittest.TestCase):
         self.assertEqual(result.fallback_pages, {"autos.md": [2]})
         self.assertEqual(result.reports["autos.md"].unread_pages, [])
         audit = (result.job.export_dir / "AUDITORIA.txt").read_text(encoding="utf-8")
-        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: autos.md: paginas 2", audit)
+        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: doc_1.md: paginas 2", audit)
         guide = (result.job.export_dir / "LEIA-ME.txt").read_text(encoding="utf-8")
-        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: autos.md: paginas 2", guide)
+        self.assertIn("Folhas tratadas pelo motor local por falha do LLM: doc_1.md: paginas 2", guide)
         self.assertIn("Folhas tratadas pelo motor local", result.job.export_warning)
         # O que o motor local achou entrou no elenco, com a origem, para a tela de revisao.
         sources = {entry.source for entry in result.roster.entries}

@@ -2,13 +2,15 @@
 
 Uso:
     python tools/comparar_motores.py <gabarito.json> --pdfs <pasta dos PDFs> [--motor NOME ...] [--sombra]
-        [--limiar 0.75] [--privados DIR] [--textos DIR]
+        [--limiar 0.75] [--privados DIR] [--textos DIR] [--modelo-ollama qwen3:4b]
 
 Motores (``--motor``, repetivel; padrao: gliner-atual):
     gliner-atual   o GLiNER do app, na revisao fixada (urchade/gliner_multi-v2.1)
     gliner-large   urchade/gliner_large-v2.1 (baixar antes: tools/instalar_modelo_ner.py --extra gliner-large)
     lener          BERT treinado no LeNER-Br (pierreguillou/ner-bert-base-cased-pt-lenerbr; --extra lener)
     app-local      o motor local inteiro do app (regras + lista de alvos + GLiNER), como linha de base
+    app-local+ollama  o app-local E o canal LLM local (Ollama em 127.0.0.1, modelo de --modelo-ollama,
+                   padrao qwen3:4b), a uniao dos dois; nada sai da maquina (rede bloqueada fora do loopback)
     app-local+lener  o mesmo, com o LeNER somado ao GLiNER (uniao, mesmos filtros): o fator em avaliacao
 
 ``--sombra``: cada motor roda tambem na copia em Title Case dos trechos em CAIXA ALTA (passada-sombra de
@@ -19,6 +21,19 @@ detector cobriu (recall por ocorrencia), quantas entidades ele achou ao menos um
 inteiro. Contra as de ``acao = manter`` (juiz, procurador, orgao, banco do SISBAJUD): quantas ocorrencias o
 detector cru marcou (o juizo do lote do app ainda filtra parte disso). E o que o detector marcou fora do
 gabarito: possivel falso positivo ou lacuna do gabarito, com os termos protegidos (Uniao, PGFN...) a parte.
+
+Para decidir a adocao do canal ollama-local (GOVERNANCA, H9-b), compare no lote:
+    python tools/comparar_motores.py <gabarito.json> --pdfs <pasta> --motor app-local --motor app-local+ollama
+
+Cache alinhado com o produto (H9-c): o motor ``app-local+ollama`` descobre sobre o MESMO texto que o pipeline
+manda ao LLM (os IDs mascarados, ``pipeline_llm.LlmTextMasker``: mesmo detector de IDs e mesmos ajustes da pasta
+privada, nada gravado) e grava na MESMA pasta de cache do pipeline (``pipeline_llm.LLM_CACHE_SUBDIR``, com o
+provedor e o modelo na chave). Uma medicao de horas deixa, portanto, o cache pronto: depois
+``tools/anonimizar_llm.py --canal ollama-local --sem-rede`` gera o exportavel sem chamar o modelo de novo (use o
+mesmo ``--modelo-ollama`` e o trecho padrao do canal). As posicoes das mencoes voltam ao texto original antes de
+medir; mencao que encosta num ID mascarado e ignorada. O ``cache_llm_local`` da H9-b (texto sem mascara) nao e
+mais lido nem apagado. A higiene das mencoes do LLM (``llm_hygiene``) NAO e aplicada aqui: a medida e do detector
+cru; o efeito dela aparece na rodada do pipeline (AUDITORIA).
 
 Saida: tabela na tela (so numeros) e ``saidas/privados/gabaritos/comparacao_motores_<data>.json`` com o
 detalhe por entidade (quais ficaram sem cobertura em cada motor). O JSON tem nomes: NAO ENVIAR.
@@ -41,6 +56,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from anonimizador_app.gemini_detector import is_kept_term  # noqa: E402
+from anonimizador_app.llm_discovery import OLLAMA_DEFAULT_MODEL, LlmConfigError  # noqa: E402
+from anonimizador_app.pipeline_llm import LLM_CACHE_SUBDIR, LlmTextMasker  # noqa: E402
 from anonimizador_app.local_ner import GLINER_LABELS, GLINER_MODEL, GLINER_REVISION, hub_offline, shadow_case_copy  # noqa: E402
 from anonimizador_app.propagation import fold_with_index  # noqa: E402
 from anonimizador_juridico.pseudonymizer import fold_lexical  # noqa: E402
@@ -101,14 +118,20 @@ def gliner_detector(model_id: str, revision: str | None, threshold: float) -> De
 
 
 def lener_detector(model_id: str, threshold: float) -> Detector:
-    from transformers import pipeline
+    from transformers import AutoTokenizer, pipeline
 
-    offline = hub_offline()
+    # Offline vem de HF_HUB_OFFLINE (padrao do app): com ela ligada o pipeline ja repassa local_files_only ao
+    # AutoConfig, e passar de novo em model_kwargs da TypeError ("multiple values").
+    # O tokenizador do LeNER nao declara model_max_length: sem o teto de 512 do BERT, um trecho longo passa
+    # inteiro e o modelo quebra (RuntimeError de tamanho de tensor). Com o teto, ``stride`` divide o trecho
+    # em janelas sobrepostas e o pipeline junta as entidades.
+    tokenizer = AutoTokenizer.from_pretrained(model_id, model_max_length=512)
     tagger = pipeline(
         "token-classification",
         model=model_id,
+        tokenizer=tokenizer,
         aggregation_strategy="simple",
-        model_kwargs={"local_files_only": offline},
+        stride=64,
     )
 
     def detect(text: str) -> list[Span]:
@@ -141,11 +164,75 @@ def app_local_detector(private_root: Path, extra_ner: str = "") -> Detector:
     return detect
 
 
+# Mencao do LLM (``kind``) -> tipo do detector.
+LLM_KINDS = {"pessoa": "PERSON", "empresa": "ORGANIZATION", "endereco": "LOCATION"}
+# H9-c: a pasta de cache e a do pipeline (antes "cache_llm_local", com o texto sem mascara).
+OLLAMA_CACHE_SUBDIR = LLM_CACHE_SUBDIR
+# Modelo do Ollama do motor ``app-local+ollama``; o ``main`` o troca por --modelo-ollama.
+OLLAMA_MODEL = OLLAMA_DEFAULT_MODEL
+
+
+def build_ollama_discoverer(private_root: Path, model_id: str, *, env=None):
+    """Descobridor do canal ``ollama-local`` (cache em ``<privados>/cache_llm``, o do pipeline). Recusa pelo mesmo
+    portao do app (OLLAMA_HOST fora do loopback, proxy, modelo :cloud...); ``LlmConfigError`` com o motivo."""
+
+    from anonimizador_app.llm_engine import EngineChoice, build_discoverer, check_engine
+
+    decision = check_engine(EngineChoice(channel="ollama-local", model_id=model_id), env=env)
+    if not decision.allowed:
+        raise LlmConfigError(decision.blocked_message())
+    return build_discoverer(decision, cache_dir=private_root / OLLAMA_CACHE_SUBDIR)
+
+
+def app_local_ollama_detector(
+    private_root: Path,
+    model_id: str = OLLAMA_DEFAULT_MODEL,
+    *,
+    local: Detector | None = None,
+    discoverer=None,
+    masker: LlmTextMasker | None = None,
+) -> Detector:
+    """O motor local do app MAIS o LLM local (Ollama), sobre o mesmo texto: a uniao dos spans. As mencoes do
+    LLM viram PERSON (pessoa), ORGANIZATION (empresa) e LOCATION (endereco); so as ancoradas (start >= 0).
+    A chamada ao Ollama roda com a rede bloqueada fora do loopback; tentativa barrada vai para o stderr.
+
+    H9-c: o LLM le o texto com os IDs mascarados, o mesmo do pipeline (``masker``; padrao: os ajustes da pasta
+    privada), e as posicoes voltam ao texto original; a pasta de cache e a do pipeline."""
+
+    from anonimizador_app.netblock import block_network
+
+    base = local or app_local_detector(private_root)
+    llm = discoverer or build_ollama_discoverer(private_root, model_id)
+    state = {"masker": masker}
+
+    def detect(text: str) -> list[Span]:
+        spans = set(base(text))
+        if state["masker"] is None:
+            from anonimizador_app.settings import load_settings
+
+            state["masker"] = LlmTextMasker(load_settings(private_root))
+        masked_text, offsets = state["masker"].mask(text)
+        with block_network(allow_loopback=True) as attempts:
+            found = llm.discover(masked_text)
+        if attempts:
+            print(f"ALERTA: {len(attempts)} tentativa(s) de rede fora de loopback barradas no LLM local.", file=sys.stderr)
+        for mention in found.mentions:
+            kind = LLM_KINDS.get(mention.kind)
+            if kind and mention.start >= 0 and mention.end > mention.start:
+                original = offsets.to_original(mention.start, mention.end)
+                if original is not None:
+                    spans.add((original[0], original[1], kind))
+        return sorted(spans)
+
+    return detect
+
+
 ENGINES: dict[str, Callable[[float, Path], Detector]] = {
     "gliner-atual": lambda threshold, _root: gliner_detector(GLINER_MODEL, GLINER_REVISION, threshold),
     "gliner-large": lambda threshold, _root: gliner_detector(GLINER_LARGE_MODEL, None, threshold),
     "lener": lambda threshold, _root: lener_detector(LENER_MODEL, threshold),
     "app-local": lambda _threshold, root: app_local_detector(root),
+    "app-local+ollama": lambda _threshold, root: app_local_ollama_detector(root, OLLAMA_MODEL),
     # O motor local inteiro com o LeNER somado ao GLiNER (H8): o fator a medir.
     "app-local+lener": lambda _threshold, root: app_local_detector(root, extra_ner="lener"),
 }
@@ -233,7 +320,16 @@ def _covered(occurrence: Occurrence, spans: Sequence[Span]) -> bool:
 
 def evaluate(name: str, detect: Detector, targets: Sequence[Target], texts: Sequence[str]) -> dict:
     started = time.perf_counter()
-    spans_by_text = [detect(text) for text in texts]
+    spans_by_text: list[list[Span]] = []
+    for index, text in enumerate(texts, 1):
+        # Progresso por documento (so numeros: indice, caracteres, spans, segundos), para um lote de horas que
+        # roda desacoplado: quem le o log sabe onde parou.
+        spans_by_text.append(detect(text))
+        print(
+            f"[{name}] documento {index}/{len(texts)}: {len(text)} caracteres, {len(spans_by_text[-1])} spans, "
+            f"{time.perf_counter() - started:.0f} s acumulados",
+            file=sys.stderr, flush=True,
+        )
     elapsed = time.perf_counter() - started
 
     tokenize = [t for t in targets if t.acao == "tokenizar" and t.occurrences]
@@ -307,7 +403,14 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
     parser.add_argument("--motor", action="append", help="motores a comparar (repetivel)")
     parser.add_argument("--sombra", action="store_true", help="tambem a passada-sombra de caixa")
     parser.add_argument("--limiar", type=float, default=0.75)
+    parser.add_argument(
+        "--modelo-ollama",
+        default=OLLAMA_DEFAULT_MODEL,
+        help=f"modelo do Ollama do motor app-local+ollama (padrao {OLLAMA_DEFAULT_MODEL}; nunca ':cloud')",
+    )
     args = parser.parse_args(argv)
+    global OLLAMA_MODEL
+    OLLAMA_MODEL = args.modelo_ollama
     registry = engines or ENGINES
 
     from anonimizador_app.pipeline import default_private_dir
@@ -331,23 +434,36 @@ def main(argv: list[str] | None = None, engines: dict[str, Callable[[float, Path
         return 2
 
     results = []
+    # Gravacao parcial: o JSON (privado) e reescrito a cada motor concluido, para um lote interrompido nao perder
+    # os motores que ja terminaram.
+    out = private_root / "gabaritos" / f"comparacao_motores_{datetime.now():%Y%m%d_%H%M%S}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    def save() -> None:
+        out.write_text(json.dumps({"aviso": "CONTEM NOMES: NAO ENVIAR", "resultados": results}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     for name in names:
         try:
             detect = registry[name](args.limiar, private_root)
         except Exception as exc:  # noqa: BLE001 - modelo ausente nao derruba os outros
-            print(f"{name}: nao carregou ({type(exc).__name__}); baixe com tools/instalar_modelo_ner.py --extra", file=sys.stderr)
+            # Motivo so quando e do portao do app (texto proprio, sem valor de variavel): LlmConfigError.
+            reason = f": {exc}" if isinstance(exc, LlmConfigError) else ""
+            print(f"{name}: nao carregou ({type(exc).__name__}{reason}); baixe com tools/instalar_modelo_ner.py --extra", file=sys.stderr)
             continue
-        results.append(evaluate(name, detect, targets, texts))
-        if args.sombra:
-            results.append(evaluate(f"{name}+sombra", with_shadow(detect), targets, texts))
+        runs = [(name, detect)] + ([(f"{name}+sombra", with_shadow(detect))] if args.sombra else [])
+        for label, runner in runs:
+            try:
+                results.append(evaluate(label, runner, targets, texts))
+                save()
+                print(f"[{label}] concluido em {results[-1]['segundos']} s; parcial gravado em {out}", file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001 - um motor que quebra no meio nao apaga os outros
+                print(f"{label}: falhou ao rodar ({type(exc).__name__})", file=sys.stderr)
     if not results:
         return 1
     print(f"Gabarito: {len([t for t in targets if t.acao == 'tokenizar'])} entidade(s) a tokenizar, "
           f"{len([t for t in targets if t.acao != 'tokenizar'])} a manter; textos: {len(texts)}; limiar {args.limiar}")
     print(table(results))
-    out = private_root / "gabaritos" / f"comparacao_motores_{datetime.now():%Y%m%d_%H%M%S}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"aviso": "CONTEM NOMES: NAO ENVIAR", "resultados": results}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    save()
     print(f"Detalhe por entidade (privado, nao enviar): {out}")
     return 0
 

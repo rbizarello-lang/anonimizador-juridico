@@ -64,6 +64,33 @@ class EngineSessionTests(unittest.TestCase):
         self.assertTrue(engine.active)
         self.assertIsNone(engine.last_permit)  # nada autorizado: a confirmacao e por rodada
 
+    def test_local_llm_has_no_confirmation_and_says_so_on_the_button(self) -> None:
+        engine = EngineSession()
+        choice = EngineChoice(channel="ollama-local")
+        engine.choice = choice
+        engine.decision = check_engine(choice, env={}, missing_fn=lambda _c: [])
+        self.assertTrue(engine.active)
+        self.assertTrue(engine.local_llm)
+        self.assertIn("Local + LLM (gemma4:e4b)", engine.button_label())  # H9-o: motor e modelo no botao
+        self.assertFalse(engine.button_label().endswith("…"))
+        self.assertEqual(engine.button_icon(), "memory")
+        self.assertIsNone(engine.last_permit)
+        # Os remotos seguem com a confirmacao.
+        remote = EngineSession()
+        remote.choice = EngineChoice(channel="vertex-sp", project="projeto-ficticio")
+        remote.decision = check_engine(remote.choice, missing_fn=lambda _c: [], adc_fn=lambda: True)
+        self.assertFalse(remote.local_llm)
+        self.assertTrue(remote.button_label().endswith("…"))
+
+    def test_run_flow_skips_the_confirmation_dialog_for_the_local_channel(self) -> None:
+        import inspect
+
+        from anonimizador_app import ui_llm
+
+        source = inspect.getsource(ui_llm.run_llm_flow)
+        self.assertIn("if local:", source)
+        self.assertLess(source.index("if local:"), source.index("await confirm_send("))
+
     def test_session_of_the_app_starts_local(self) -> None:
         from anonimizador_app.ui import Session
 

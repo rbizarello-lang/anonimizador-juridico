@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from anonimizador_juridico import EntitySpan
 from anonimizador_juridico.pseudonymizer import canonicalize, fold_lexical
 
+from .public_agents import private_evidence
 from .fidelity import PUBLIC_CNPJ_ROOTS, drop_protected_spans
 from .geo_names import geo_context, is_geo_word
 from .propagation import (
@@ -78,29 +79,52 @@ _LABEL_WORDS = frozenset(
         # Estrutura juridica: "pessoa juridica de direito privado" nao e empresa de ninguem.
         "pessoa", "juridica", "fisica", "natural", "direito", "privado", "publico",
         "sociedade", "empresaria", "empresario", "limitada", "ltda", "individual",
+        # Cargo de socio e administrador: "SOCIO ADMINISTRADOR" e o rotulo do cargo, nao uma pessoa (H9-h).
+        "socio", "socia", "socios", "socias", "administrador", "administradora", "administradores",
+        "administradoras",
         "microempresa", "pequeno", "porte", "responsabilidade", "eireli", "unipessoal",
     }
 )
 # Agente publico, julgado uma vez por entidade: o cargo colado ao nome (antes ou depois).
 # Mais estrito que a regra por ocorrencia da deteccao ("juiz" em ate 160 caracteres),
 # que pegaria o socio na abertura da peticao ("Senhor Juiz ... em face de FULANO").
-_ROLE_BEFORE = re.compile(
-    r"(?is)(?:ju[ií]z(?:a)?(?:\s+federal)?(?:\s+substitut[oa])?"
+_SIGNATURE_CUES = (
+    r"documento\s+eletr[oô]nico\s+assinado\s+por"
+    r"|assinad[oa]\s+(?:digitalmente\s+|eletronicamente\s+)?por"
+)
+_ROLE_BEFORE_CUES = (
+    r"(?:ju[ií]z(?:a)?(?:\s+federal)?(?:\s+substitut[oa])?"
     r"(?:\s+(?:inclus[aã]o|solicitante|respons[aá]vel))?"
     r"|magistrad[oa]|desembargador(?:a)?(?:\s+federal)?|relator(?:a)?|minist(?:ro|ra)"
-    r"|documento\s+eletr[oô]nico\s+assinado\s+por"
-    r"|assinad[oa]\s+(?:digitalmente\s+|eletronicamente\s+)?por"
+    r"|{signature}"
     r"|diretor(?:a)?\s+de\s+secretaria|servidor(?:a)?|oficial(?:a)?\s+de\s+justi[cç]a"
+    r"|analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]"
     r"|usu[aá]rio|protocolad[oa]\s+por"
-    r"|procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal)"
-    r"\s*(?:\([^)]{0,12}\))?\s*[:|\-–—(]?\s*$"
+    # H9-j: assinatura do eproc com o codigo do servidor entre o rotulo e o nome ("Usuario: MAC99 - NOME"). So o codigo
+    # de servidor (2 a 4 letras e 2 digitos); o advogado aparece com a OAB (UF e 6 digitos) e continua particular.
+    r"|usu[aá]rio\s*:\s*[A-Z]{{2,4}}\d{{2}}\s*[-–—]"
+    r"|procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal"
+    # H9-h: cargo de cartorio, como juiz: tabeliao, escrevente, registrador, oficial de registro, oficial substituto.
+    r"|tabeli[aã]o?(?:\s+substitut[oa])?|escrevente(?:\s+(?:substitut[oa]|autorizad[oa]))?"
+    r"|registrador(?:a)?(?:\s+civil)?"
+    r"|oficial(?:a)?\s+(?:de\s+registro(?:\s+(?:civil|de\s+im[oó]veis))?|substitut[oa]))"
+    r"\s*(?:\([^)]{{0,12}}\))?\s*[:|\-–—(]?\s*$"
 )
+_ROLE_BEFORE = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=_SIGNATURE_CUES))
+# H9-f: juizo das entradas do LLM. "Assinado por" so basta com o cargo publico colado DEPOIS do nome
+# (``_ROLE_AFTER``); socio assina contrato digitalmente e nao e agente publico por isso.
+_ROLE_BEFORE_STRICT = re.compile("(?is)" + _ROLE_BEFORE_CUES.format(signature=r"(?!x)x"))
+# H9-h: ate duas palavras de nome proprio (capitalizadas, com de/da/do) podem vir entre o fim do trecho e o cargo:
+# o trecho achado pode parar antes do ultimo sobrenome ("Maria Silva" | " Souza, Tabeliã Substituta").
 _ROLE_AFTER = re.compile(
-    r"(?i)^\s*[,–—\-(]?\s*(?:ju[ií]z(?:a)?\s+federal|ju[ií]z(?:a)?\s+substitut[oa]|"
-    r"desembargador(?:a)?|diretor(?:a)?\s+de\s+secretaria|"
+    r"(?i)^(?:\s+(?:(?i:d[aeo]s?)\s+)?(?-i:[A-ZÀ-Ý][^\W\d_]*)){0,2}"
+    r"\s*[,–—\-(]?\s*(?:ju[ií]z(?:a|\(a\))?\s+(?:federal|de\s+direito|substitut[oa])|"
+    r"desembargador(?:a|\(a\))?|diretor(?:a)?\s+de\s+secretaria|"
     r"procurador(?:a)?\s+da\s+fazenda\s+nacional|procurador(?:a)?\s+federal|"
     r"oficial(?:a)?\s+de\s+justi[cç]a|servidor(?:a)?|secret[aá]ri[oa][-\s]+geral|"
-    r"registrador(?:a)?|tabeli[aã]o?|escrevente)\b"
+    r"analista\s+judici[aá]ri[oa]|t[eé]cnic[oa]\s+judici[aá]ri[oa]|"
+    r"registrador(?:a)?|tabeli[aã]o?|escrevente|"
+    r"oficial(?:a)?\s+(?:de\s+registro|substitut[oa]))\b"
 )
 
 
@@ -109,11 +133,13 @@ _ROLE_AFTER = re.compile(
 _STREET_SHARE = 0.6
 _STREET_BEFORE = re.compile(
     r"(?i)(?:endere[çc]o|logradouro)\s*:?\s*$|"
-    r"(?:\brua|\br\.|\bav\.|\bavenida|\balameda|\btravessa|\bpra[çc]a|\brodovia|\bestrada)\s*$"
+    r"(?:\brua|\br\.|\bav\.|\bavenida|\balameda|\btravessa|\bpra[çc]a|\brodovia|\bestrada(?:\s+(?:municipal|estadual|federal|geral|vicinal))?"
+    r"|\bservid[ãa]o|\bloteamento|\blinha|\brio|\bbairro|\bbeco|\bgleba|\blocalidade|\bdistrito|\bacesso)\s*$"
 )
 _HOUSE_NUMBER_AFTER = re.compile(r"(?i)\s*,?\s*(?:nr?\.|n[º°o]\.?|n[uú]mero)\s*\d")
 _COMPE_BEFORE = re.compile(r"^\s*\d{3,5}\s*-\s*$")
-_BANK_HEADER_AFTER = re.compile(r"[^\n]{0,25}\n\s*Data/hora")
+# H9-j: a linha seguinte pode ser a linha de cabecalho de tabela ("| Data/hora protocolo | ..."), como no extrato real.
+_BANK_HEADER_AFTER = re.compile(r"[^\n]{0,25}\n\s*\|?\s*Data/hora")
 
 
 @dataclass(slots=True)
@@ -123,6 +149,9 @@ class _Entity:
     cores: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     public_agent: bool = False
+    # v0.4.11: ocorrencias com prova de particular (CPF, qualificacao, rotulo de parte): o nome nao e de agente publico
+    # no lote inteiro (homonimo); a ocorrencia com o cargo colado fica em claro pela guarda final.
+    private_hits: int = 0
     # Juizo de tipo, por entidade (fila 3.x, tokens do tipo errado).
     occurrences: int = 0
     street_hits: int = 0
@@ -133,6 +162,9 @@ class _Entity:
     role_phrases: list[str] = field(default_factory=list)
     # Captura de duas pessoas coladas: tem token proprio e nao recebe forma curta (E13).
     glued: bool = False
+    # H9-i lote B1: chave da entrada da lista do caso ("alvo:...") que alguma grafia trouxe; vira a chave da entidade
+    # (mesmo token do que a lista achou) e impede que duas entradas da lista se fundam.
+    alvo: str = ""
 
     @property
     def is_street(self) -> bool:
@@ -155,16 +187,18 @@ class _Entity:
 
     @property
     def key(self) -> str:
-        return fold_lexical(self.representative)
+        return self.alvo or fold_lexical(self.representative)
 
 
 class BatchRoster:
     """Elenco do lote: coleta na fase 1 (deteccao), aplica na fase 2 (troca)."""
 
-    def __init__(self, extra_keep: Iterable[str] = ()) -> None:
+    def __init__(self, extra_keep: Iterable[str] = (), *, strict_signature: bool = False) -> None:
         self._extra_keep = tuple(str(item) for item in extra_keep)
+        self._strict_signature = strict_signature
         self._protected = protected_forms(self._extra_keep)
         self._names: dict[tuple[str, str], list[str]] = defaultdict(list)
+        self._alvo: dict[tuple[str, str], str] = {}
         self._role_phrases: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._ids: dict[tuple[str, str], str] = {}
         self._cnpjs: dict[str, str] = {}
@@ -178,6 +212,9 @@ class BatchRoster:
         # Nome de 2+ palavras que a deteccao ja achou, por texto: dentro dele a marca nao esta "sozinha".
         self._named: dict[int, list[tuple[int, int]]] = {}
         self.brand_stats: dict[str, tuple[int, ...]] = {}
+        # v0.4.10: marca de 2+ entidades do lote (nome antigo e novo): as chaves delas, para o pipeline ligar a marca
+        # a entrada unica do elenco quando o mesmo CNPJ ja as uniu.
+        self.brand_owners: dict[str, tuple[str, ...]] = {}
         # Palavra-marca que e nome de municipio ou de estado (B3): nunca vira marca; guarda as ocorrencias.
         self.brand_geo_words: dict[str, int] = {}
         # Ocorrencias da marca em contexto de foro/endereco ou dentro de termo protegido: sem token (B3).
@@ -199,6 +236,9 @@ class BatchRoster:
                     named.append((span.start, span.end))
                 if _CONTENT.search(core):
                     self._names[(span.entity_type, core)].append(value)
+                    if span.canonical_key.startswith(("alvo:", "marca:")):
+                        # v0.4.15: "marca:" = marca do grupo (nome fantasia, titulo de estabelecimento): entidade propria.
+                        self._alvo.setdefault((span.entity_type, core), span.canonical_key)
                     if len(_CONTENT.findall(core)) < 2:
                         role = ROLE_BEFORE_NAME.search(text, max(0, span.start - 24), span.start)
                         if role is not None:
@@ -257,8 +297,10 @@ class BatchRoster:
                 labelled, street = _street_position(text, span.start, span.end)
                 entity.street_label = entity.street_label or labelled
                 entity.street_hits += street
-                if not entity.public_agent and _public_role(text, span.start, span.end):
+                if not entity.public_agent and _public_role(text, span.start, span.end, strict=self._strict_signature):
                     entity.public_agent = True
+                if private_evidence(text, span.start, span.end):
+                    entity.private_hits += 1
             if candidates:
                 taken = [(span.start, span.end) for span in spans] + self._named.get(hash(text), [])
                 for word in candidates:
@@ -272,6 +314,9 @@ class BatchRoster:
                         bare[word][1] += _capitalized(text[start:end])
                     bare[word][4] += len(refused)
         self._brands = self._approve_brands(candidates, bare)
+        for entity in by_key.values():
+            if entity.public_agent and entity.private_hits:
+                entity.public_agent = False  # v0.4.11: homonimo de agente publico e particular: decide a ocorrencia
 
     def _brand_candidates(self) -> dict[str, list[_Entity]]:
         """Palavra inicial de nome de empresa (2+ palavras de conteudo) que pode ser marca."""
@@ -315,6 +360,7 @@ class BatchRoster:
 
         approved: dict[str, str] = {}
         self.brand_stats = {}
+        self.brand_owners = {}
         self.brand_geo_words = {}
         for word, owners in candidates.items():
             alone, capitalized, lower, total, refused = bare.get(word, (0, 0, 0, 0, 0))
@@ -331,6 +377,8 @@ class BatchRoster:
             # Uma so empresa do lote comeca por essa palavra: a marca e dela. Mais de uma (irmas do
             # mesmo grupo, nome antigo e novo): a marca tem token proprio, sem decidir de quem e.
             approved[word] = owners[0].key if len(owners) == 1 else word
+            if len(owners) > 1:
+                self.brand_owners[word] = tuple(entity.key for entity in owners)
         return approved
 
     def brand_report(self, mapping: object, *, private: bool = False) -> list[str]:
@@ -402,19 +450,25 @@ class BatchRoster:
             # Cabeca de grupo: mais palavras, depois a grafia mais vista (o nome certo antes do OCR).
             order = sorted(cores, key=lambda item: (-len(item.split()), -len(cores[item]), -len(item), item))
             for core in order:
+                alvo = self._alvo.get((entity_type, core), "")
                 matches = [
                     group
                     for group in groups
-                    if not group.glued and any(_same(entity_type, core, head, support) for head in group.cores)
+                    if not group.glued
+                    and not (alvo and group.alvo and group.alvo != alvo)
+                    and any(_same(entity_type, core, head, support) for head in group.cores)
                 ]
                 if entity_type == "PERSON" and _generation_sibling(core, known):
                     matches = []  # "Fulano Silva" com "Fulano Silva Filho" no lote: pai ou filho?
+                if alvo.startswith("marca:"):
+                    matches = []  # v0.4.15: a marca nao se junta a razao social que comeca igual
                 target = _pick(entity_type, matches, core)
                 if target is None:
                     target = _Entity(entity_type, kind)
-                    target.glued = entity_type == "PERSON" and _glued(core, known)
+                    target.glued = (entity_type == "PERSON" and _glued(core, known)) or alvo.startswith("marca:")
                     groups.append(target)
                 target.cores.append(core)
+                target.alvo = target.alvo or alvo
                 target.names.extend(cores[core])
                 target.role_phrases.extend(self._role_phrases.get((entity_type, core), ()))
                 target.financial = target.financial or core in self._financial
@@ -466,7 +520,17 @@ class BatchRoster:
             found.extend(self._brand_spans(text, [*found, *unified], folded))
         found = sanitize_spans(text, found)
         merged = sorted([*unified, *_gaps(found, unified)], key=lambda span: (span.start, span.end))
-        return self._retype(merged)
+        merged = self._retype(merged)
+        # v0.4.15: prenome solto de pessoa do lote (uma pessoa: o token dela; 2+: token de prenome).
+        from .first_names import first_name_spans, owners_by_first_name
+
+        owners = owners_by_first_name(
+            (entity.key, entity.representative)
+            for entity in self._ensure()
+            if entity.entity_type == "PERSON" and not entity.public_agent and not entity.glued and not entity.is_street
+        )
+        extra = first_name_spans(text, owners, merged, self._protected)
+        return sorted([*merged, *extra], key=lambda span: (span.start, span.end)) if extra else merged
 
     def lote_spans(
         self,
@@ -513,10 +577,16 @@ class BatchRoster:
         return spans
 
     def _retype(self, spans: list[EntitySpan]) -> list[EntitySpan]:
-        """Rua com nome de pessoa vira endereco; banco do SISBAJUD fica em claro."""
+        """Rua com nome de pessoa vira endereco; banco do SISBAJUD e agente publico ficam em claro.
+
+        O juizo e da entidade, nao da ocorrencia: a deteccao direta (NER) do juiz ou procurador que o
+        lote viu com o cargo colado ao nome sai da troca junto com a propagacao (H9-a), como o banco do
+        SISBAJUD ja saia (E7). A fidelidade por ocorrencia (``drop_protected_spans``) segue antes."""
 
         flagged = {
-            entity.key: entity for entity in self._ensure() if entity.is_street or entity.financial
+            entity.key: entity
+            for entity in self._ensure()
+            if entity.is_street or entity.financial or entity.public_agent
         }
         if not flagged:
             return spans
@@ -682,10 +752,11 @@ def _financial_position(text: str, start: int, end: int) -> bool:
     return bool(_BANK_HEADER_AFTER.match(text, end))
 
 
-def _public_role(text: str, start: int, end: int) -> bool:
+def _public_role(text: str, start: int, end: int, *, strict: bool = False) -> bool:
     before = text[max(0, start - 60) : start]
     after = text[end : end + 60]
-    return bool(_ROLE_BEFORE.search(before) or _ROLE_AFTER.match(after))
+    pattern = _ROLE_BEFORE_STRICT if strict else _ROLE_BEFORE
+    return bool(pattern.search(before) or _ROLE_AFTER.match(after))
 
 
 def _is_label(value: str) -> bool:
@@ -871,7 +942,9 @@ def _same(entity_type: str, short: str, long: str, support: Mapping[str, int] | 
     if short.replace(" ", "") == long.replace(" ", "") or _skeleton(short) == _skeleton(long):
         return True
     if large[: len(small)] == small:
-        return True
+        # v0.4.10: nome de pessoa com 3+ palavras de conteudo que e o comeco de outro mais longo e outra pessoa
+        # (mae "Maria Clara Souza Lima" x filha "Maria Clara Souza Lima Barros"). Na duvida, separado.
+        return entity_type != "PERSON" or len(content) < 3
     if len(small) == len(large):
         diffs = [(index, a, b) for index, (a, b) in enumerate(zip(small, large)) if a != b]
         if len(diffs) != 1:

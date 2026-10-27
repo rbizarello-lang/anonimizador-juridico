@@ -179,9 +179,26 @@ def coverage_note(coverage: Coverage) -> str:
     return (
         f"Cobertura: {coverage.pages} folha(s); {coverage.native} com texto nativo; "
         f"{coverage.ocr} por OCR ({coverage.scanned} escaneada(s), "
-        f"{coverage.vector} com texto vetorizado, {coverage.broken_font} com fonte quebrada); "
-        f"{coverage.blank} em branco; {len(coverage.unread)} nao lida(s)."
+        f"{coverage.vector} com texto vetorizado, {coverage.broken_font} com fonte quebrada"
+        + (f", {coverage.hybrid} hibrida(s): texto nativo curto e corpo em imagem" if coverage.hybrid else "")
+        + "); "
+        + f"{coverage.blank} em branco; {len(coverage.unread)} nao lida(s)."
+        + embedded_note(coverage)
     )
+
+
+def embedded_note(coverage: Coverage) -> str:
+    """v0.4.12: imagens embutidas em folha de texto, lidas por OCR (nada se perde sem aviso)."""
+
+    if not (coverage.embedded or coverage.embedded_empty or coverage.embedded_failed):
+        return ""
+    note = (
+        f" {coverage.embedded} imagem(ns) embutida(s) lida(s) por OCR em {coverage.embedded_pages} folha(s) de texto"
+        f"; {coverage.embedded_empty} sem texto (foto, grafico)"
+    )
+    if coverage.embedded_failed:
+        note += f"; ALERTA: {coverage.embedded_failed} imagem(ns) embutida(s) NAO lida(s) (falha do OCR): conferir no PDF"
+    return note + "."
 
 
 def audit_map_records(records: Sequence[object]) -> list[str]:

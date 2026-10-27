@@ -10,7 +10,8 @@ lote de 25/09/2026, estourou 900 s e devolveu 45 de 251 folhas).
   existem, viram titulo no inicio da pagina de destino. Mencao a "evento 12" no
   meio de uma frase continua no meio da frase.
 - OCR so onde nao ha texto legivel (``ocr_pages``): folha escaneada, texto
-  desenhado em vetor e fonte quebrada. O resto nunca passa por OCR.
+  desenhado em vetor, fonte quebrada e folha hibrida (pouco texto nativo e o
+  corpo em imagem, H9-k). O resto nunca passa por OCR.
 - Tabela com linhas vira tabela Markdown no lugar dela; tabela sem grade
   (SISBAJUD, debitos da CDA, listagem de eventos) sai com as colunas alinhadas;
   folha com camadas de texto sobrepostas (rastreador CNIS) vira uma tabela por
@@ -32,11 +33,20 @@ from .coverage import Coverage, unread_marker
 from .extractors import ExtractedDocument, UnsupportedDocumentError, _read_text_file
 from .report_layouts import report_plan
 
-FAST_EXTRACTOR_VERSION = "pymupdf-rapido|15"
+FAST_EXTRACTOR_VERSION = "pymupdf-rapido|17"
+# H9-g: o marcador de imagem do .docx ([imagem omitida], H9-f item D) so vale em docx extraido de novo. A chave do
+# cache de .docx leva este sufixo proprio, SEM mexer em FAST_EXTRACTOR_VERSION: o cache de OCR dos PDFs (~90 min
+# por lote) nao pode ser invalidado por uma mudanca que so afeta .docx. Mude o sufixo se o leitor de docx mudar.
+FAST_DOCX_CACHE_SUFFIX = "|docx2"
 # Versoes cujas folhas lidas por OCR saem iguais as desta (a |14 so mudou o texto nativo: relatorios
 # SISBAJUD/RENAJUD/capa, fila 3.x E12; a |15 so a capa do agravo, E13). O cache delas serve de ponto
 # de partida: so as folhas nativas sao refeitas, e o OCR (~90 min no lote C1) nao roda de novo.
-FAST_OCR_REUSABLE_FROM = ("pymupdf-rapido|14", "pymupdf-rapido|13")
+# A |16 (H9-k) so manda ao OCR folhas que a |15 deixava nativas (camada de controle, folha hibrida):
+# essas nao tem OCR no cache antigo e sao lidas agora; as ja lidas por OCR continuam iguais.
+# A |17 (v0.4.12) le as imagens embutidas nas folhas nativas (refeitas sempre) e limpa a leitura das escaneadas
+# (verso espelhado, baixa confianca, sublinhado): com a limpeza ligada (padrao) nenhum OCR antigo serve; com
+# ``ocr_cleanup`` desligado no config.json, o OCR das versoes abaixo continua igual e e reaproveitado.
+FAST_OCR_REUSABLE_FROM = ("pymupdf-rapido|16", "pymupdf-rapido|15", "pymupdf-rapido|14", "pymupdf-rapido|13")
 # Folha de separacao e capa do eproc: rotulo e valor na mesma linha (fila 3.x E2). A de
 # documento tem "Tipo documento:"; a de evento sem documento (intimacao, prazo, ciencia)
 # tem so "PAGINA DE SEPARACAO" e campos variaveis ("Prazo:", "Status:", "Data Inicial:").
@@ -73,12 +83,21 @@ _WORD = re.compile(r"\w+")
 _LOG = logging.getLogger(__name__)
 
 PageReader = Callable[[object], str]
+ClipReader = Callable[[object, tuple], str]
+# v0.4.12: o texto lido do recorte entra entre estes marcadores, no ponto da folha em que a imagem esta.
+EMBEDDED_OPEN = "<!-- ocr: recorte -->"
+EMBEDDED_CLOSE = "<!-- /ocr: recorte -->"
 
 
 def extract_fast(
-    path: str | Path, *, read_page: PageReader | None = None, previous: str | None = None
+    path: str | Path,
+    *,
+    read_page: PageReader | None = None,
+    previous: str | None = None,
+    read_clip: ClipReader | None = None,
 ) -> ExtractedDocument:
-    """``read_page`` troca o OCR (teste); o padrao e o RapidOCR local.
+    """``read_page`` troca o OCR (teste); o padrao e o RapidOCR local. ``read_clip(pagina, caixa)`` troca o OCR do
+    recorte (imagem embutida em folha de texto, v0.4.12).
 
     ``previous``: Markdown de uma extracao anterior do mesmo arquivo, de versao listada em
     ``FAST_OCR_REUSABLE_FROM``; a folha que ele leu por OCR e que continua pedindo OCR e copiada
@@ -87,7 +106,7 @@ def extract_fast(
     source = Path(path)
     suffix = source.suffix.lower()
     if suffix == ".pdf":
-        return _extract_pdf(source, read_page=read_page, previous=previous)
+        return _extract_pdf(source, read_page=read_page, previous=previous, read_clip=read_clip)
     if suffix == ".docx":
         return ExtractedDocument(
             markdown=docx_to_markdown(source),
@@ -123,17 +142,29 @@ def _ocr_pages_of(markdown: str | None) -> dict[int, str]:
 
 
 def _extract_pdf(
-    source: Path, *, read_page: PageReader | None = None, previous: str | None = None
+    source: Path,
+    *,
+    read_page: PageReader | None = None,
+    previous: str | None = None,
+    read_clip: ClipReader | None = None,
 ) -> ExtractedDocument:
     try:
         import pymupdf
     except ImportError as exc:  # pragma: no cover - depende do ambiente
         raise RuntimeError("PyMuPDF nao esta instalado") from exc
 
-    from .ocr_pages import OCR_BROKEN_FONT, page_ocr_reason, recognize_page
+    from .ocr_pages import OCR_BROKEN_FONT, OCR_HYBRID, page_ocr_reason, recognize_page
     from .watermark import without_watermark
 
+    from . import features
+    from .ocr_pages import recognize_clip
+
     reader = read_page or recognize_page
+    # v0.4.12: OCR das imagens embutidas em folha de texto. Sem ``read_clip`` explicito, so o motor padrao le recortes
+    # (o teste que troca a leitura da folha nao roda o RapidOCR de verdade por tabela).
+    clip_reader = read_clip if read_clip is not None else (recognize_clip if read_page is None else None)
+    if not features.enabled("ocr_embedded_images"):
+        clip_reader = None
     parts: list[str] = []
     counts: Counter[str] = Counter()
     unread: list[int] = []
@@ -157,8 +188,13 @@ def _extract_pdf(
             if reason is None:
                 counts["nativa"] += 1
                 body = _native_body(page, native)
+                if clip_reader is not None:
+                    body = _with_embedded_ocr(page, native, body, clip_reader, counts, source.name, number)
             else:
                 body, status = _ocr_body(page, native, reason, reader, source.name, number)
+                if status == "nativa":
+                    # Hibrida cuja imagem nao tem texto (foto, grafico): fica a folha nativa.
+                    body = _native_body(page, native)
                 counts[status] += 1
                 if status == "nao-lida":
                     unread.append(number)
@@ -172,18 +208,38 @@ def _extract_pdf(
         broken_font=counts[OCR_BROKEN_FONT],
         blank=counts["em-branco"],
         unread=tuple(unread),
+        hybrid=counts[OCR_HYBRID],
+        embedded=counts["recortes"],
+        embedded_pages=counts["paginas-com-recorte"],
+        embedded_empty=counts["recortes-sem-texto"],
+        embedded_failed=counts["recortes-falhos"],
     )
-    header = [coverage.comment()]
-    if coverage.ocr:
+    hybrid = coverage.hybrid
+    ocr_pages = coverage.ocr
+    header = [_coverage_comment(coverage, hybrid)]
+    if ocr_pages:
         # Mantido para o cache e a auditoria que ja liam esta contagem.
-        header.append(f"<!-- ocr-paginas: {coverage.ocr} -->")
-    ocr_used = coverage.ocr > 0
+        header.append(f"<!-- ocr-paginas: {ocr_pages} -->")
+    ocr_used = ocr_pages > 0 or coverage.embedded > 0
     return ExtractedDocument(
         markdown="\n".join(header) + "\n" + "".join(parts),
         page_count=page_count,
         extractor="pymupdf-ocr" if ocr_used else "pymupdf",
         ocr_used=ocr_used,
     )
+
+
+def _coverage_comment(coverage: Coverage, hybrid: int) -> str:
+    """Linha de cobertura com ``hibridas=N`` (H9-k) logo antes de ``nao-lidas``.
+
+    ``parse_coverage`` e o indice do lote leem campo a campo (``chave=valor`` separados por ``; ``):
+    campo a mais nao muda os outros. ``Coverage`` ainda nao tem o campo; ate ter, ele entra aqui."""
+
+    comment = coverage.comment()
+    marker = "; nao-lidas="
+    if "hibridas=" in comment or marker not in comment:
+        return comment
+    return comment.replace(marker, f"; hibridas={hybrid}{marker}", 1)
 
 
 def _ocr_body(
@@ -196,7 +252,7 @@ def _ocr_body(
 ) -> tuple[str, str]:
     """Texto da pagina lida por OCR e o estado dela para a cobertura."""
 
-    from .ocr_pages import MIN_NATIVE_CHARS, OCR_BROKEN_FONT, page_is_blank
+    from .ocr_pages import MIN_NATIVE_CHARS, OCR_BROKEN_FONT, OCR_HYBRID, page_is_blank
 
     try:
         text = reader(page).strip()
@@ -208,12 +264,92 @@ def _ocr_body(
         if reason == OCR_BROKEN_FONT or not native:
             # Fonte quebrada: a camada nativa e ilegivel; o OCR substitui.
             return marked, reason
-        # Scan e vetor: o carimbo nativo (exato) fica, seguido da leitura.
+        # Scan, vetor e hibrida: o texto nativo (exato) fica inteiro, seguido da leitura da folha.
+        # Na hibrida o OCR rele tambem o cabecalho nativo: palavra repetida, nunca palavra perdida.
         return f"{native}\n\n{marked}", reason
+    if text is not None and reason == OCR_HYBRID:
+        # A imagem grande nao tinha texto (foto, grafico): a folha e nativa, sem marca de nao lida.
+        return native, "nativa"
     if text is not None and reason != OCR_BROKEN_FONT and page_is_blank(page):
         return native, "em-branco"
     _LOG.warning("Pagina %s de %s sem leitura (%s)", number, name, reason)
     return "\n\n".join(item for item in (native, unread_marker(reason)) if item), "nao-lida"
+
+
+def _with_embedded_ocr(
+    page: object,
+    native: str,
+    body: str,
+    clip_reader: ClipReader,
+    counts: Counter[str],
+    name: str,
+    number: int,
+) -> str:
+    """v0.4.12: o texto de cada imagem embutida (>= 5% da folha) entra no ponto da folha em que ela esta: antes da
+    primeira linha nativa que comeca abaixo da imagem (no fim, se nenhuma). A linha que a camada de texto ja tem nao se
+    repete. Nada some em silencio (decisao do Operador, 22/10): imagem sem texto (foto, grafico) fica marcada
+    "«[imagem sem texto legivel, fl. N]»"; falha do OCR, "«[imagem nao lida, fl. N]»", e as duas sao contadas."""
+
+    from .ocr_pages import MIN_NATIVE_CHARS, drop_native_lines, embedded_image_boxes
+
+    boxes = embedded_image_boxes(page)
+    if not boxes:
+        return body
+    lines = _native_lines(page)
+    inserts: list[tuple[int, str]] = []
+    cursor_floor = 0
+    for box in boxes:
+        try:
+            text = clip_reader(page, box) or ""
+        except Exception:  # noqa: BLE001 - recorte nao lido fica contado e marcado, nunca em silencio
+            _LOG.exception("OCR do recorte falhou na pagina %s de %s", number, name)
+            counts["recortes-falhos"] += 1
+            block = f"«[imagem não lida, fl. {number}]»"
+        else:
+            raw = text
+            text = drop_native_lines(text, native)
+            if len("".join(text.split())) < MIN_NATIVE_CHARS:
+                counts["recortes-sem-texto"] += 1
+                if len("".join(raw.split())) >= MIN_NATIVE_CHARS:
+                    continue  # o texto da imagem ja esta inteiro na camada nativa: nada a acrescentar
+                block = f"«[imagem sem texto legível, fl. {number}]»"
+            else:
+                counts["recortes"] += 1
+                block = f"{EMBEDDED_OPEN}\n{text}\n{EMBEDDED_CLOSE}"
+        position = len(body)
+        below = [line for top, line in lines if top >= box[3] - 1.0 and len(line.strip()) >= 6]
+        for line in below:
+            found = body.find(line.strip(), cursor_floor)
+            if found >= 0:
+                line_start = body.rfind("\n", 0, found) + 1
+                position = line_start
+                break
+        inserts.append((position, block))
+        cursor_floor = max(cursor_floor, position)
+    if not inserts:
+        return body
+    counts["paginas-com-recorte"] += 1
+    out = body
+    for position, block in reversed(sorted(inserts, key=lambda item: item[0])):
+        before, after = out[:position].rstrip("\n"), out[position:]
+        out = (before + "\n\n" if before else "") + block + ("\n\n" + after.lstrip("\n") if after.strip() else "")
+    return out
+
+
+def _native_lines(page: object) -> list[tuple[float, str]]:
+    """Linhas da camada de texto com o topo de cada uma, de cima para baixo."""
+
+    try:
+        blocks = page.get_text("dict")["blocks"]
+    except Exception:
+        return []
+    found = []
+    for block in blocks:
+        for line in block.get("lines", ()):
+            text = "".join(span.get("text", "") for span in line.get("spans", ()))
+            if text.strip():
+                found.append((float(line["bbox"][1]), text))
+    return sorted(found, key=lambda item: item[0])
 
 
 def _native_body(page: object, native: str) -> str:
@@ -722,8 +858,28 @@ def _bookmarks_by_page(toc: list, page_count: int) -> dict[int, list[tuple[int, 
     return headings
 
 
+IMAGE_OMITTED = "[imagem omitida]"
+# Imagem inline ou ancorada (``w:drawing``) e figura antiga (``w:pict``); a copia de reserva do mesmo desenho
+# dentro de ``mc:Fallback`` nao conta de novo.
+_IMAGE_XPATH = (
+    ".//*[(local-name()='drawing' or local-name()='pict') and not(ancestor::*[local-name()='Fallback'])]"
+)
+
+
+def docx_image_count(element) -> int:
+    """Quantas imagens o elemento do documento (paragrafo ou tabela) traz."""
+
+    try:
+        return len(element.xpath(_IMAGE_XPATH))
+    except Exception:  # noqa: BLE001 - elemento sem xpath: nao ha o que contar
+        return 0
+
+
 def docx_to_markdown(path: str | Path) -> str:
     """Paragrafos e tabelas na ordem do documento; estilo Titulo vira ``#``.
+
+    Cada imagem (inline, ancorada ou dentro de tabela) vira a linha ``[imagem omitida]``: o texto extraido
+    nao a le, e o leitor precisa saber que havia prova ali.
 
     O leitor antigo punha todas as tabelas no fim do texto, longe do
     paragrafo que as cita.
@@ -743,14 +899,15 @@ def docx_to_markdown(path: str | Path) -> str:
         if tag == "p":
             paragraph = Paragraph(child, document)
             text = paragraph.text.strip()
-            if not text:
-                continue
-            level = _heading_level(paragraph.style.name if paragraph.style is not None else "")
-            chunks.append(f"{'#' * level} {text}" if level else text)
+            if text:
+                level = _heading_level(paragraph.style.name if paragraph.style is not None else "")
+                chunks.append(f"{'#' * level} {text}" if level else text)
+            chunks.extend([IMAGE_OMITTED] * docx_image_count(child))
         elif tag == "tbl":
             rendered = _table_markdown(Table(child, document))
             if rendered:
                 chunks.append(rendered)
+            chunks.extend([IMAGE_OMITTED] * docx_image_count(child))
     return "\n\n".join(chunks).rstrip() + "\n"
 
 

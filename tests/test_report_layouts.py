@@ -458,12 +458,24 @@ class OcrReuseTests(unittest.TestCase):
             def never(_page) -> str:
                 raise AssertionError("o OCR nao deveria rodar")
 
-            with mock.patch("anonimizador_app.ocr_pages.recognize_page", never):
-                migrated = load_or_extract(pdf, cache_dir=cache)
-                fresh = load_or_extract(pdf, cache_dir=cache, use_cache=False)  # sem cache: OCR de novo
+            # v0.4.12: o OCR antigo so serve com a limpeza do OCR desligada (com ela, a leitura das escaneadas muda).
+            from types import SimpleNamespace
+
+            from anonimizador_app import features
+
+            with features.activate(SimpleNamespace(ocr_cleanup=False)):
+                with mock.patch("anonimizador_app.ocr_pages.recognize_page", never):
+                    migrated = load_or_extract(pdf, cache_dir=cache)
+                    fresh = load_or_extract(pdf, cache_dir=cache, use_cache=False)  # sem cache: OCR de novo
             self.assertFalse(migrated.cached)
             self.assertIn("TEXTO LIDO POR OCR", migrated.document.markdown)
-            self.assertTrue((cache / f"{cache_key(pdf.read_bytes(), FAST_EXTRACTOR_VERSION)}.md").is_file())
+            key = cache_key(pdf.read_bytes(), FAST_EXTRACTOR_VERSION + "|sem-limpeza")
+            self.assertTrue((cache / f"{key}.md").is_file())
+            calls: list[int] = []
+            with mock.patch("anonimizador_app.ocr_pages.recognize_page", lambda page: calls.append(1) or "NOVO OCR da folha escaneada ficticia"):
+                cleaned = load_or_extract(pdf, cache_dir=cache)  # limpeza ligada (padrao): o OCR roda de novo
+            self.assertEqual(calls, [1])
+            self.assertIn("NOVO OCR", cleaned.document.markdown)
         self.assertIn("pagina-nao-lida", fresh.document.markdown)
 
 

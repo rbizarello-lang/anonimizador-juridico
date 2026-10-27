@@ -31,8 +31,17 @@ FAKE_URL = "https://desvio.example.invalid/segredo-na-url"
 
 
 class HostTests(unittest.TestCase):
-    def test_the_two_registered_channels_and_their_providers(self) -> None:
-        self.assertEqual(CHANNEL_PROVIDERS, {"gemini-pago": "gemini", "vertex-sp": "vertex"})
+    def test_the_registered_channels_and_their_providers(self) -> None:
+        # Os dois canais remotos nao mudaram; o terceiro (H9-b) e o local, so loopback; o quarto (H9-p) e so teste.
+        self.assertEqual(
+            CHANNEL_PROVIDERS,
+            {
+                "gemini-pago": "gemini",
+                "vertex-sp": "vertex",
+                "ollama-local": "ollama",
+                "openrouter-teste": "openrouter",
+            },
+        )
 
     def test_expected_hosts(self) -> None:
         self.assertEqual(expected_host("gemini"), "generativelanguage.googleapis.com")
@@ -69,6 +78,51 @@ class HostTests(unittest.TestCase):
             check_network_point(channel="gemini-pago", provider="vertex", location="us-central1", project="projeto-ficticio", env={})
         with self.assertRaises(GateError):
             check_network_point(channel="vertex-sp", provider="gemini", env={})
+
+    def test_ollama_local_network_point_is_loopback_only(self) -> None:
+        check = check_network_point(channel="ollama-local", provider="ollama", env={}, model_id="qwen3:4b")
+        self.assertEqual(check.host, "127.0.0.1")
+        self.assertEqual(check.base_url, "http://127.0.0.1:11434")
+        self.assertIn("nada enviado", "\n".join(check.audit_lines()))
+        for provider in ("gemini", "vertex", "ollamo"):
+            with self.assertRaises(GateError, msg=provider):
+                check_network_point(channel="ollama-local", provider=provider, env={})
+        with self.assertRaises(GateError):
+            check_network_point(channel="gemini-pago", provider="ollama", env={})
+
+    def test_ollama_local_network_point_refuses_host_proxy_and_cloud_without_echoing(self) -> None:
+        for env in (
+            {"OLLAMA_HOST": "http://10.0.0.5:11434"},
+            {"HTTPS_PROXY": "http://10.0.0.6:3128"},
+            {"ALL_PROXY": "socks5://10.0.0.6:1080"},
+        ):
+            with self.assertRaises(GateError, msg=env) as caught:
+                check_network_point(channel="ollama-local", provider="ollama", env=env)
+            self.assertNotIn("10.0.0", str(caught.exception))
+            self.assertIn(next(iter(env)), str(caught.exception))
+        with self.assertRaises(GateError):
+            check_network_point(channel="ollama-local", provider="ollama", env={}, model_id="x:cloud")
+        with self.assertRaises(GateError):
+            check_network_point(channel="ollama-local", provider="ollama", env={}, port=0)
+
+    def test_the_ollama_address_is_compared_as_text(self) -> None:
+        from anonimizador_app.llm_gate import is_ollama_loopback_url
+
+        for good in ("http://127.0.0.1:11434", "http://localhost:11434/", "http://[::1]:11434"):
+            self.assertTrue(is_ollama_loopback_url(good), good)
+        for bad in (
+            "https://127.0.0.1:11434",
+            "http://127.0.0.1:11435",
+            "http://127.0.0.1:11434/api",
+            "http://127.0.0.1:11434@evil.example",
+            "http://evil.example#@127.0.0.1:11434",
+            "http://127.1:11434",
+            "http://0.0.0.0:11434",
+            "",
+            None,
+            5,
+        ):
+            self.assertFalse(is_ollama_loopback_url(bad), bad)
 
     def test_a_region_or_project_cannot_smuggle_another_host(self) -> None:
         for region in ("evil.com/x#", "a.b", "us-central1.evil.com", "", "southamerica east1", "x" * 3 + "/../"):
@@ -169,6 +223,7 @@ class NetworkPointTests(unittest.TestCase):
         self.assertNotIn("segredo", str(caught.exception))
 
     def test_an_unregistered_channel_never_builds_a_model(self) -> None:
+        # (ollama-local e canal desde o H9-b, mas o provedor gemini deste descobridor nao casa com ele)
         for channel in ("ollama-local", "gemini-gratuito", "x"):
             with self.assertRaises(LlmConfigError, msg=channel):
                 self._discoverer(channel=channel)._build_model()

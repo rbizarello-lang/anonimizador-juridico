@@ -129,7 +129,63 @@ def build_index(documents: Sequence[tuple[str, str]]) -> str:
         for group in groups:
             lines.append(_row(group))
         lines.append("")
+    lines += process_lines(documents)
     return "\n".join(lines).rstrip() + "\n"
+
+
+# v0.4.10 (leitura cega do lote real): 20+ tokens de processo sem chave de leitura. A secao diz, por token, quantas
+# vezes aparece, a classe processual escrita logo antes dele (quando ha) e a primeira folha. Nenhum numero sai daqui.
+_PROCESS_TOKEN = re.compile(r"\[PROCESSO_(\d+)(?:·G\d+)?\]")
+_PROCESS_CLASS = re.compile(
+    r"(?i)(execu[cç][aã]o\s+fiscal|agravo\s+de\s+instrumento|agravo\s+interno|apela[cç][aã]o(?:\s+c[ií]vel)?"
+    r"|embargos\s+(?:[àa]\s+execu[cç][aã]o(?:\s+fiscal)?|de\s+terceiro|de\s+declara[cç][aã]o)"
+    r"|incidente\s+de\s+desconsidera[cç][aã]o[^\n]{0,40}?|idpj|mandado\s+de\s+seguran[cç]a"
+    r"|cumprimento\s+de\s+senten[cç]a|a[cç][aã]o\s+anulat[oó]ria|a[cç][aã]o\s+declarat[oó]ria"
+    r"|medida\s+cautelar\s+fiscal|cautelar\s+fiscal|recurso\s+especial|recurso\s+extraordin[aá]rio"
+    r"|reclama[cç][aã]o\s+trabalhista|a[cç][aã]o\s+penal|invent[aá]rio|div[oó]rcio|fal[eê]ncia"
+    r"|recupera[cç][aã]o\s+judicial|\bAI\b|\bEF\b|\bREsp\b|\bAREsp\b|\bAC\b)"
+    r"[^\n\[]{0,40}$"
+)
+
+
+def process_lines(documents: Sequence[tuple[str, str]]) -> list[str]:
+    """Secao "Processos citados": token, ocorrencias, classe processual mais vista logo antes, primeira folha."""
+
+    counts: dict[str, int] = {}
+    classes: dict[str, dict[str, int]] = {}
+    first: dict[str, str] = {}
+    for name, text in documents:
+        anchors = [(match.start(), match.group(1)) for match in _ANCHOR.finditer(text)]
+        for match in _PROCESS_TOKEN.finditer(text):
+            token = f"[PROCESSO_{match.group(1)}]"
+            counts[token] = counts.get(token, 0) + 1
+            if token not in first:
+                folha = next((page for position, page in reversed(anchors) if position <= match.start()), "")
+                first[token] = f"{name}, fl. {folha}" if folha else name
+            found = _PROCESS_CLASS.search(text[max(0, match.start() - 90) : match.start()])
+            if found is not None:
+                label = " ".join(found.group(1).split())
+                label = label if len(label) <= 5 else label[:1].upper() + label[1:].lower()
+                bucket = classes.setdefault(token, {})
+                bucket[label] = bucket.get(label, 0) + 1
+    if not counts:
+        return []
+    order = sorted(counts, key=lambda token: (-counts[token], int(token.strip("[]").split("_")[1])))
+    lines = [
+        "## Processos citados",
+        "",
+        "Cada token de processo é um número de processo distinto (o mesmo token é o mesmo processo em todo o lote). "
+        "“Classe” é o que o texto escreve logo antes do token (a mais vista); vazio = o texto não diz.",
+        "",
+        "| Token | Ocorrências | Classe | Primeira menção |",
+        "|---|---|---|---|",
+    ]
+    for token in order:
+        bucket = classes.get(token, {})
+        label = max(bucket, key=lambda item: (bucket[item], item)) if bucket else ""
+        lines.append(f"| {token} | {counts[token]} | {label} | {first[token]} |")
+    lines.append("")
+    return lines
 
 
 def write_lote_index(export_dir: Path, markdown_paths: Sequence[Path]) -> Path:
@@ -329,7 +385,7 @@ def _coverage_label(text: str) -> str:
     if match is None:
         return ""
     fields = dict(item.split("=", 1) for item in match.group(1).split("; ") if "=" in item)
-    ocr = sum(int(fields.get(key, 0) or 0) for key in ("escaneadas", "vetoriais", "fonte-quebrada"))
+    ocr = sum(int(fields.get(key, 0) or 0) for key in ("escaneadas", "vetoriais", "fonte-quebrada", "hibridas"))
     unread = fields.get("nao-lidas", "nenhuma")
     return (
         f"{fields.get('paginas', '?')} folhas ({fields.get('nativas', '?')} nativas, {ocr} por OCR, "

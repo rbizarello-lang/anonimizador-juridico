@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+from dataclasses import replace
 import os
 import re
 import subprocess
@@ -37,6 +38,7 @@ from .pipeline import (
     PreparedFile,
     build_job_result,
     default_export_dir,
+    apply_batch,
     default_private_dir,
     finish_file,
     known_ids,
@@ -46,8 +48,17 @@ from .pipeline import (
     finalize_lote,
 )
 from .rules import InvalidRuleError, build_recognizers, slug_entity_type, validate_custom_rule
-from .settings import CustomRule, load_settings, save_settings
-from .spreadsheet_targets import merge_unique, parse_target_spreadsheet
+from .settings import (
+    CustomRule,
+    carry_case_list,
+    has_case_list,
+    load_settings,
+    operation_label,
+    save_settings,
+    settings_for_operation,
+)
+from . import review_import
+from .spreadsheet_targets import SpreadsheetTargets, merge_unique, parse_target_spreadsheet
 from .target_ids import parse_target_ids
 from .ui_llm import EngineSession, build_engine_section, run_llm_flow
 from .version import version_info
@@ -262,11 +273,24 @@ body { color: var(--aj-ink); font-family: var(--aj-sans); font-size: 15px; -webk
 .aj-dot.ok { background: var(--aj-good); }
 .aj-dot.warn { background: var(--aj-ochre); }
 .aj-case-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; width: 100%; }
+.aj-case-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .aj-case-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .aj-case-grid { grid-template-columns: minmax(0, 1fr); } }
 .aj-list { padding: 16px 16px 14px; gap: 10px; }
 .aj-list-head { gap: 8px; align-items: center; width: 100%; }
 .aj-list-head .q-icon { color: var(--aj-navy); font-size: 20px; }
 .aj-list textarea { line-height: 1.5 !important; }
+/* H9-m: revisao do Gemini */
+.aj-review { padding: 16px 16px 14px; gap: 10px; }
+.aj-review-row { display: grid; grid-template-columns: 34px 70px minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1.4fr);
+  gap: 8px; align-items: center; border-top: 1px solid var(--aj-line); padding: 4px 0; width: 100%; font-size: 14px; }
+.aj-review-row.head { font-size: 12.5px; font-weight: 700; color: var(--aj-muted); border-top: none; }
+.aj-review-row .aj-code { font-size: 12.5px; }
+.aj-review-status { font-size: 12.5px; font-weight: 600; border-radius: 6px; padding: 2px 7px; justify-self: start; }
+.aj-review-status.aceita { color: var(--aj-good); background: var(--aj-good-soft); }
+.aj-review-status.rejeitada { color: var(--aj-bad); background: var(--aj-bad-soft); }
+.aj-review-status.decidir { color: var(--aj-warn); background: var(--aj-warn-soft); }
+@media (max-width: 900px) { .aj-review-row { grid-template-columns: 34px minmax(0, 1fr); } }
 
 /* Regras */
 .aj-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 28px; width: 100%; }
@@ -324,13 +348,13 @@ _EMPTY_ART = f"""
 # Etiquetas estruturadas agrupadas por assunto na aba Regras. O que nao
 # estiver aqui cai em "Outros" (nada some se o catalogo crescer).
 _TAG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Pessoa física", ("BR_CPF", "BR_RG", "BR_PIS", "BR_TITULO_ELEITOR", "BR_NASCIMENTO")),
-    ("Empresa e processo", ("BR_CNPJ", "BR_PROCESSO", "BR_OAB", "BR_EPROC")),
-    ("Contato e endereço", ("EMAIL_ADDRESS", "BR_PHONE", "BR_CEP")),
+    ("Pessoa física", ("BR_CPF", "BR_RG", "BR_CNH", "BR_PIS", "BR_CTPS", "BR_TITULO_ELEITOR", "BR_NASCIMENTO")),
+    ("Empresa e processo", ("BR_CNPJ", "BR_NIRE", "BR_PROCESSO", "BR_PROCESSO_ADMINISTRATIVO", "BR_CDA", "BR_REGISTRO_JUNTA", "BR_OAB", "BR_EPROC")),
+    ("Contato e endereço", ("EMAIL_ADDRESS", "BR_PHONE", "BR_CEP", "BR_URL", "BR_IP")),
     (
         "Bens e contas",
         (
-            "BR_MATRICULA_IMOVEL",
+            "BR_CADASTRO_RURAL",
             "BR_PIX",
             "BR_CONTA_BANCARIA",
             "BR_RENAVAM",
@@ -350,15 +374,28 @@ def _parse_name_list(text: object) -> list[str]:
     return [item.strip() for item in str(text or "").splitlines() if item.strip()]
 
 
+# H9-i lote B1: as caixas novas da aba Caso (atributo do texto na sessao -> campo de AppSettings).
+_CASE_EXTRA_LISTS = (
+    ("target_aliases_text", "target_aliases"),
+    ("target_processes_text", "target_processes"),
+    ("target_cdas_text", "target_cdas"),
+    ("target_contacts_text", "target_contacts"),
+)
+
+
 def _commit_target_lists(
     session: Session,
     companies_text: object,
     people_text: object,
     ids_text: object = "",
+    extra: dict[str, object] | None = None,
 ) -> None:
     session.settings.target_companies = _parse_name_list(companies_text)
     session.settings.target_people = _parse_name_list(people_text)
     session.settings.target_ids = list(parse_target_ids([str(ids_text or "")]))
+    for text_attr, field_name in _CASE_EXTRA_LISTS:
+        if extra is not None and text_attr in extra:
+            setattr(session.settings, field_name, _parse_name_list(extra[text_attr]))
     _sync_target_list_text(session)
 
 
@@ -366,36 +403,54 @@ def _sync_target_list_text(session: Session) -> None:
     session.target_companies_text = "\n".join(session.settings.target_companies)
     session.target_people_text = "\n".join(session.settings.target_people)
     session.target_ids_text = "\n".join(session.settings.target_ids)
+    for text_attr, field_name in _CASE_EXTRA_LISTS:
+        setattr(session, text_attr, "\n".join(getattr(session.settings, field_name)))
+
+
+def _apply_spreadsheet(session: Session, parsed: SpreadsheetTargets, name: str) -> str:
+    """Mescla o que a planilha trouxe nas listas do caso (sem repetir) e grava; devolve a mensagem."""
+
+    settings = session.settings
+    before = {
+        "empresa(s)": len(settings.target_companies),
+        "pessoa(s)": len(settings.target_people),
+        "CPF/CNPJ": len(settings.target_ids),
+        "linha(s) de grafias": len(settings.target_aliases),
+        "processo(s)": len(settings.target_processes),
+        "CDA(s)": len(settings.target_cdas),
+        "contato(s)/veículo(s)": len(settings.target_contacts),
+    }
+    settings.target_companies = merge_unique(settings.target_companies, parsed.companies)
+    settings.target_people = merge_unique(settings.target_people, parsed.people)
+    settings.target_ids = list(parse_target_ids(settings.target_ids + parsed.ids))
+    settings.target_aliases = merge_unique(settings.target_aliases, parsed.aliases)
+    settings.target_processes = merge_unique(settings.target_processes, parsed.processes)
+    settings.target_cdas = merge_unique(settings.target_cdas, parsed.cdas)
+    settings.target_contacts = merge_unique(settings.target_contacts, parsed.contacts)
+    settings.target_roles = {**parsed.roles, **settings.target_roles}
+    # H9-l: a operacao de cada linha soma (a mesma pessoa em outra operacao ganha a operacao nova).
+    for key, operations in parsed.operations.items():
+        known = settings.case_operations.setdefault(key, [])
+        known.extend(item for item in operations if item not in known)
+    settings.case_operation_names.update(parsed.operation_names)
+    _sync_target_list_text(session)
+    save_settings(session.private_dir, settings)
+    after = {
+        "empresa(s)": len(settings.target_companies),
+        "pessoa(s)": len(settings.target_people),
+        "CPF/CNPJ": len(settings.target_ids),
+        "linha(s) de grafias": len(settings.target_aliases),
+        "processo(s)": len(settings.target_processes),
+        "CDA(s)": len(settings.target_cdas),
+        "contato(s)/veículo(s)": len(settings.target_contacts),
+    }
+    parts = [f"{after[label] - count} {label}" for label, count in before.items() if after[label] > count]
+    added = ", ".join(parts) if parts else "nada novo"
+    return f"Importados {added} de {name}."
 
 
 def _import_spreadsheet_into_session(session: Session, path: Path) -> str:
-    parsed = parse_target_spreadsheet(path)
-    before_companies = len(session.settings.target_companies)
-    before_people = len(session.settings.target_people)
-    before_ids = len(session.settings.target_ids)
-    session.settings.target_companies = merge_unique(
-        session.settings.target_companies, parsed.companies
-    )
-    session.settings.target_people = merge_unique(
-        session.settings.target_people, parsed.people
-    )
-    session.settings.target_ids = list(
-        parse_target_ids(session.settings.target_ids + parsed.ids)
-    )
-    _sync_target_list_text(session)
-    save_settings(session.private_dir, session.settings)
-    added_companies = len(session.settings.target_companies) - before_companies
-    added_people = len(session.settings.target_people) - before_people
-    added_ids = len(session.settings.target_ids) - before_ids
-    parts = []
-    if added_companies:
-        parts.append(f"{added_companies} empresa(s)")
-    if added_people:
-        parts.append(f"{added_people} pessoa(s)")
-    if added_ids:
-        parts.append(f"{added_ids} CPF/CNPJ")
-    added = " e ".join(parts) if parts else "nenhum nome ou documento novo"
-    return f"Importados {added} de {path.name}."
+    return _apply_spreadsheet(session, parse_target_spreadsheet(path), path.name)
 
 
 class Session:
@@ -411,6 +466,8 @@ class Session:
         self.target_companies_text = "\n".join(self.settings.target_companies)
         self.target_people_text = "\n".join(self.settings.target_people)
         self.target_ids_text = "\n".join(self.settings.target_ids)
+        for text_attr, field_name in _CASE_EXTRA_LISTS:
+            setattr(self, text_attr, "\n".join(getattr(self.settings, field_name)))
 
 
 def run_app() -> None:
@@ -517,9 +574,13 @@ def _build_page(session: Session) -> None:
                 case_saved=lambda: hooks.get("case_saved", lambda: None)(),
             )
         with ui.tab_panel(caso_tab):
-            hooks["case_saved"] = _build_case_tab(session, on_change=case_changed)
+            hooks["case_saved"] = _build_case_tab(
+                session,
+                on_change=case_changed,
+                on_rules_change=lambda: hooks.get("rules_refresh", lambda: None)(),
+            )
         with ui.tab_panel(regras_tab):
-            _build_rules_tab(session)
+            hooks["rules_refresh"] = _build_rules_tab(session)
 
 
 def _page_head(kicker: str, title: str, lead: str) -> None:
@@ -788,8 +849,17 @@ def _build_lote_tab(
     async def choose_private_dir() -> None:
         selected = await run.io_bound(_pick_folder, "Pasta dos mapas privados")
         if selected:
+            previous = session.settings
             session.private_dir = Path(selected)
             session.settings = load_settings(session.private_dir)
+            # H9-j: a pasta nova sem lista do caso recebe a que estava em uso (antes ela sumia da rodada sem aviso).
+            if carry_case_list(previous, session.settings):
+                save_settings(session.private_dir, session.settings)
+                ui.notify(
+                    "A pasta nova não tinha lista do caso: a lista em uso foi levada para ela.", type="info"
+                )
+            elif not has_case_list(session.settings):
+                ui.notify("Atenção: a lista do caso desta pasta privada está vazia.", type="warning")
             _sync_target_list_text(session)
             local_toggle.value = session.settings.local_ner_enabled
             update_destinations()
@@ -829,10 +899,19 @@ def _build_lote_tab(
                 render_results=_render_results,
                 token_labels=lambda: _token_labels(session),
             )
+            case_saved()  # H9-n.1: o lote novo entra na lista do cartao "Revisao do Gemini"
             return
+        # H9-l/H9-m: a rodada local da tela usa so a lista da operacao escolhida (como o modo LLM e a CLI) e passa a
+        # lista usada para a AUDITORIA ("Lista do caso usada" ou o ALERTA de lista vazia).
+        active = settings_for_operation(session.settings)
+        # v0.4.12: as chaves das mudancas da versao (config.json) e os avisos de incerteza desta rodada.
+        from . import features, uncertainty
+
+        features.set_current(features.Features.from_settings(active))
+        uncertainty.reset()
         try:
             contextual = build_contextual_engine(
-                session.settings,
+                active,
                 use_ner_cache=True,
                 ner_cache_dir=default_ner_cache_dir(session.private_dir),
             )
@@ -859,14 +938,14 @@ def _build_lote_tab(
         )
         export_dir.mkdir(parents=True, exist_ok=True)
         map_path.parent.mkdir(parents=True, exist_ok=True)
-        mapping = PseudonymMap(token_labels=session.settings.token_labels())
-        detector = StructuredDetector(recognizers=build_recognizers(session.settings))
+        mapping = PseudonymMap(token_labels=active.token_labels())
+        detector = StructuredDetector(recognizers=build_recognizers(active))
         outcomes: list[FileOutcome] = []
         total = len(sources)
 
         try:
             # Fase 1: le e detecta todos os arquivos; o elenco e do lote inteiro.
-            roster = BatchRoster(session.settings.exclusions)
+            roster = BatchRoster(active.exclusions)
             prepared: list[PreparedFile] = []
             for index, source in enumerate(sources):
                 status.text = f"Lendo e detectando {source.name} ({index + 1} de {total})"
@@ -877,7 +956,7 @@ def _build_lote_tab(
                     detector=detector,
                     known_ids=known_ids(mapping, roster),
                     contextual=contextual,
-                    exclusions=session.settings.exclusions,
+                    exclusions=active.exclusions,
                     use_cache=True,
                     cache_dir=session.private_dir / "cache_extracao",
                 )
@@ -887,7 +966,9 @@ def _build_lote_tab(
             status.text = "Montando o elenco do lote"
             progress.value = 0.8
             await run.io_bound(roster.review, [item.text for item in prepared if item.ok])
-            # Fase 2: mesma entidade, mesmo token, em todos os arquivos.
+            # Fase 2: mesma entidade, mesmo token, em todos os arquivos. v0.4.13: elenco aplicado em todos antes
+            # (denominacao usada por duas empresas separada no lote inteiro).
+            applied, shared_found = await run.io_bound(apply_batch, prepared, roster)
             for index, item in enumerate(prepared):
                 status.text = f"Trocando e gravando {item.source.name} ({index + 1} de {total})"
                 progress.value = 0.8 + 0.17 * index / total
@@ -898,6 +979,7 @@ def _build_lote_tab(
                     mapping=mapping,
                     roster=roster,
                     contextual=contextual,
+                    entities=applied.get(index),
                 )
                 outcomes.append(outcome)
 
@@ -911,6 +993,8 @@ def _build_lote_tab(
                 outcomes=outcomes,
                 mapping=mapping,
                 roster=roster,
+                settings=active,
+                shared_names=shared_found,
             )
         except Exception as exc:  # noqa: BLE001
             status.text = "A execução falhou."
@@ -945,6 +1029,7 @@ def _build_lote_tab(
         session.running = False
         run_kicker.text = "Concluído"
         run_button.enable()
+        case_saved()  # H9-n.1: o lote novo entra na lista do cartao "Revisao do Gemini"
         ui.run_javascript(
             "document.querySelector('.aj-result-card')"
             "?.scrollIntoView({behavior: 'smooth', block: 'start'})"
@@ -979,7 +1064,12 @@ def _build_lote_tab(
     return update_case_summary
 
 
-def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Callable[[], None]:
+def _build_case_tab(
+    session: Session,
+    *,
+    on_change: Callable[[], None],
+    on_rules_change: Callable[[], None] = lambda: None,
+) -> Callable[[], None]:
     """Listas do caso num lugar so. Devolve a funcao que redesenha o estado 'salvo'."""
 
     with ui.column().classes("aj-page"):
@@ -997,6 +1087,17 @@ def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Calla
                 "aj-btn"
             )
             save_state = ui.html("").classes("aj-save-state")
+
+        # H9-l: o seletor de operacao. Escolhida uma operacao, a rodada usa so os nomes, documentos, processos, CDAs
+        # e contatos dela (o que foi digitado a mao, sem operacao, vale sempre). As caixas abaixo mostram a lista
+        # inteira; a escolha so filtra na hora de processar.
+        with ui.row().classes("aj-toolbar items-center"):
+            operation_select = ui.select(
+                options=_operation_options(session.settings),
+                value=session.settings.case_operation or "",
+                label="Operação deste lote",
+            ).props("outlined dense options-dense").classes("aj-operation").style("min-width:320px")
+            operation_note = ui.label("").classes("aj-card-note")
 
         with ui.element("div").classes("aj-case-grid"):
             companies = _list_card(
@@ -1028,6 +1129,47 @@ def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Calla
                 mono=True,
             )
 
+        # H9-i lote B1: o que a planilha do Nexus traz alem dos nomes; tudo vira regra do caso (troca sem rotulo).
+        with ui.element("div").classes("aj-case-grid aj-case-grid-4"):
+            aliases = _list_card(
+                session,
+                title="Outras grafias",
+                icon="alternate_email",
+                attribute="target_aliases_text",
+                placeholder="ex.: Maria Exemplo da Silva = Mari Silva; M. E. Silva\nex.: Madeireira Exemplo Ltda = Pinhal Verde",
+                hint="Nome principal = grafia1; grafia2. Todas saem com o mesmo token do nome principal.",
+                count=lambda text: len(_parse_name_list(text)),
+            )
+            processes = _list_card(
+                session,
+                title="Processos",
+                icon="gavel",
+                attribute="target_processes_text",
+                placeholder="ex.: 5000000-00.2024.4.04.7100\nex.: PA: 10000.000000/2019-00",
+                hint="Número CNJ ou processo administrativo. Trocado em todo o texto, até em ementa.",
+                count=lambda text: len(_parse_name_list(text)),
+                mono=True,
+            )
+            cdas = _list_card(
+                session,
+                title="CDAs",
+                icon="receipt_long",
+                attribute="target_cdas_text",
+                placeholder="ex.: 80.6.21.000000-00",
+                hint="Número da inscrição, com ou sem pontuação. Trocado mesmo sem rótulo.",
+                count=lambda text: len(_parse_name_list(text)),
+                mono=True,
+            )
+            contacts = _list_card(
+                session,
+                title="Contatos e veículos",
+                icon="contact_mail",
+                attribute="target_contacts_text",
+                placeholder="ex.: Rua Exemplo, 100, Centro\nex.: (00) 90000-0000\nex.: e-mail: fulano@exemplo.com\nex.: placa: ABC1D23",
+                hint="Endereço, telefone ou e-mail (um por linha); placa e RENAVAM com o rótulo.",
+                count=lambda text: len(_parse_name_list(text)),
+            )
+
         with ui.row().classes("aj-callout info items-start"):
             ui.icon("shield")
             ui.label(
@@ -1036,50 +1178,357 @@ def _build_case_tab(session: Session, *, on_change: Callable[[], None]) -> Calla
                 "sobretudo para os nomes."
             )
 
+        # H9-m: a resposta do revisor externo (Gemini) colada aqui vira proposta para as caixas acima e para os
+        # termos protegidos, conferida contra um lote ja feito. Nada muda ate "Aplicar marcadas".
+        with ui.column().classes("aj-card aj-review w-full"):
+            with ui.row().classes("aj-list-head no-wrap"):
+                ui.icon("rate_review")
+                ui.label("Revisão do Gemini").classes("aj-card-title").style("font-size:17px")
+                ui.space()
+                review_badge = ui.label("").classes("aj-count")
+            ui.label(
+                "Cole a resposta inteira do revisor (linhas TROCAR, MANTER e UNIR). “Conferir revisão” só mostra o "
+                "que entraria em cada caixa; nada muda até “Aplicar marcadas”. UNIR e “decidir” vêm desmarcadas. "
+                "A TROCAR aceita um 5º campo com o nome completo (texto ou marca); numa linha “decidir” de pessoa ou "
+                "empresa, digite o nome principal e ela vira grafia dele."
+            ).classes("aj-card-note")
+            with ui.row().classes("aj-toolbar items-center"):
+                lote_select = ui.select(options={}, label="Lote de referência").props(
+                    "outlined dense options-dense"
+                ).style("min-width:320px")
+                # H9-n.1: a lista de lotes era lida so quando a pasta mudava; numa pasta nova ficava vazia depois da
+                # rodada. O botao (e o "Conferir revisao") releem a pasta.
+                ui.button(icon="refresh", on_click=lambda: refresh_lotes()).props(
+                    'flat round dense aria-label="Atualizar a lista de lotes"'
+                ).tooltip("Atualizar a lista de lotes")
+                lote_note = ui.label("").classes("aj-card-note")
+            review_box = ui.textarea(
+                placeholder=(
+                    "TROCAR | pessoa | Fulano Exemplo | 12\n"
+                    "TROCAR | pessoa | Fulano | 13 | Fulano Exemplo da Silva\n"
+                    "MANTER | [EMPRESA_3] | órgão público\n"
+                    "UNIR | [PESSOA_2] | [PESSOA_5] | mesma pessoa"
+                )
+            ).props("outlined rows=10").classes("w-full aj-mono")
+            with ui.row().classes("aj-toolbar"):
+                review_btn = ui.button("Conferir revisão", icon="fact_check").props("outline no-caps").classes(
+                    "aj-btn"
+                )
+                apply_review_btn = ui.button("Aplicar marcadas", icon="playlist_add_check").props(
+                    "unelevated no-caps"
+                ).classes("aj-btn")
+            review_summary = ui.label("").classes("aj-card-note")
+            review_table = ui.column().classes("w-full gap-0")
+
+    extra_boxes = {
+        "target_aliases_text": aliases,
+        "target_processes_text": processes,
+        "target_cdas_text": cdas,
+        "target_contacts_text": contacts,
+    }
+
+    def extra_values() -> dict[str, object]:
+        return {attr: box.value for attr, box in extra_boxes.items()}
+
     def is_dirty() -> bool:
         return (
             _parse_name_list(session.target_companies_text) != session.settings.target_companies
             or _parse_name_list(session.target_people_text) != session.settings.target_people
             or list(parse_target_ids([str(session.target_ids_text or "")]))
             != list(session.settings.target_ids)
+            or any(
+                _parse_name_list(getattr(session, attr)) != getattr(session.settings, field_name)
+                for attr, field_name in _CASE_EXTRA_LISTS
+            )
         )
+
+    def refresh_operation() -> None:
+        operation_select.set_options(_operation_options(session.settings), value=session.settings.case_operation or "")
+        operation_note.text = _operation_note(session.settings)
+
+    def choose_operation(event) -> None:
+        chosen = str(event.value or "")
+        if chosen == (session.settings.case_operation or ""):
+            return
+        session.settings.case_operation = chosen
+        save_settings(session.private_dir, session.settings)
+        operation_note.text = _operation_note(session.settings)
+        ui.notify(
+            "Operação escolhida: " + (operation_label(session.settings, chosen) if chosen else "todas"),
+            type="positive",
+        )
+        on_change()
 
     def refresh_state() -> None:
         if is_dirty():
             save_state.content = '<span class="aj-dot warn"></span>Alterações não salvas'
         else:
             save_state.content = '<span class="aj-dot ok"></span>Lista salva'
+        operation_note.text = _operation_note(session.settings)
+        refresh_lotes()  # H9-m/H9-n.1: pasta trocada ou lote novo: a lista de lotes e relida (leitura de pasta, barata)
         on_change()
 
     def save_case_targets() -> None:
-        _commit_target_lists(session, companies.value, people.value, ids.value)
+        _commit_target_lists(session, companies.value, people.value, ids.value, extra_values())
         save_settings(session.private_dir, session.settings)
         refresh_state()
         ui.notify("Lista deste caso salva.", type="positive")
 
     async def import_case_sheet() -> None:
-        _commit_target_lists(session, companies.value, people.value, ids.value)
+        _commit_target_lists(session, companies.value, people.value, ids.value, extra_values())
         selected = await run.io_bound(_pick_spreadsheet)
         if not selected:
             refresh_state()
             return
         try:
-            message = _import_spreadsheet_into_session(session, Path(selected))
+            parsed = parse_target_spreadsheet(Path(selected))
         except (OSError, ValueError) as exc:
             ui.notify(str(exc), type="warning")
             return
+        # Resumo antes de salvar (H9-i lote B1): nada entra na lista sem o Operador ver o que veio e o que caiu.
+        if not await _confirm_spreadsheet(parsed, Path(selected).name):
+            refresh_state()
+            return
+        message = _apply_spreadsheet(session, parsed, Path(selected).name)
         companies.value = session.target_companies_text
         people.value = session.target_people_text
         ids.value = session.target_ids_text
+        for attr, box in extra_boxes.items():
+            box.value = getattr(session, attr)
+        refresh_operation()
         refresh_state()
         ui.notify(message, type="positive")
 
-    for box in (companies, people, ids):
+    # ------------------------------------------------------------------ H9-m: revisao do Gemini
+    review_state: dict[str, object] = {"items": [], "lote": "", "text": "", "dir": None, "lotes": {}}
+
+    def refresh_lotes() -> None:
+        lotes = review_import.list_lotes(session.private_dir, session.export_dir)
+        review_state["lotes"] = {ref.job_id: ref for ref in lotes}
+        review_state["dir"] = (session.private_dir, session.export_dir)
+        options = {ref.job_id: ref.job_id + ("" if ref.has_export else " (sem texto exportado)") for ref in lotes}
+        current = lote_select.value if lote_select.value in options else (lotes[0].job_id if lotes else None)
+        lote_select.set_options(options, value=current)
+        if lotes:
+            lote_note.text = f"{len(lotes)} lote(s) com mapa.json nesta pasta privada; o padrão é o mais recente."
+        else:
+            lote_note.text = "Nenhum lote com mapa.json nesta pasta privada: rode um lote antes de conferir."
+
+    def update_review_badge() -> None:
+        items = review_state["items"]
+        marked = sum(1 for item in items if item.checked and item.checkable)  # type: ignore[union-attr]
+        review_badge.text = f"{marked} marcada(s)" if items else ""
+
+    def settings_from_boxes():
+        """A lista como esta nas caixas (mesmo sem salvar), para conferir contra ela sem gravar nada."""
+
+        return replace(
+            session.settings,
+            target_companies=_parse_name_list(companies.value),
+            target_people=_parse_name_list(people.value),
+            target_ids=list(parse_target_ids([str(ids.value or "")])),
+            **{field_name: _parse_name_list(extra_boxes[attr].value) for attr, field_name in _CASE_EXTRA_LISTS},
+        )
+
+    def render_review() -> None:
+        items = review_state["items"]
+        review_table.clear()
+        if not items:
+            return
+        with review_table:
+            with ui.element("div").classes("aj-review-row head"):
+                for title in ("", "Ação", "Texto ou marca", "Destino proposto", "Situação"):
+                    ui.label(title)
+            for item in items:  # type: ignore[union-attr]
+                with ui.element("div").classes("aj-review-row"):
+                    box = ui.checkbox(value=item.checked).props("dense")
+                    if not item.checkable:
+                        box.disable()
+
+                    def toggle(event, current=item) -> None:
+                        current.checked = bool(event.value)
+                        update_review_badge()
+
+                    box.on_value_change(toggle)
+                    ui.label(item.action)
+                    ui.label(item.subject).classes("aj-code")
+                    status = item.status + (f": {item.reason}" if item.reason else "")
+                    if item.candidates or item.name_field:
+                        with ui.column().classes("w-full gap-1"):
+                            destination = ui.label(item.destination()).classes("aj-code")
+                            if item.candidates:
+
+                                def choose(event, current=item, shown=destination) -> None:
+                                    current.choice = str(event.value or "")
+                                    shown.text = current.destination()
+
+                                ui.select(
+                                    options=list(item.candidates), label=f"Grafia “{item.alias}” de…"
+                                ).props("outlined dense options-dense").classes("w-full").on_value_change(choose)
+                            name_input = None
+                            if item.name_field:
+                                # H9-n: o Operador digita o nome completo; a linha vira grafia dele e fica marcada.
+                                name_input = ui.input(
+                                    label="Nome principal (nome completo)", value=item.typed
+                                ).props("outlined dense").classes("w-full")
+                        status_label = ui.label(status).classes(f"aj-review-status {item.status}")
+                        if name_input is not None:
+
+                            def typed(event, current=item, shown=destination, check=box, badge=status_label,
+                                      original=status) -> None:
+                                current.type_principal(str(event.value or ""))
+                                shown.text = current.destination()
+                                check.value = current.checked
+                                badge.text = f"grafia de {current.typed}" if current.typed else original
+                                update_review_badge()
+
+                            name_input.on_value_change(typed)
+                    else:
+                        ui.label(item.destination()).classes("aj-code")
+                        ui.label(status).classes(f"aj-review-status {item.status}")
+        update_review_badge()
+
+    async def check_review() -> None:
+        refresh_lotes()  # H9-n.1: sempre rele a pasta (o lote recem-rodado entra; a escolha atual e mantida)
+        text = str(review_box.value or "")
+        if not text.strip():
+            ui.notify("Cole a resposta do revisor na caixa.", type="warning")
+            return
+        ref = review_state["lotes"].get(lote_select.value or "")  # type: ignore[union-attr]
+        if ref is None:
+            ui.notify("Nenhum lote de referência com mapa.json nesta pasta privada.", type="warning")
+            return
+        try:
+            data = await run.io_bound(review_import.load_lote, ref)
+        except (OSError, ValueError) as exc:
+            ui.notify(f"Não consegui ler o lote {ref.job_id}: {exc}", type="negative")
+            return
+        items = review_import.review(text, settings_from_boxes(), data)
+        review_state["items"] = items
+        review_state["lote"] = ref.job_id
+        review_state["text"] = text
+        counts = review_import.summary_counts(items)
+        review_summary.text = (
+            f"Lote {ref.job_id}: {counts['linhas']} linha(s) · {counts['aceita']} aceita(s) · "
+            f"{counts['decidir']} para decidir · {counts['rejeitada']} rejeitada(s)."
+            + ("" if data.texts else " Sem o texto exportado do lote: TROCAR fica para decidir.")
+            # H9-o: a conferencia e o que se aplica valem na operacao escolhida na aba Caso.
+            + (
+                f" Operação: {operation_label(session.settings, session.settings.case_operation)}"
+                " (conferido contra a lista dela; o aplicado vale nela)."
+                if session.settings.case_operation
+                else ""
+            )
+        )
+        render_review()
+
+    async def apply_reviewed() -> None:
+        items = review_state["items"]
+        if not items:
+            ui.notify("Confira a revisão antes de aplicar.", type="warning")
+            return
+        if not any(item.checked and item.checkable for item in items):  # type: ignore[union-attr]
+            ui.notify("Nenhuma linha marcada.", type="warning")
+            return
+        # O que esta nas caixas (mesmo sem salvar) fica; a revisao acrescenta por cima e grava tudo.
+        _commit_target_lists(session, companies.value, people.value, ids.value, extra_values())
+        result = review_import.apply_review(session.settings, items)  # type: ignore[arg-type]
+        _sync_target_list_text(session)
+        save_settings(session.private_dir, session.settings)
+        companies.value = session.target_companies_text
+        people.value = session.target_people_text
+        ids.value = session.target_ids_text
+        for attr, box in extra_boxes.items():
+            box.value = getattr(session, attr)
+        record = None
+        try:
+            record = await run.io_bound(
+                review_import.write_review_record,
+                session.private_dir,
+                str(review_state["lote"]),
+                str(review_state["text"]),
+                items,
+                result,
+            )
+        except OSError as exc:
+            ui.notify(f"Não consegui gravar o registro da revisão: {exc}", type="warning")
+        on_rules_change()
+        refresh_state()
+        review_state["items"] = []
+        review_table.clear()
+        review_badge.text = ""
+        review_summary.text = result.message() + (f" Registro na pasta privada: revisoes/{record.name}" if record else "")
+        ui.notify(result.message(), type="positive", multi_line=True)
+
+    for box in (companies, people, ids, *extra_boxes.values()):
         box.on_value_change(lambda _event: refresh_state())
+    review_btn.on_click(check_review)
+    apply_review_btn.on_click(apply_reviewed)
     save_btn.on_click(save_case_targets)
     import_btn.on_click(import_case_sheet)
+    operation_select.on_value_change(choose_operation)
+    refresh_operation()
     refresh_state()
     return refresh_state
+
+
+_ALL_OPERATIONS = "Todas as operações (lista inteira)"
+
+
+def _operation_options(settings) -> dict[str, str]:
+    """H9-l: "todas" e cada operacao que a planilha do Nexus trouxe (id -> nome legivel)."""
+
+    found = sorted(
+        {item for items in settings.case_operations.values() for item in items} | set(settings.case_operation_names),
+        key=lambda item: (settings.case_operation_names.get(item, item).casefold(), item),
+    )
+    options = {"": _ALL_OPERATIONS}
+    options.update({item: operation_label(settings, item) for item in found})
+    if settings.case_operation and settings.case_operation not in options:
+        options[settings.case_operation] = operation_label(settings, settings.case_operation) + " (não está na lista)"
+    return options
+
+
+def _operation_note(settings) -> str:
+    """Quanto da lista vale na operacao escolhida (so contagens)."""
+
+    if not settings.case_operations:
+        return "A planilha do Nexus não trouxe operações: a rodada usa a lista inteira."
+    if not settings.case_operation:
+        return "Nenhuma operação escolhida: a rodada usa a lista inteira (todas as operações)."
+    active = settings_for_operation(settings)
+    return (
+        f"Nesta operação: {len(active.target_people)} pessoa(s), {len(active.target_companies)} empresa(s), "
+        f"{len(active.target_ids)} CPF/CNPJ, {len(active.target_processes)} processo(s), "
+        f"{len(active.target_cdas)} CDA(s), {len(active.target_contacts)} contato(s)/veículo(s). "
+        "O que foi digitado à mão, sem operação, vale sempre."
+    )
+
+
+async def _confirm_spreadsheet(parsed: SpreadsheetTargets, name: str) -> bool:
+    """O resumo da planilha (quanto de cada tipo, linhas descartadas e por que); True se o Operador confirmar."""
+
+    with ui.dialog() as dialog, ui.column().classes("aj-dialog"):
+        ui.label("Planilha do Nexus").classes("aj-kicker")
+        ui.label(name).classes("aj-title").style("font-size:22px")
+        if parsed.sheets:
+            ui.label("Abas lidas: " + ", ".join(parsed.sheets)).classes("aj-card-note")
+        # A lista do dialogo e uma grade de duas colunas: rotulo | valor.
+        rows = (line.partition(": ") for line in parsed.summary_lines())
+        ui.html(
+            "<ul>"
+            + "".join(f"<li><span>{html.escape(label)}</span><span>{html.escape(value)}</span></li>" for label, _sep, value in rows)
+            + "</ul>"
+        ).classes("w-full")
+        ui.label("O que já está nas caixas fica; o que vier repetido não entra de novo.").classes("aj-card-note")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancelar", on_click=lambda: dialog.submit(False)).props("flat no-caps")
+            ui.button("Salvar na lista do caso", icon="save", on_click=lambda: dialog.submit(True)).props(
+                "unelevated no-caps"
+            )
+    result = await dialog
+    dialog.clear()
+    return bool(result)
 
 
 def _list_card(
@@ -1111,7 +1560,7 @@ def _list_card(
     return box
 
 
-def _build_rules_tab(session: Session) -> None:
+def _build_rules_tab(session: Session) -> Callable[[], None]:
     def persist() -> None:
         save_settings(session.private_dir, session.settings)
 
@@ -1339,10 +1788,15 @@ def _build_rules_tab(session: Session) -> None:
         persist()
         ui.notify("Termos protegidos salvos.", type="positive")
 
+    def refresh_exclusions() -> None:
+        # H9-m: a revisao do Gemini aplicada na aba Caso acrescenta termos protegidos; a caixa mostra o que vale.
+        exclusions_box.value = "\n".join(session.settings.exclusions)
+
     add_rule_btn.on_click(add_rule)
     save_excl_btn.on_click(save_exclusions)
     render_tags()
     render_custom()
+    return refresh_exclusions
 
 
 def _build_help_dialog():

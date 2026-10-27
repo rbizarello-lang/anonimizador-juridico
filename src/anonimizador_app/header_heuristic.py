@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 
 from anonimizador_juridico import EntitySpan
+from anonimizador_juridico.pseudonymizer import fold_lexical
 
 from .gemini_detector import is_kept_term, is_too_generic, locate_mentions
 
@@ -102,13 +104,27 @@ class HeaderHeuristicEngine:
 
     def detect(self, text: str) -> list[EntitySpan]:
         mentions = extract_header_mentions(text)
-        return locate_mentions(
+        spans = locate_mentions(
             text,
             mentions,
             extra_keep=self.extra_keep,
             recognizer="HeaderHeuristic",
             score=0.88,
         )
+        brands = brand_names(text)
+        if not brands:
+            return spans
+        # v0.4.15: a marca ("nome fantasia X", "titulos de estabelecimento X") tem token proprio: pode ser de mais de uma
+        # empresa do grupo e nunca se junta, por forma curta, a razao social que comeca igual.
+        result: list[EntitySpan] = []
+        for span in spans:
+            folded = " ".join(fold_lexical(span.value_from(text)).split())
+            if span.entity_type != "ORGANIZATION" or folded not in brands:
+                result.append(span)
+            elif not _NAME_CONTINUES.match(text, span.end):
+                # Dentro de um nome mais longo ("MARCA TEXTIL LTDA") a marca e o comeco da outra razao social: fica fora.
+                result.append(replace(span, canonical_key=BRAND_KEY + folded))
+        return result
 
     def scan_residual(self, text: str) -> list[str]:
         del text
@@ -129,7 +145,107 @@ def extract_header_mentions(text: str) -> list[tuple[str, str]]:
     mentions.extend(_mentions_from_inline_parties(cover))
     mentions.extend(_mentions_from_devedor(labeled))
     mentions.extend(_mentions_from_endereco(labeled))
+    mentions.extend(_mentions_from_lawyer_lists(text))
+    mentions.extend(_mentions_before_oab(text))
+    mentions.extend(_mentions_after_denomination(text))
     return _dedupe_mentions(mentions)
+
+
+# v0.4.15: nome de empresa escrito em caixa alta logo depois de expressao de denominacao ("a denominacao social passa a
+# ser X", "denominacao social de X", "(denominacao anterior: X)", "titulos de estabelecimento X", "nome fantasia X",
+# "na epoca denominada X"): a razao social antiga e a marca do grupo ficavam em claro quando o NER nao as achava.
+_DENOMINATION_CUE = re.compile(
+    r"(?i)(?:denomina[cç][aã]o(?:\s+social)?(?:\s+(?:anterior|antiga|atual))?"
+    r"(?:\s+(?:passa(?:ndo)?\s+a\s+ser|(?:[ée]|foi)\s+alterada\s+para|de|para)|\s*:)"
+    r"|t[íi]tulos?\s+de\s+estabelecimento|nome\s+fantasia(?:\s+de)?"
+    r"|(?:na\s+[ée]poca|anteriormente|atualmente|antes)\s+denominad[ao]|raz[aã]o\s+social(?:\s+de)?"
+    r"|nome\s+empresarial(?:\s+de)?)[ \t]*[:\"“'‘]?[ \t]*"
+)
+_UPPER_NAME = re.compile(
+    r"([A-ZÀ-Ý0-9][A-ZÀ-Ý0-9&'’\-]*(?:[ \t]+(?:[A-ZÀ-Ý0-9&][A-ZÀ-Ý0-9&'’\-]*|D[AEO]S?|E)){0,7})"
+    r"(?:[ \t]*[,.\-–]?[ \t]*(?:LTDA|EIRELI|S/?A|EPP|ME)\b\.?)?"
+)
+_SUFFIX_ONLY = frozenset({"LTDA", "EIRELI", "SA", "S/A", "EPP", "ME"})
+
+
+BRAND_KEY = "marca:"
+_NAME_CONTINUES = re.compile(r"[ \t]+[A-ZÀ-Ý][A-ZÀ-Ý0-9&'’\-]*\b")
+_BRAND_CUE = re.compile(r"(?i)t[íi]tulos?\s+de\s+estabelecimento|nome\s+fantasia")
+
+
+def brand_names(text: str) -> frozenset[str]:
+    """As marcas (dobradas) escritas depois de "nome fantasia" ou "titulos de estabelecimento"."""
+
+    return frozenset(
+        " ".join(fold_lexical(name).split())
+        for cue, name in _denomination_names(text)
+        if _BRAND_CUE.match(cue) and not re.search(r"(?i)\b(?:ltda|eireli|s/?a|epp|me)\b", name)
+    )
+
+
+def _mentions_after_denomination(text: str) -> list[tuple[str, str]]:
+    return [("ORGANIZATION", name) for _cue, name in _denomination_names(text)]
+
+
+def _denomination_names(text: str) -> list[tuple[str, str]]:
+    mentions: list[tuple[str, str]] = []
+    for cue in _DENOMINATION_CUE.finditer(text):
+        match = _UPPER_NAME.match(text, cue.end())
+        if match is None:
+            continue
+        name = match.group(0).strip(" \t,.-–")
+        words = [word for word in match.group(1).split() if word not in {"DA", "DE", "DO", "DAS", "DOS", "E"}]
+        suffixed = name != match.group(1).strip(" \t,.-–")
+        if not words or all(word in _SUFFIX_ONLY for word in words):
+            continue
+        if len(words) < 2 and not suffixed:
+            continue
+        if any(len(word) < 2 for word in words[:1]) or is_kept_term(name) or is_too_generic("ORGANIZATION", name):
+            continue
+        mentions.append((cue.group(0).strip(), name))
+    return mentions
+
+
+# v0.4.15: advogado da parte em qualquer ponto dos autos, como os outros: a lista "Procurador(es): NOME PR012345 NOME
+# PR067890" do eproc (so com o codigo de OAB no meio: o procurador publico nao tem) e o nome logo antes da OAB ("Visto:
+# NOME OAB/UF 1.234"). Antes o nome so de prenome e sobrenome comuns ficava em claro (filtro de nome banal) e o nome
+# antes da OAB, sem NER, tambem.
+_LAWYER_LIST = re.compile(r"(?i)\bprocurador(?:es|\(\s*es\s*\))\s*:\s*([^\n|]{5,600})")
+_LAWYER_CODE = re.compile(r"\b[A-Z]{2}\d{5,7}\b")
+_NAME_BEFORE_OAB = re.compile(
+    r"(?<![^\W\d_])((?:[A-ZÀ-Ý][A-ZÀ-Ý'’]+|[A-ZÀ-Ý][a-zà-ÿ'’]+)(?:[ \t]+(?:(?i:d[aeo]s?|e)|[A-ZÀ-Ý][A-ZÀ-Ý'’]+"
+    r"|[A-ZÀ-Ý][a-zà-ÿ'’]+)){1,5})[ \t]*[,\-–]?[ \t]*(?:inscrit[oa][ \t]+na[ \t]+)?OAB\b"
+)
+_LAWYER_LEAD = frozenset({"visto", "advogado", "advogada", "dr", "dra", "procurador", "procuradora", "assinado", "por"})
+_NOT_LAWYER_WORDS = frozenset(
+    "conselho federal ordem seccional subsecao comissao presidente tribunal estatuto inscricao numero registro carteira "
+    "identidade profissional advogados".split()
+)
+
+
+def _mentions_from_lawyer_lists(text: str) -> list[tuple[str, str]]:
+    mentions: list[tuple[str, str]] = []
+    for match in _LAWYER_LIST.finditer(text):
+        blob = match.group(1)
+        if _LAWYER_CODE.search(blob):
+            mentions.extend(("PERSON", name) for name in _lawyer_names(blob))
+    return mentions
+
+
+def _mentions_before_oab(text: str) -> list[tuple[str, str]]:
+    mentions: list[tuple[str, str]] = []
+    for match in _NAME_BEFORE_OAB.finditer(text):
+        words = match.group(1).split()
+        while words and words[0].casefold().strip(".:") in _LAWYER_LEAD:
+            words.pop(0)
+        while words and words[-1].casefold() in {"de", "da", "do", "das", "dos", "e"}:
+            words.pop()
+        name = " ".join(words)
+        if any(fold_lexical(word) in _NOT_LAWYER_WORDS for word in words):
+            continue  # "Conselho Federal da OAB", "Carteira de Identidade Profissional"
+        if len(words) >= 2 and not is_kept_term(name) and not is_too_generic("PERSON", name):
+            mentions.append(("PERSON", name))
+    return mentions
 
 
 def _cover_window(text: str) -> str:

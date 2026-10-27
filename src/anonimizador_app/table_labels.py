@@ -11,7 +11,16 @@ from collections.abc import Iterable, Iterator
 
 from anonimizador_juridico import EntitySpan, resolve_overlaps
 from anonimizador_juridico.pseudonymizer import canonicalize
-from anonimizador_juridico.validators import only_digits
+from anonimizador_juridico.recognizers import (
+    _CTPS_VALOR,
+    _DATA_VALOR,
+    aligned_cells,
+    aligned_header_cell,
+    birth_canonical,
+    ctps_canonical,
+    titulo_canonical,
+)
+from anonimizador_juridico.validators import is_valid_cpf, is_valid_pis, only_digits
 
 from .settings import default_enabled_tags
 
@@ -42,19 +51,84 @@ _PHONE_CELL = re.compile(
     r"^(?:\+?55[\s.\-]?)?(?:\(?[1-9]\d\)?[\s.\-]?)?(?:9\d{4}|[2-9]\d{3})[\s.\-]?\d{4}$"
 )
 
+# H9-k: cabecalho (Markdown, par rotulo | valor ou bloco de colunas alinhadas) de PIS/NIT, CTPS, titulo de eleitor e
+# nascimento; o valor so entra com a forma certa (PIS e titulo com digito verificador, data valida, CTPS numero/serie).
+_N_PREFIX = r"(?:n[º°o.]{0,2}\s*(?:d[oa]\s+)?)?"
+_LABEL_KINDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "pis",
+        re.compile(
+            rf"(?i){_N_PREFIX}(?:PIS|PASEP|NIT|NIS)(?:\s*/\s*(?:PIS|PASEP|NIT|NIS))*"
+            r"(?:\s+(?:Base|Convertido|Original|Atual|Principal))?\s*:?"
+        ),
+    ),
+    ("ctps", re.compile(rf"(?i){_N_PREFIX}(?:CTPS(?:\s*(?:/|e)\s*S[ée]rie)?|Carteira\s+de\s+Trabalho)\s*:?")),
+    ("titulo", re.compile(rf"(?i){_N_PREFIX}T[íi]t(?:ulo|\.)\s*(?:de\s+)?Eleit(?:or(?:al|a)?|\.)?\s*:?")),
+    ("nascimento", re.compile(r"(?i)(?:d(?:ata|t)\.?\s*(?:de\s+)?)?nasc(?:imento|\.)?\s*:?")),
+    ("cep", re.compile(r"(?i)CEP\s*:?")),
+    (
+        "telefone",
+        re.compile(
+            r"(?i)(?:DDD\s*/\s*)?(?:telefones?|fones?|tel\.?|celular|cel\.?)(?:\s*\(s\))?(?:\s*/\s*fax)?\s*:?"
+        ),
+    ),
+    ("placa", re.compile(r"(?i)(?:uf\s*/\s*)?placa\s*:?")),
+    ("renavam", re.compile(r"(?i)(?:n\.?\s*)?renavam\s*:?")),
+    ("chassi", re.compile(r"(?i)chassis?\s*:?")),
+)
+_NEW_KIND_TAGS = {
+    "pis": "BR_PIS",
+    "ctps": "BR_CTPS",
+    "titulo": "BR_TITULO_ELEITOR",
+    "nascimento": "BR_NASCIMENTO",
+}
+_PIS_CELL = re.compile(r"\d(?:[.\-]?\d){10}")
+_CPF_SHAPE = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
+_CTPS_CELL = re.compile(_CTPS_VALOR, re.IGNORECASE)
+_TITULO_CELL = re.compile(r"\d{4}[ .]?\d{4}[ .]?\d{4}|\d{10,11}")
+_DATE_CELL = re.compile(_DATA_VALOR)
+_DASHES = re.compile(r"[ \t]*[–—\-][ \t]*")
+
+
+def label_kind(label: str) -> str | None:
+    """Tipo do rotulo de coluna/campo (o rotulo inteiro, sem mais nada), ou None."""
+
+    stripped = label.strip()
+    for kind, pattern in _LABEL_KINDS:
+        if pattern.fullmatch(stripped):
+            return kind
+    return None
+
 _FIELD_RENAVAM = re.compile(r"(?i)^\s*n\.?\s*renavam\s*:?\s*$|^\s*renavam\s*:?\s*$")
 _FIELD_CHASSI = re.compile(r"(?i)^\s*chassis?\s*:?\s*$")
 _FIELD_PLACA = re.compile(r"(?i)^\s*(?:uf\s*/\s*)?placa\s*:?\s*$")
 
+# H9-j: "nº", "n.", "no" entre o rotulo e o valor ("chassi nº 9BM...", "placa n. ABC-1234").
+_NUM_LABEL = r"\s*(?:n[º°o.]{1,2}\s*)?:?\s*"
 _INLINE_RENAVAM = re.compile(
-    r"(?i)\b(?:n\.?\s*)?renavam\s*:?\s*(\d{9,11})(?!\d)"
+    r"(?i)\b(?:n\.?\s*)?renavam" + _NUM_LABEL + r"(\d{9,11})(?!\d)"
 )
 _INLINE_CHASSI = re.compile(
-    r"(?i)\bchassis?\s*:?\s*([A-HJ-NPR-Z0-9]{17})\b"
+    r"(?i)\bchassis?" + _NUM_LABEL + r"([A-HJ-NPR-Z0-9]{17})\b"
 )
 _INLINE_PLACA = re.compile(
-    rf"(?i)\bplaca\s*:?\s*({_PLATE_BODY})\b"
+    rf"(?i)\bplaca{_NUM_LABEL}({_PLATE_BODY})\b"
 )
+# H9-j: "placas ABC-1234, DEF-5678 e GHI-9012" (lista depois do rotulo no plural).
+# Em lista o OCR le a letra "O" como zero ("XY0-4321"): a terceira letra aceita o zero.
+_PLATE_LOOSE = r"[A-Z]{2}[A-Z0]-?(?:\d{4}|\d[A-Z]\d{2})"
+_PLATE_LIST = re.compile(
+    rf"(?i)\bplacas{_NUM_LABEL}((?:{_PLATE_LOOSE})(?:\s*(?:,|;|\be\b)\s*(?:{_PLATE_LOOSE}))*)"
+)
+_PLATE_IN_LIST = re.compile(rf"(?i){_PLATE_LOOSE}")
+# H9-j: tabela de pares rotulo | valor na mesma linha ("| Chassi | 9BM... | Placa | ABC1D23 |", extrato RENAJUD): os
+# rotulos sao os de ``_LABEL_KINDS`` (``label_kind``).
+# H9-j: comprovante bancario em coluna (OCR): rotulos empilhados (Agencia, Conta, Valor...) e os valores na mesma ordem.
+_STACK_AGENCIA = re.compile(r"(?i)^ag[êe]ncia\s*:?$")
+_STACK_CONTA = re.compile(r"(?i)^conta(?:\s+corrente)?\s*:?$")
+_STACK_OTHER_LABEL = re.compile(r"^[^\W\d_][^\d|]{0,30}$")
+_AGENCIA_VALUE = re.compile(r"^\d{3,5}(?:-[\dXx])?$")
+_CONTA_VALUE = re.compile(r"^\d{1,12}-[\dXx]$|^\d{4,12}$")
 
 _PAGE_BREAK = re.compile(r"(?i)^\s*<!--\s*pagina")
 _SEP_CELL = re.compile(r"^:?-{2,}:?$")
@@ -77,14 +151,16 @@ class TableLabelsEngine:
 
     def detect(self, text: str) -> list[EntitySpan]:
         spans: list[EntitySpan] = []
-        if any(
-            self._on(tag)
-            for tag in ("BR_PLACA", "BR_RENAVAM", "BR_CHASSI", "BR_CEP", "BR_PHONE")
-        ):
+        table_tags = ("BR_PLACA", "BR_RENAVAM", "BR_CHASSI", "BR_CEP", "BR_PHONE", *_NEW_KIND_TAGS.values())
+        if any(self._on(tag) for tag in table_tags):
             spans.extend(_spans_from_tables(text, self.enabled_tags))
+            spans.extend(_spans_from_row_pairs(text, self.enabled_tags))
+            spans.extend(_spans_from_aligned_blocks(text, self.enabled_tags))
         if self._on("BR_PLACA") or self._on("BR_RENAVAM") or self._on("BR_CHASSI"):
             spans.extend(_spans_from_inline_fields(text, self.enabled_tags))
             spans.extend(_spans_from_stacked_form(text, self.enabled_tags))
+        if self._on("BR_CONTA_BANCARIA"):
+            spans.extend(_spans_from_bank_stack(text))
         return resolve_overlaps(spans)
 
     def scan_residual(self, text: str) -> list[str]:
@@ -151,7 +227,10 @@ def _cell_spans(line: str, line_start: int) -> list[tuple[int, int, str]]:
 def _header_kinds(cells: list[str]) -> dict[int, str]:
     kinds: dict[int, str] = {}
     for index, cell in enumerate(cells):
-        if _HEADER_PLACA.search(cell):
+        new_kind = label_kind(cell)
+        if new_kind in _NEW_KIND_TAGS:
+            kinds[index] = new_kind
+        elif _HEADER_PLACA.search(cell):
             kinds[index] = "placa"
         elif _HEADER_RENAVAM.search(cell):
             kinds[index] = "renavam"
@@ -210,7 +289,9 @@ def _emit_cell(
             recognizer=RECOGNIZER,
             canonical_key=canonicalize("BR_CEP", compact),
         )
-    if kind == "telefone" and _on(enabled, "BR_PHONE") and _PHONE_CELL.fullmatch(compact):
+    if kind == "telefone" and _on(enabled, "BR_PHONE") and (
+        _PHONE_CELL.fullmatch(compact) or _PHONE_CELL.fullmatch(_DASHES.sub("-", compact))
+    ):
         return EntitySpan(
             start=start,
             end=end,
@@ -219,7 +300,41 @@ def _emit_cell(
             recognizer=RECOGNIZER,
             canonical_key=canonicalize("BR_PHONE", compact),
         )
-    return None
+    return _emit_new_kind(start, end, compact, kind, enabled)
+
+
+def _emit_new_kind(start: int, end: int, compact: str, kind: str, enabled: dict[str, bool]) -> EntitySpan | None:
+    """H9-k: PIS/NIT, CTPS, titulo de eleitor e nascimento numa celula sob o rotulo."""
+
+    entity_type = _NEW_KIND_TAGS.get(kind)
+    if entity_type is None or not _on(enabled, entity_type):
+        return None
+    canonical = ""
+    if kind == "pis":
+        if _PIS_CELL.fullmatch(compact) and is_valid_pis(compact):
+            if not (_CPF_SHAPE.fullmatch(compact) and is_valid_cpf(compact)):
+                canonical = only_digits(compact)
+    elif kind == "ctps":
+        match = _CTPS_CELL.fullmatch(compact)
+        if match is not None:
+            canonical = ctps_canonical(match.group("num"), match.group("serie") or "")
+    elif kind == "titulo":
+        if _TITULO_CELL.fullmatch(compact) and not (len(only_digits(compact)) == 11 and is_valid_cpf(compact)):
+            canonical = titulo_canonical(compact) or ""
+    elif kind == "nascimento":
+        match = _DATE_CELL.fullmatch(compact)
+        if match is not None:
+            canonical = birth_canonical(match.group("d"), match.group("m"), match.group("a"))
+    if not canonical:
+        return None
+    return EntitySpan(
+        start=start,
+        end=end,
+        entity_type=entity_type,
+        score=_SCORE,
+        recognizer=RECOGNIZER,
+        canonical_key=canonical,
+    )
 
 
 def _spans_from_tables(text: str, enabled: dict[str, bool]) -> Iterator[EntitySpan]:
@@ -277,6 +392,17 @@ def _spans_from_inline_fields(text: str, enabled: dict[str, bool]) -> Iterator[E
                 canonical_key=match.group(1).upper(),
             )
     if _on(enabled, "BR_PLACA"):
+        for listing in _PLATE_LIST.finditer(text):
+            for match in _PLATE_IN_LIST.finditer(listing.group(1)):
+                start = listing.start(1) + match.start()
+                yield EntitySpan(
+                    start=start,
+                    end=start + len(match.group(0)),
+                    entity_type="BR_PLACA",
+                    score=_SCORE,
+                    recognizer=RECOGNIZER,
+                    canonical_key=plate_canonical(match.group(0)),
+                )
         for match in _INLINE_PLACA.finditer(text):
             yield EntitySpan(
                 start=match.start(1),
@@ -363,3 +489,180 @@ def _spans_from_stacked_form(text: str, enabled: dict[str, bool]) -> Iterator[En
                 index = value_index + 1
             continue
         index += 1
+
+
+def _spans_from_row_pairs(text: str, enabled: dict[str, bool]) -> Iterator[EntitySpan]:
+    """H9-j: linha de tabela com pares rotulo | valor (extrato RENAJUD): a celula depois de "Placa", "Renavam" ou
+    "Chassi" e o valor, se tiver a forma certa (a mesma conferencia do cabecalho de coluna)."""
+
+    for line_start, line in _line_records(text):
+        if not _is_pipe_row(line) or _is_separator_line(line):
+            continue
+        cells = _cell_spans(line, line_start)
+        for index in range(len(cells) - 1):
+            label = cells[index][2].strip()
+            # H9-k: tambem PIS/NIT, CTPS, titulo, nascimento, CEP e telefone ("| NIT | 123.45678.90-0 |").
+            kind = label_kind(label)
+            if kind is not None:
+                start, end, value = cells[index + 1]
+                span = _emit_cell(start, end, value, kind, enabled)
+                if span is not None:
+                    yield span
+
+
+def _aligned_header(line: str) -> tuple[list[tuple[int, int, str]], dict[int, str]] | None:
+    """Linha de cabecalho de bloco alinhado: as celulas e, por indice, o tipo das que sao rotulo conhecido. A linha
+    tem de ser so de rotulos (sem digitos), senao e linha de valores ou texto corrido."""
+
+    if _is_pipe_row(line) or any(char.isdigit() for char in line):
+        return None
+    cells = aligned_cells(line)
+    if not cells:
+        return None
+    kinds = {index: kind for index, cell in enumerate(cells) if (kind := label_kind(cell[2])) is not None}
+    if not kinds:
+        return None
+    # Texto corrido nao e cabecalho: com uma celula so, ela inteira tem de ser o rotulo (ja garantido por label_kind);
+    # com varias, as celulas sao curtas (rotulos de coluna).
+    if len(cells) > 1 and any(len(cell[2]) > 40 for cell in cells):
+        return None
+    return cells, kinds
+
+
+def _spans_from_aligned_blocks(text: str, enabled: dict[str, bool]) -> Iterator[EntitySpan]:
+    """H9-k: bloco de colunas alinhadas (texto monoespacado do CNIS, consulta de CPF, ``` text): o cabecalho numa
+    linha ("NIT    CPF    Data Nasc.    CEP    Telefone") e os valores na mesma coluna nas linhas de baixo (posicao do
+    cabecalho +- ``COLUMN_TOLERANCE``). O valor so entra com a forma do tipo da coluna; sem cabecalho, nada."""
+
+    lines = _line_records(text)
+    total = len(lines)
+    for index, (_line_start, line) in enumerate(lines):
+        header = _aligned_header(line)
+        if header is None:
+            continue
+        cells, kinds = header
+        limit = 1 if len(cells) == 1 else 40
+        rows = 0
+        blank = 0
+        cursor = index + 1
+        while cursor < total and rows < limit:
+            value_start, value_line = lines[cursor]
+            stripped = value_line.strip()
+            cursor += 1
+            if not stripped:
+                blank += 1
+                if blank > 1:
+                    break
+                continue
+            if _PAGE_BREAK.match(stripped) or _is_pipe_row(value_line) or stripped.startswith("```"):
+                break
+            if _aligned_header(value_line) is not None:
+                break
+            rows += 1
+            for cell_start, cell_end, value in aligned_cells(value_line):
+                emitted = _emit_aligned(value_start, cell_start, cell_end, value, cells, kinds, enabled)
+                if emitted is not None:
+                    yield emitted
+                    continue
+                # Colunas apertadas (um espaco so entre duas colunas): cada palavra da celula sob o proprio cabecalho.
+                for word in re.finditer(r"\S+", value):
+                    emitted = _emit_aligned(
+                        value_start, cell_start + word.start(), cell_start + word.end(), word.group(), cells, kinds,
+                        enabled,
+                    )
+                    if emitted is not None:
+                        yield emitted
+
+
+def _emit_aligned(
+    line_start: int,
+    start_col: int,
+    end_col: int,
+    value: str,
+    header_cells: list[tuple[int, int, str]],
+    kinds: dict[int, str],
+    enabled: dict[str, bool],
+) -> EntitySpan | None:
+    cell = aligned_header_cell(header_cells, start_col, end_col)
+    if cell is None:
+        return None
+    kind = kinds.get(header_cells.index(cell))
+    if kind is None:
+        return None
+    return _emit_cell(line_start + start_col, line_start + end_col, value, kind, enabled)
+
+
+def _spans_from_bank_stack(text: str) -> Iterator[EntitySpan]:
+    """H9-j: comprovante bancario lido por OCR em coluna: "Agencia", "Conta", "Valor", "Produto" empilhados e, logo
+    abaixo, os valores na mesma ordem. So vale com os dois rotulos (agencia E conta) no bloco; o valor tem de ter a
+    forma de agencia/conta, senao o bloco e abandonado (nada de adivinhar)."""
+
+    lines = _line_records(text)
+    index = 0
+    while index < len(lines):
+        labels: list[str] = []
+        probe = index
+        while probe < len(lines):
+            stripped = lines[probe][1].strip()
+            if _STACK_AGENCIA.fullmatch(stripped):
+                labels.append("agencia")
+            elif _STACK_CONTA.fullmatch(stripped):
+                labels.append("conta")
+            elif labels and _STACK_OTHER_LABEL.fullmatch(stripped):
+                labels.append("outro")
+            else:
+                break
+            probe += 1
+        if "agencia" not in labels or "conta" not in labels:
+            index += 1
+            continue
+        values: list[tuple[int, str]] = []
+        cursor = probe
+        while cursor < len(lines) and len(values) < len(labels):
+            line_start, line = lines[cursor]
+            stripped = line.strip()
+            cursor += 1
+            if not stripped:
+                continue
+            values.append((line_start + len(line) - len(line.lstrip()), stripped))
+        for kind, (value_start, value) in zip(labels, values):
+            pattern = _AGENCIA_VALUE if kind == "agencia" else _CONTA_VALUE if kind == "conta" else None
+            if pattern is None:
+                continue
+            if not pattern.fullmatch(value):
+                break
+            yield EntitySpan(
+                start=value_start,
+                end=value_start + len(value),
+                entity_type="BR_CONTA_BANCARIA",
+                score=_SCORE,
+                recognizer=RECOGNIZER,
+                canonical_key=only_digits(value),
+            )
+        # H9-j: o resto da folha repete os valores por produto ("Conta Facil PJ / 3456 / 7890-1"): duas linhas seguidas,
+        # agencia e conta COM digito verificador, sao o mesmo par (so depois de o bloco rotulado ter aparecido).
+        end_of_page = cursor
+        while end_of_page < len(lines) and not _PAGE_BREAK.match(lines[end_of_page][1].strip()):
+            end_of_page += 1
+        position = cursor
+        while position < end_of_page - 1:
+            first_start, first = lines[position]
+            second_start, second = lines[position + 1]
+            if _AGENCIA_VALUE.fullmatch(first.strip()) and re.fullmatch(r"\d{1,12}-[\dXx]", second.strip()):
+                for line_start, line in ((first_start, first), (second_start, second)):
+                    value = line.strip()
+                    value_start = line_start + len(line) - len(line.lstrip())
+                    yield EntitySpan(
+                        start=value_start,
+                        end=value_start + len(value),
+                        entity_type="BR_CONTA_BANCARIA",
+                        score=_SCORE,
+                        recognizer=RECOGNIZER,
+                        canonical_key=only_digits(value),
+                    )
+                position += 2
+                continue
+            position += 1
+        # v0.4.14: a busca segue logo depois dos valores deste bloco, nao no fim da folha: a segunda tabela do CCS na
+        # mesma folha ("Agencia", "Conta" de novo, outro banco) ficava em claro.
+        index = max(cursor, index + 1)
