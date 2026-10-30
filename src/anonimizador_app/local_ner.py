@@ -428,6 +428,7 @@ def _load_gliner() -> PredictFn:
     from gliner import GLiNER
 
     model = GLiNER.from_pretrained(GLINER_MODEL, revision=GLINER_REVISION, local_files_only=offline)
+    model = _to_target_device(model)
     _LOG.info("Motor local: GLiNER (%s)", GLINER_MODEL)
     from . import run_timing
 
@@ -445,6 +446,30 @@ def _load_gliner() -> PredictFn:
         ]
 
     return predict
+
+
+NER_DEVICE_ENV = "ANONIMIZADOR_NER_DEVICE"
+
+
+def _to_target_device(model: Any) -> Any:
+    """v0.4.17: GLiNER na placa de video quando o torch enxerga CUDA; ANONIMIZADOR_NER_DEVICE=cpu forca o
+    processador. Se mover para a placa falhar (memoria de video cheia, driver), segue no processador."""
+    wanted = os.environ.get(NER_DEVICE_ENV, "").strip().lower()
+    if wanted == "cpu":
+        return model
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return model
+        # precisao total (sem TF32): nome no limite do corte nao pode mudar de lado por arredondamento da placa
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.set_float32_matmul_precision("highest")
+        return model.to(wanted or "cuda")
+    except Exception as exc:  # noqa: BLE001 - a placa e opcional; o processador sempre serve
+        _LOG.warning("GLiNER: nao foi possivel usar a placa de video (%s); segue no processador", exc)
+        return model
 
 
 def gliner_device(model: Any) -> str:

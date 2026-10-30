@@ -66,7 +66,7 @@ SHARED = "VENTANIA MALHAS LTDA"  # usada por B (antes) e por A (depois)
 
 class VersaoTest(unittest.TestCase):
     def test_versao(self) -> None:
-        self.assertEqual(APP_VERSION, "0.4.16")  # v0.4.16 sobe as duas (tests/test_v0416.py)
+        self.assertEqual(APP_VERSION, "0.4.17")  # v0.4.17 sobe a do app (tests/test_v0417.py)
         self.assertEqual(DETECTION_VERSION, "2.22.0")
 
     def test_tres_chaves_novas_ligadas(self) -> None:

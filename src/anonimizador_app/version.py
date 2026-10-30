@@ -114,7 +114,7 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
-APP_VERSION = "0.4.16"
+APP_VERSION = "0.4.17"
 DETECTION_VERSION = "2.22.0"
 
 _SRC = Path(__file__).resolve().parents[1]

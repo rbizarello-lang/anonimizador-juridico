@@ -62,7 +62,7 @@ def _values(text: str, spans) -> list[tuple[str, str, str]]:
 class VersaoTest(unittest.TestCase):
     def test_versoes(self):
         # v0.4.10 sobe as duas (ver tests/test_v0410.py).
-        self.assertEqual(APP_VERSION, "0.4.16")  # v0.4.16 sobe as duas (tests/test_v0416.py)
+        self.assertEqual(APP_VERSION, "0.4.17")  # v0.4.17 sobe a do app (tests/test_v0417.py)
         self.assertEqual(DETECTION_VERSION, "2.22.0")
 
 

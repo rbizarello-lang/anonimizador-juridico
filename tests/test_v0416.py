@@ -21,7 +21,7 @@ OPERATION_NAME = "Quimera Pantanosa"
 
 class VersaoTest(unittest.TestCase):
     def test_versoes(self) -> None:
-        self.assertEqual(APP_VERSION, "0.4.16")
+        self.assertEqual(APP_VERSION, "0.4.17")
         self.assertEqual(DETECTION_VERSION, "2.22.0")
 
 
