@@ -95,6 +95,9 @@
   prenome solto da pessoa do lote ([PRENOME_n] se 2+), sigla da empresa da lista e razao social depois de
   "denominacao", complemento e bairro no token do endereco, advogado da lista do eproc e antes da OAB, usuario do
   sistema e autor de doutrina em claro, prenome em nome de lugar fica.
+  2.22.0 = v0.4.16: nome da operacao do Nexus fora do exportavel; denominacao de 2+ empresas so separada com ancora
+  (CNPJ na frase, razao social completa), senao um token declarado no ELENCO; CPF ao lado de dois nomes nao liga;
+  prenome da mesma pessoa em varios tokens; ramo + marca da lista leva o token da empresa.
 - motor: ``local`` (padrao do app) ou ``LLM: <canal>`` (3.0 com LLM; o canal decide o tratamento do texto
   no provedor). Aparece na linha de versao, no LEIA-ME e na AUDITORIA de cada lote.
 - codigo: impressao digital dos ``.py`` carregados (muda com qualquer edicao, mesmo sem commit).
@@ -111,8 +114,8 @@ from pathlib import Path
 from .fast_extract import FAST_EXTRACTOR_VERSION
 
 ENGINE_LOCAL = "local"
-APP_VERSION = "0.4.15"
-DETECTION_VERSION = "2.21.0"
+APP_VERSION = "0.4.16"
+DETECTION_VERSION = "2.22.0"
 
 _SRC = Path(__file__).resolve().parents[1]
 _ROOT = _SRC.parent

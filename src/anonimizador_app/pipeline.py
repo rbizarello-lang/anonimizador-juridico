@@ -35,6 +35,7 @@ from .lote_elenco import (
     CAST_NAME,
     append_denominations_section,
     append_family_section,
+    append_shared_denomination_section,
     append_first_name_section,
     append_same_person_section,
     apply_company_groups,
@@ -50,7 +51,7 @@ from .span_hygiene import sanitize_spans
 from .rules import build_recognizers
 from . import run_timing
 from .run_notes import run_note_lines
-from .settings import AppSettings, case_list_lines, settings_for_operation
+from .settings import AppSettings, case_list_lines, operation_private_lines, settings_for_operation
 
 ProgressFn = Callable[[str, float], None]
 
@@ -310,6 +311,7 @@ def finalize_lote(
     if roster is not None:
         write_private_audit(map_path.parent, roster, mapping)
     run_timing.append_private(map_path.parent / PRIVATE_AUDIT_NAME, timing)
+    run_timing.append_private(map_path.parent / PRIVATE_AUDIT_NAME, operation_private_lines(settings), "Operacao do Nexus")
     write_outcomes_index(export_dir, outcomes)
     # H9-n: "Pode ser a mesma pessoa" no ELENCO tambem no modo local (pelo mapa e pelo CPF ao lado).
     append_same_person_section(
@@ -322,6 +324,10 @@ def finalize_lote(
     # v0.4.14: o sobrenome de 2+ pessoas da lista casado sozinho leva [SOBRENOME_n] tambem no motor local.
     append_family_section(export_dir, mapping.records)
     append_first_name_section(export_dir, mapping.records)  # v0.4.15: [PRENOME_n]
+    # v0.4.16: denominacao de 2+ empresas sem ancora: um token, declarado no ELENCO.
+    append_shared_denomination_section(
+        export_dir, mapping.records, [o.markdown_path for o in outcomes if o.ok and o.markdown_path is not None]
+    )
     if shared_names:
         from .shared_names import append_shared_names_section
 

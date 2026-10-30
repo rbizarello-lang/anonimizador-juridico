@@ -45,8 +45,8 @@ def _spans(text: str, *ner: str) -> dict[str, EntitySpan]:
 
 class VersaoTest(unittest.TestCase):
     def test_versoes(self) -> None:
-        self.assertEqual(APP_VERSION, "0.4.15")  # v0.4.15 sobe as duas (tests/test_v0415.py)
-        self.assertEqual(DETECTION_VERSION, "2.21.0")
+        self.assertEqual(APP_VERSION, "0.4.16")  # v0.4.16 sobe as duas (tests/test_v0416.py)
+        self.assertEqual(DETECTION_VERSION, "2.22.0")
 
 
 class SobrenomeDeFamiliaTests(unittest.TestCase):

@@ -609,6 +609,7 @@ class TargetListEngine:
                 phrase_jobs.append((len(phrase), entry, phrase))
         phrase_jobs.sort(key=lambda item: item[0], reverse=True)
         occupied.extend(self._generation_blocks(text, skipped_keys))
+        shared = _SharedDenominations(text)
 
         for _length, entry, phrase in phrase_jobs:
             # Nome completo listado (2+ palavras) e pedido explicito do operador:
@@ -639,6 +640,15 @@ class TargetListEngine:
                         continue
                 if entry.kind == "empresa":
                     end = _extend_company_end(text, start, end, entry)
+                    kind = shared.classify(text, start, end, entry, phrase)
+                    if kind:
+                        # v0.4.16: denominacao que abre a razao social da lista e tambem OUTRA razao social escrita no
+                        # lote: a decisao fica para depois do laco (ancora de CNPJ), nunca a empresa da lista por padrao.
+                        if any(start < other_end and end > other_start for other_start, other_end in occupied):
+                            continue
+                        occupied.append((start, end))
+                        shared.pending.append((start, end, entry, phrase, kind))
+                        continue
                 complete_starts[entry.canonical_key].append(start)
                 if any(start < other_end and end > other_start for other_start, other_end in occupied):
                     continue
@@ -655,8 +665,11 @@ class TargetListEngine:
                     )
                 )
 
+        spans.extend(shared.resolve(text, spans))
         self._ocr_tolerant(text, spans, occupied, skipped_keys, complete_starts)
-        for start, end, entry in _acronym_spans(text, self._entries, occupied):
+        initials = _initialism_spans(text, self._entries, occupied)
+        occupied.extend((start, end) for start, end, _entry in initials)
+        for start, end, entry in [*initials, *_acronym_spans(text, self._entries, occupied)]:
             if entry.canonical_key in skipped_keys:
                 continue
             occupied.append((start, end))
@@ -964,6 +977,103 @@ def resolve_particle_alias(
 
 
 
+# v0.4.16: denominacao compartilhada. O comeco da razao social da lista ("Alfa Beta", de "Alfa Beta Gama Comercio Ltda")
+# que e tambem OUTRA razao social escrita no lote ("Alfa Beta Ltda", de outra empresa) ou o comeco dela nao diz, sozinho,
+# de qual empresa e. Ancora segura: a razao social completa que a contem ("Alfa Beta Ltda" -> token proprio dessa razao
+# social) ou o CNPJ na mesma frase (o CNPJ ja visto colado a uma das razoes sociais). Sem ancora: UM token da
+# denominacao ("denominacao:"), que o ELENCO explica; nunca a empresa da lista por proximidade.
+_LEGAL_END = re.compile(r"(?i)\b(?:ltda|eireli|epp|me|s\s*/?\s*a)\b\.?\s*$")
+_CNPJ_DIGITS = r"\d{2}\.?\d{3}\.?\d{3}\s?/?\s?\d{4}\s?-?\s?\d{2}"
+_CNPJ_GLUED_AFTER = re.compile(
+    r"(?i)[^\n\d]{0,40}?(?:cnpj|c\.n\.p\.j\.?)(?:\s*/\s*mf)?[^\d\n]{0,25}(" + _CNPJ_DIGITS + r")"
+)
+_CNPJ_ANYWHERE = re.compile(r"(?<!\d)" + _CNPJ_DIGITS + r"(?!\d)")
+_SENTENCE_EDGE = re.compile(r"[.;]\s+(?=[A-ZÀ-Ý(\"“])|\n\s*\n")
+_SENTENCE_REACH = 250
+
+
+class _SharedDenominations:
+    """As ocorrencias de denominacao compartilhada de um texto (``classify`` no laco da lista, ``resolve`` depois)."""
+
+    def __init__(self, text: str) -> None:
+        from .roster_identity import _written_companies
+
+        self.written = _written_companies([text])
+        self.pending: list[tuple[int, int, _TargetEntry, str, str]] = []
+
+    @staticmethod
+    def _words(value: str) -> tuple[str, ...]:
+        from .roster_identity import content_words
+
+        return tuple(content_words("empresa", value))
+
+    def classify(self, text: str, start: int, end: int, entry: _TargetEntry, phrase: str) -> str:
+        """"razao" (outra razao social: a denominacao + sufixo), "bare" (a denominacao sozinha, que outra razao social
+        escrita no lote tambem usa) ou "" (como antes: a empresa da lista)."""
+
+        from .roster_identity import _ocr_match
+
+        mine = self._words(phrase)
+        full = self._words(entry.original)
+        if not mine or len(mine) < 2 or len(mine) >= len(full) or full[: len(mine)] != mine:
+            return ""
+        if self._words(text[start:end]) != mine:
+            return ""  # a extensao achou o resto da razao social: e a empresa da lista
+        if _LEGAL_END.search(text[start:end]):
+            return "razao"
+        for form in self.written:
+            if form[: len(mine)] != mine or form == full or _ocr_match(form, full, "empresa"):
+                continue
+            if form == mine or full[: len(form)] != form:
+                return "bare"
+        return ""
+
+    def resolve(self, text: str, spans: Sequence[EntitySpan]) -> list[EntitySpan]:
+        if not self.pending:
+            return []
+        from anonimizador_juridico.validators import only_digits
+
+        anchors: dict[str, set[str]] = defaultdict(set)
+
+        def anchor(end: int, key: str) -> None:
+            match = _CNPJ_GLUED_AFTER.match(text, end)
+            if match is not None:
+                anchors[only_digits(match.group(1))[:8]].add(key)
+
+        for span in spans:
+            if span.entity_type == "ORGANIZATION" and span.canonical_key:
+                anchor(span.end, span.canonical_key)
+        keys: list[str] = []
+        for start, end, entry, phrase, kind in self.pending:
+            key = ("razao:" if kind == "razao" else "denominacao:") + " ".join(self._words(phrase))
+            keys.append(key)
+            if kind == "razao":
+                anchor(end, key)
+        found: list[EntitySpan] = []
+        for (start, end, entry, phrase, kind), key in zip(self.pending, keys):
+            if kind == "bare":
+                lo = start
+                for edge in _SENTENCE_EDGE.finditer(text, max(0, start - _SENTENCE_REACH), start):
+                    lo = edge.end()
+                lo = max(lo, start - _SENTENCE_REACH)
+                edge = _SENTENCE_EDGE.search(text, end, min(len(text), end + _SENTENCE_REACH))
+                hi = edge.start() if edge is not None else min(len(text), end + _SENTENCE_REACH)
+                owners = {
+                    owner
+                    for match in _CNPJ_ANYWHERE.finditer(text, lo, hi)
+                    for owner in anchors.get(only_digits(match.group(0))[:8], ())
+                }
+                if len(owners) == 1:
+                    key = next(iter(owners))
+            found.append(
+                EntitySpan(
+                    start=start, end=end, entity_type="ORGANIZATION", score=0.95, recognizer="ListaDeAlvos",
+                    canonical_key=key, alvo=entry.original if key == entry.canonical_key else text[start:end],
+                )
+            )
+        return found
+
+
 # v0.4.15: a sigla (3 ou 4 letras) que abre a razao social da lista ("ABC Comercio Ltda" -> "ABC"), escrita sozinha em caixa alta, e a
 # empresa (leitura folha a folha: "a ABC", "da ABC" em claro). So sigla de 2 a 5 letras de UMA empresa da lista, sem
 # outra palavra em caixa alta colada (fora o sufixo societario: "ABC LTDA EPP" e a mesma).
@@ -972,9 +1082,37 @@ _UPPER_WORD_BEFORE = re.compile(r"[A-ZÀ-Ý][A-ZÀ-Ý0-9]+[ \t]+$")
 _UPPER_WORD_AFTER = re.compile(r"[ \t]+([A-ZÀ-Ý][A-ZÀ-Ý0-9]+)")
 
 
-def _acronym_spans(
+# v0.4.16: palavra de ramo + marca cujas iniciais sao a sigla de UMA empresa da lista ("Textil Alfa Beta" -> "TAB
+# Imoveis Ltda"): o conjunto leva o token da empresa, nao o da marca (antes: "Textil [token da marca]").
+_BRANCH_WORDS = (
+    r"t[êe]xtil|ind[úu]stria|confec[çc][õo]es|com[ée]rcio|malharia|transportes|construtora|distribuidora|"
+    r"agropecu[áa]ria|im[óo]veis|participa[çc][õo]es|empreendimentos|servi[çc]os"
+)
+
+
+def _initialism_spans(
     text: str, entries: Sequence[_TargetEntry], occupied: Sequence[tuple[int, int]]
 ) -> list[tuple[int, int, _TargetEntry]]:
+    found: list[tuple[int, int, _TargetEntry]] = []
+    for acronym, candidates in _acronym_owners(entries).items():
+        if len(candidates) != 1:
+            continue
+        rest = len(acronym) - 1
+        pattern = re.compile(
+            rf"(?<![^\W\d_])(?i:{_BRANCH_WORDS})((?:[ \t]+[A-ZÀ-Ý][^\W\d_]*){{{rest}}})(?![^\W\d_])"
+        )
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            words = match.group(0).split()
+            if "".join(fold_lexical(word)[:1] for word in words) != fold_lexical(acronym):
+                continue
+            if any(start < other_end and other_start < end for other_start, other_end in occupied):
+                continue
+            found.append((start, end, candidates[0]))
+    return found
+
+
+def _acronym_owners(entries: Sequence[_TargetEntry]) -> dict[str, list[_TargetEntry]]:
     owners: dict[str, list[_TargetEntry]] = defaultdict(list)
     for entry in entries:
         if entry.kind != "empresa":
@@ -990,8 +1128,14 @@ def _acronym_spans(
             continue
         if entry not in owners[words[0]]:
             owners[words[0]].append(entry)
+    return owners
+
+
+def _acronym_spans(
+    text: str, entries: Sequence[_TargetEntry], occupied: Sequence[tuple[int, int]]
+) -> list[tuple[int, int, _TargetEntry]]:
     found: list[tuple[int, int, _TargetEntry]] = []
-    for acronym, candidates in owners.items():
+    for acronym, candidates in _acronym_owners(entries).items():
         if len(candidates) != 1:
             continue  # duas empresas da lista com a mesma sigla: nao diz qual
         for match in re.finditer(rf"(?<![\w&/.-]){re.escape(acronym)}(?![\w&/-])", text):

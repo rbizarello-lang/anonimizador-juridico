@@ -76,11 +76,17 @@ class StructuredDetectionTests(unittest.TestCase):
         )
 
     def test_labeled_oab_eproc_variants(self) -> None:
+        from unittest import mock
+
+        from anonimizador_juridico import recognizers
+
         text = (
             "Patronos: OAB/RS n.º 54.321 e N.OAB- 11223. "
             "Evento 203 permanece. Uniao e SISBAJUD tambem."
         )
-        entities = StructuredDetector().detect(text)
+        self.assertEqual(StructuredDetector().detect(text), [])  # v0.4.16: OAB em claro (decisao do Operador)
+        with mock.patch.object(recognizers, "OAB_EM_CLARO", False):
+            entities = StructuredDetector().detect(text)
         self.assertEqual([entity.entity_type for entity in entities], ["BR_OAB", "BR_OAB"])
         values = [entity.value_from(text) for entity in entities]
         self.assertEqual(values, ["RS n.º 54.321", "11223"])

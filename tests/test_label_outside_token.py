@@ -108,11 +108,15 @@ class OtherLabeledIdTests(unittest.TestCase):
         self.assertEqual(_detect("RC 1.234.567-8 sem orgao", "BR_RG"), [])
 
     def test_oab_label_stays_and_uf_stays_in_the_token(self) -> None:
+        from unittest import mock
+
+        from anonimizador_juridico import recognizers
+
         text = "OAB/SC 12.345-B, OAB SC123456 e OAB 4.321/PR"
-        self.assertEqual(
-            _detect(text, "BR_OAB"), ["SC 12.345-B", "SC123456", "4.321/PR"]
-        )
-        self.assertTrue(_masked(text).startswith("OAB/[OAB_1], OAB [OAB_2] e OAB [OAB_3]"))
+        self.assertEqual(_masked(text), text)  # v0.4.16: OAB em claro (decisao do Operador)
+        with mock.patch.object(recognizers, "OAB_EM_CLARO", False):
+            self.assertEqual(_detect(text, "BR_OAB"), ["SC 12.345-B", "SC123456", "4.321/PR"])
+            self.assertTrue(_masked(text).startswith("OAB/[OAB_1], OAB [OAB_2] e OAB [OAB_3]"))
 
     def test_labeled_cpf_and_cnpj_with_invalid_dv_keep_label_outside(self) -> None:
         self.assertEqual(_masked("CPF 123.456.789-00"), "CPF [CPF_1]")

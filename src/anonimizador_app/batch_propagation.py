@@ -231,6 +231,8 @@ class BatchRoster:
             if kind is not None:
                 if has_token(value) or is_protected(value, self._protected):
                     continue
+                if span.canonical_key.startswith(("razao:", "denominacao:")):
+                    continue  # v0.4.16: denominacao compartilhada ja decidida pela lista (ancora ou token proprio)
                 core = norm_core(kind, value)
                 if len(_CONTENT.findall(core)) >= 2:
                     named.append((span.start, span.end))

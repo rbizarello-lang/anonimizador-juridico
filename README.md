@@ -139,6 +139,16 @@ nome logo antes da OAB sao trocados como os outros; o usuario do sistema ("USUAR
 ... - X - PROCURADOR -" do eproc) e o autor da referencia bibliografica ficam em claro; e o prenome dentro de
 nome de lugar ("Colonia Dona X") nao vira pessoa.
 
+Desde a 0.4.16: o nome da operacao do Nexus nao vai mais ao lote exportavel (so a AUDITORIA privada o
+traz). A denominacao usada por mais de uma empresa (o comeco da razao social da lista que e tambem outra
+razao social do lote) so vai para uma empresa com ancora segura (a razao social completa ou o CNPJ na
+mesma frase); sem ancora fica num token proprio que o ELENCO explica, com as empresas e os CNPJs que a
+usam. O CPF ao lado de dois nomes so os liga se os nomes puderem ser da mesma pessoa; a mudanca de nome
+entre empresas de CNPJ diferente nao entra nos vinculos. O prenome da pessoa partida em grafias de OCR
+leva o token dela, e o ELENCO diz que essas grafias podem ser a mesma pessoa. "Ramo + marca" com as
+iniciais da sigla de uma empresa da lista leva o token da empresa. OAB, CRECI e o codigo eproc do
+procurador ficam em claro (decisao do Operador), como a matricula.
+
 ## Saidas
 
 Cada lote tem o mesmo identificador (`lote_AAAAMMDD_HHMMSS`) em dois lugares:

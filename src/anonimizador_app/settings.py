@@ -247,11 +247,21 @@ def case_list_lines(settings: AppSettings | None) -> list[str]:
         ]
     lines = [f"Lista do caso usada: {counts}"]
     if settings.case_operation:
-        # H9-l: so a operacao escolhida (as contagens acima ja sao dela).
-        lines.append(f"Operacao escolhida na aba Caso: {operation_label(settings, settings.case_operation)}")
+        # H9-l: so a operacao escolhida (as contagens acima ja sao dela). v0.4.16: o NOME da operacao (em geral o nome
+        # do grupo devedor) nunca vai ao exportavel; so a AUDITORIA privada o traz (``operation_private_lines``).
+        lines.append("Operacao: uma operacao escolhida na aba Caso (as contagens acima sao dela; o nome fica so na "
+                     "AUDITORIA privada)")
     elif settings.case_operations:
         lines.append("Operacao: todas (nenhuma escolhida na aba Caso; a lista inteira foi usada)")
     return lines
+
+
+def operation_private_lines(settings: AppSettings | None) -> list[str]:
+    """v0.4.16: a operacao escolhida, com o nome, para a AUDITORIA PRIVADA (nunca para o exportavel)."""
+
+    if settings is None or not settings.case_operation:
+        return []
+    return [f"Operacao escolhida na aba Caso: {operation_label(settings, settings.case_operation)}"]
 
 
 def save_settings(private_root: Path, settings: AppSettings) -> None:

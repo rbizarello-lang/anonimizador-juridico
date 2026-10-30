@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from anonimizador_app.contextual import build_contextual_engine
 from anonimizador_app.eproc_codes import EprocCodesEngine
 from anonimizador_app.settings import AppSettings
+from anonimizador_app.known_forms import KnownForms
+from anonimizador_juridico import recognizers
 from anonimizador_juridico.pseudonymizer import canonicalize
+
+# v0.4.16: decisao do Operador (30/10/2026), o codigo eproc fica EM CLARO. O reconhecedor segue pronto e e testado
+# com ``EPROC_EM_CLARO`` desligado.
+_TROCA = mock.patch.object(recognizers, "EPROC_EM_CLARO", False)
 
 
 CAPA = """\
@@ -28,6 +35,19 @@ PEOPLE = [
 ]
 
 
+class EprocEmClaroTests(unittest.TestCase):
+    def test_motor_nao_troca_o_codigo(self) -> None:
+        self.assertTrue(recognizers.EPROC_EM_CLARO)
+        self.assertEqual(EprocCodesEngine(people=PEOPLE).detect(CAPA + "\n" + EVENTS), [])
+        self.assertEqual(EprocCodesEngine(people=[]).detect(CAPA), [])
+
+    def test_passada_final_nao_troca_o_codigo(self) -> None:
+        forms = KnownForms()
+        forms.add("BR_EPROC", "PR900001", "PR900001")
+        self.assertEqual(forms.spans("Peticao de PR900001 no evento 75", []), [])
+
+
+@_TROCA
 class EprocCodesTests(unittest.TestCase):
     def test_capa_and_event_column_share_token(self) -> None:
         text = CAPA + "\n" + EVENTS

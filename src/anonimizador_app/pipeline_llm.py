@@ -95,6 +95,7 @@ from .lote_elenco import (
     append_denominations_section,
     append_same_company_section,
     append_family_section,
+    append_shared_denomination_section,
     append_same_person_section,
     partial_name_rows,
     apply_company_groups,
@@ -132,7 +133,7 @@ from .review_import import review_audit_lines
 from .rules import build_recognizers
 from . import run_timing
 from .run_notes import run_note_lines
-from .settings import AppSettings, case_list_lines, settings_for_operation
+from .settings import AppSettings, case_list_lines, operation_private_lines, settings_for_operation
 from .version import ENGINE_LOCAL
 from .span_hygiene import comment_ranges, inside_comment, sanitize_spans
 
@@ -624,6 +625,9 @@ def _run_llm_job_inner(
         # v0.4.11: empresa que pode ser a mesma (forma curta ou denominacao anterior) e o app nao uniu.
         legend_path = append_same_company_section(export_dir, mapping.records, groups) or legend_path
         legend_path = append_family_section(export_dir, mapping.records) or legend_path
+        legend_path = append_shared_denomination_section(  # v0.4.16
+            export_dir, mapping.records, [outcome.markdown_path for outcome in outcomes if outcome.ok and outcome.markdown_path]
+        ) or legend_path
         # v0.4.13: a mesma denominacao usada por empresas diferentes (CNPJ diferentes), separada por empresa.
         legend_path = append_shared_names_section(export_dir, shared_found, mapping.records) or legend_path
     write_llm_private_audit(
@@ -725,6 +729,7 @@ def _run_llm_job_inner(
     notes = [(title, [scrub_secrets(line, *secrets) for line in lines]) for title, lines in notes]
     write_audit_report(export_dir, notes, engine=engine_id)
     run_timing.append_private(map_path.parent / PRIVATE_AUDIT_NAME, timing_notes)  # H9-o
+    run_timing.append_private(map_path.parent / PRIVATE_AUDIT_NAME, operation_private_lines(active), "Operacao do Nexus")
     if not local_only:
         # v0.4.13: tokens gerados por chamada e respostas fora do formato tambem na AUDITORIA privada.
         run_timing.append_private(
@@ -2410,7 +2415,8 @@ def _append_llm_roles(
     partial = _partial_name_rows(roster, tokens, documents)
     # H9-n: tambem os tokens de pessoa ao lado do mesmo CPF; secao vazia diz "Nenhum caso detectado".
     seen = {(token, tuple(others)) for token, others, _how in partial}
-    partial += [row for row in same_cpf_rows(documents) if (row[0], tuple(row[1])) not in seen]
+    names = {tokens[entry.key]: entry.name for entry in roster.to_tokenize() if entry.kind == "pessoa" and entry.key in tokens}
+    partial += [row for row in same_cpf_rows(documents, names) if (row[0], tuple(row[1])) not in seen]
     partial.sort(key=lambda row: _token_order(row[0]))
     lines += ["", *same_person_lines(partial)]
     path = export_dir / LEGEND_FILENAME

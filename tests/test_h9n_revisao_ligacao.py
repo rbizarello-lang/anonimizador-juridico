@@ -220,9 +220,12 @@ class ElencoModoLocalTest(unittest.TestCase):
 
     def test_prenome_e_mesmo_cpf(self):
         text = "Assinam [PESSOA_1], CPF [CPF_1], e [PESSOA_3] (CPF [CPF_1]).\n"
-        cast = self._finalize(text, ["Joana Ernestina Fictícia", "Joana", "Ernestina Fictícia Souza"])
-        self.assertIn("| [PESSOA_2] | [PESSOA_1] | prenome |", cast)
+        cast = self._finalize(text, ["Joana Ernestina Fictícia", "Joana", "Joana E. Fictícia"])
+        self.assertIn("| [PESSOA_2] | [PESSOA_1] ou [PESSOA_3] | prenome |", cast)
         self.assertIn("| [PESSOA_1] | [PESSOA_3] | mesmo CPF [CPF_1] ao lado |", cast)
+        # v0.4.16: o CPF ao lado de dois nomes que nao podem ser a mesma pessoa nao liga.
+        other = self._finalize(text, ["Joana Ernestina Fictícia", "Joana", "Ernestina Fictícia Souza"])
+        self.assertNotIn("mesmo CPF [CPF_1] ao lado", other)
         self.assertNotIn("Joana", cast)  # so tokens
 
     def test_cpf_de_uma_pessoa_so_nao_liga(self):

@@ -11,6 +11,7 @@ from anonimizador_app.settings import (
     carry_case_list,
     case_item_key,
     case_list_lines,
+    operation_private_lines,
     load_settings,
     save_settings,
     settings_for_operation,
@@ -126,7 +127,11 @@ class FiltroTest(unittest.TestCase):
     def test_auditoria_diz_a_operacao(self):
         lines = case_list_lines(settings_for_operation(self._settings("OP-1")))
         self.assertIn("pessoas 2", lines[0])
-        self.assertIn("Operacao escolhida na aba Caso: Operação Ficticia Norte (OP-1)", lines[1])
+        # v0.4.16: o nome da operacao so na AUDITORIA privada; a exportavel diz que ha uma operacao escolhida.
+        self.assertIn("Operacao: uma operacao escolhida na aba Caso", lines[1])
+        self.assertNotIn("Norte", " ".join(lines))
+        private = operation_private_lines(settings_for_operation(self._settings("OP-1")))
+        self.assertEqual(private, ["Operacao escolhida na aba Caso: Operação Ficticia Norte (OP-1)"])
         self.assertIn("Operacao: todas", case_list_lines(self._settings())[1])
 
     def test_grava_e_le_e_leva_ao_trocar_de_pasta(self):
@@ -183,7 +188,8 @@ class RodadaTest(_Pipeline):
         _result, body, audit = self.go(self.TEXT, FakeDiscoverer([]), settings=self._settings("OP-1"))
         self.assertNotIn("Teodoro", body)
         self.assertIn("Bartolomeu Pires Mendonça", body)
-        self.assertIn("Operacao escolhida na aba Caso: OP-1", audit)
+        self.assertIn("Operacao: uma operacao escolhida na aba Caso", audit)
+        self.assertNotIn("OP-1", audit)  # v0.4.16: nem o codigo da operacao vai ao exportavel
 
     def test_todas_troca_as_duas(self):
         _result, body, _audit = self.go(self.TEXT, FakeDiscoverer([]), settings=self._settings(""))

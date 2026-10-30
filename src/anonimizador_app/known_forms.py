@@ -138,6 +138,12 @@ class KnownForms:
             self.add(entity_type, canonical, "")
 
     def add(self, entity_type: str, canonical: str, original: str = "") -> None:
+        from anonimizador_juridico import recognizers
+
+        if entity_type == "BR_OAB" and recognizers.OAB_EM_CLARO:
+            return  # v0.4.16: OAB em claro por decisao do Operador; nem a passada final a troca
+        if entity_type == "BR_EPROC" and recognizers.EPROC_EM_CLARO:
+            return  # v0.4.16: codigo eproc em claro por decisao do Operador
         if entity_type in _SHORT_TYPES:
             self._add_short(entity_type, canonical, original)
             return

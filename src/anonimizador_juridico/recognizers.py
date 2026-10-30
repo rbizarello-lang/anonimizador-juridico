@@ -1697,9 +1697,24 @@ class BrPhoneRecognizer(PatternRecognizer):
         return trimmed
 
 
+# Decisao do Operador (28/10/2026): o numero da OAB (e o do CRECI, que o app nao reconhece) fica EM CLARO, como a
+# matricula de imovel. False volta a trocar a OAB.
+OAB_EM_CLARO = True
+# Decisao do Operador (30/10/2026): o codigo eproc do procurador (PR900001, P9000001) tambem fica EM CLARO; o motor
+# (``EprocCodesEngine``) e a passada de formas conhecidas nao o trocam. False volta a trocar o codigo eproc.
+EPROC_EM_CLARO = True
+
+
 def build_structured_recognizers() -> list[PatternRecognizer]:
     """Cria somente reconhecedores que independem de NLP ou acesso externo."""
 
+    recognizers = _structured_recognizers()
+    if OAB_EM_CLARO:
+        recognizers = [item for item in recognizers if "BR_OAB" not in item.supported_entities]
+    return recognizers
+
+
+def _structured_recognizers() -> list[PatternRecognizer]:
     return [
         BrCpfRecognizer(),
         BrCpfOcrRecognizer(),

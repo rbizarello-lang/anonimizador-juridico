@@ -52,32 +52,60 @@ def owners_by_first_name(people: Iterable[tuple[str, str]]) -> dict[str, set[str
     """(chave, nome) -> {prenome dobrado: chaves das pessoas}."""
 
     owners: dict[str, set[str]] = defaultdict(set)
-    names: dict[str, str] = {}
+    # v0.4.16: a mesma chave pode vir de varias entidades do lote (grafias de OCR da pessoa da lista): todas contam.
+    names: dict[str, list[str]] = defaultdict(list)
     for key, name in people:
         word = first_word(name)
         if len(word) >= _MIN_LETTERS:
             owners[word].add(key)
-            names[key] = name
+            names[key].append(name)
     for word, keys in owners.items():
         # A mesma pessoa em duas grafias do lote ("Fulano Beltrano Silva" e "Fulano B. Silva": mesmo prenome e mesmo
-        # ultimo sobrenome) conta como uma: o prenome vai para a grafia mais longa.
+        # ultimo sobrenome, o resto igual salvo OCR ou inicial) conta como uma.
         if len(keys) < 2:
             continue
-        longest = max(keys, key=lambda item: (len(names[item]), item))
-        if all(_same_person(names[key], names[longest]) for key in keys):
-            owners[word] = {longest}
+        # A entrada da lista do caso, senao a de nome mais longo; as outras tem de poder ser a mesma pessoa.
+        chosen = max(keys, key=lambda item: (item.startswith("alvo:"), max(map(len, names[item])), item))
+        if all(
+            key == chosen
+            or any(
+                _same_person(mine, theirs) or _same_person(theirs, mine)
+                for mine in names[key]
+                for theirs in names[chosen]
+            )
+            for key in keys
+        ):
+            owners[word] = {chosen}
     return owners
 
 
 def _same_person(short: str, long: str) -> bool:
     """Mesmo prenome e mesmo ultimo sobrenome, e as palavras do meio do nome curto (ou as iniciais) no nome longo."""
 
+    from .name_generation import conflicting_generation
+
+    if conflicting_generation(short, long):
+        return False
     left = [word for word in _WORD.findall(fold_lexical(short)) if word not in _CONNECTIVES]
     right = [word for word in _WORD.findall(fold_lexical(long)) if word not in _CONNECTIVES]
-    if len(left) < 2 or left[0] != right[0] or left[-1] != right[-1]:
+    if len(left) < 2 or len(right) < 2 or left[0] != right[0] or not _close_word(left[-1], right[-1]):
         return False
     middle = right[1:-1]
-    return all(any(word == other or (len(word) == 1 and other.startswith(word)) for other in middle) for word in left[1:-1])
+    return all(
+        any(_close_word(word, other) or (len(word) == 1 and other.startswith(word)) for other in middle)
+        for word in left[1:-1]
+    )
+
+
+def _close_word(left: str, right: str) -> bool:
+    """v0.4.16: a mesma palavra ou a mesma com erro de OCR (o motor partia uma pessoa em tokens de grafia deturpada e o
+    prenome dela virava [PRENOME_n] de "duas pessoas")."""
+
+    from difflib import SequenceMatcher
+
+    if left == right:
+        return True
+    return min(len(left), len(right)) >= 4 and SequenceMatcher(None, left, right).ratio() >= 0.7
 
 
 def _blocked_word(word: str) -> bool:

@@ -30,8 +30,8 @@ def _cnpj(base: str, branch: str = "0001") -> str:
 
 class VersaoTest(unittest.TestCase):
     def test_versoes(self) -> None:
-        self.assertEqual(APP_VERSION, "0.4.15")
-        self.assertEqual(DETECTION_VERSION, "2.21.0")
+        self.assertEqual(APP_VERSION, "0.4.16")  # v0.4.16 sobe as duas (tests/test_v0416.py)
+        self.assertEqual(DETECTION_VERSION, "2.22.0")
 
 
 # ------------------------------------------------------------------------------ 1. veto de fusao de empresas (LLM)

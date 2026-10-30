@@ -399,17 +399,33 @@ class TrocadosPorDecisao(unittest.TestCase):
         self.assertEqual(_out("***.982.247-** e depois 529.982.247-25"), "[CPF_1] e depois [CPF_1]")
 
     def test_oab_sempre_trocada(self) -> None:
+        # v0.4.16: decisao do Operador, a OAB fica EM CLARO; o reconhecedor segue pronto (``OAB_EM_CLARO``).
+        from unittest import mock
+
+        from anonimizador_juridico import recognizers
+
+        self.assertEqual(_out("OAB/SC 12.345"), "OAB/SC 12.345")
+        with mock.patch.object(recognizers, "OAB_EM_CLARO", False):
+            detector = StructuredDetector()
         for text, expected in {
             "OAB/SC 12.345": "OAB/[OAB_1]",
             "OAB/SC nº 12345": "OAB/[OAB_1]",
             "OAB SC 12345-B": "OAB [OAB_1]",
             "OAB 12345/SC": "OAB [OAB_1]",
         }.items():
-            self.assertEqual(_out(text), expected, text)
+            spans = drop_protected_spans(text, resolve_overlaps(detector.detect(text)))
+            self.assertEqual(pseudonymize(text, spans, PseudonymMap()).text, expected, text)
 
     def test_oab_entra_na_passada_final(self) -> None:
+        from unittest import mock
+
+        from anonimizador_juridico import recognizers
+
         forms = KnownForms()
         forms.add("BR_OAB", "", "OAB/SC 12.345")
+        self.assertEqual(forms.spans("OAB/SC 12345", []), [])  # v0.4.16: em claro
+        with mock.patch.object(recognizers, "OAB_EM_CLARO", False):
+            forms.add("BR_OAB", "", "OAB/SC 12.345")
         text = "Adv. OAB SC nº 12345, depois 12.345/SC e OAB/SC 12345; outro 12345 solto e OAB/SC 99999."
         found = forms.spans(text, [])
         self.assertEqual(
@@ -476,7 +492,7 @@ class ListaProtegidaDoOperador(unittest.TestCase):
         self.assertFalse(self._drops("O Sr. Fulano Exemplo compareceu.", "Sr. Fulano Exemplo", "PERSON"))
 
     def test_padrao_6b_oab_com_numero_troca_o_numero(self) -> None:
-        self.assertEqual(_out("OAB/SC 12.345"), "OAB/[OAB_1]")
+        self.assertEqual(_out("OAB/SC 12.345"), "OAB/SC 12.345")  # v0.4.16: OAB em claro (decisao do Operador)
         text = "OAB/SC 12.345"
         self.assertFalse(self._drops(text, "OAB/SC", "ORGANIZATION") and False)
 
@@ -503,7 +519,7 @@ class ListaProtegidaDoOperador(unittest.TestCase):
 
     def test_numeros_continuam_trocados(self) -> None:
         self.assertEqual(_out("RENAVAM 00345678901 e CEP 88.330-000"), "RENAVAM [RENAVAM_1] e CEP [CEP_1]")
-        self.assertEqual(_out("OAB/SC 12345-B"), "OAB/[OAB_1]")
+        self.assertEqual(_out("OAB/SC 12345-B"), "OAB/SC 12345-B")  # v0.4.16: OAB em claro
         self.assertEqual(_out("CCIR 950.123.456.789-0"), "CCIR [CADASTRO_RURAL_1]")
         self.assertEqual(_out("CAR nº 12345678 e CIB 7.654.321-0"), "CAR nº [CADASTRO_RURAL_1] e CIB [CADASTRO_RURAL_2]")
 

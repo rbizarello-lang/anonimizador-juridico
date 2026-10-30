@@ -73,8 +73,12 @@ _RENAME_STEP = re.compile(
     rf"nome\s+empresarial)\s+para\s*:?\s*({_COMPANY})"
 )
 _RENAME_FORMER = re.compile(
-    rf"(?is)({_COMPANY})[^.\[]{{0,40}}?\b(?:antiga|anterior|ex)\w*[\s-]+(?:denomina\w+|raz[ãa]o\s+social|"
-    rf"nome(?:\s+empresarial|\s+social)?)\s*:?\s*(?:era\s+)?({_COMPANY})"
+    # v0.4.16: o ponto do "Ltda." logo depois do token; "denominação anterior:", "na época denominada", "teve a
+    # denominação de".
+    rf"(?is)({_COMPANY})\.?[^.\[]{{0,40}}?(?:\b(?:antiga|anterior|ex)\w*[\s-]+(?:denomina\w+|raz[ãa]o\s+social|"
+    rf"nome(?:\s+empresarial|\s+social)?)|\bdenomina[çc][ãa]o(?:\s+social)?\s+(?:anterior|antiga)"
+    rf"|\bna\s+[ée]poca\s+denominad[ao]|\btev[ea]\s+(?:a\s+)?(?:denomina[çc][ãa]o|raz[ãa]o\s+social)(?:\s+de)?)"
+    rf"\s*:?\s*(?:era\s+)?({_COMPANY})"
 )
 _RENAME_NOW = re.compile(
     rf"(?is)({_COMPANY})[^.\[]{{0,40}}?(?:atualmente\s+denominad[ao]|hoje\s+denominad[ao]|"
@@ -125,13 +129,19 @@ _COMPANY_ONLY = re.compile(r"\[EMPRESA_\d+\]")
 
 # v0.4.15: token de CNPJ -> raiz de 8 digitos (do mapa da rodada; ``set_cnpj_roots``). Vazio: o token e a raiz.
 _ACTIVE_CNPJ_ROOTS: dict[str, str] = {}
+# v0.4.16: tokens de denominacao usada por mais de uma empresa (sem ancora) e de marca: nunca entram em vinculo de
+# mudanca de nome (a marca chamada de "denominacao" no texto nao e o nome antigo da empresa).
+_ACTIVE_SHARED_TOKENS: set[str] = set()
 
 
 def set_cnpj_roots(mapping: object | None) -> None:
     """Raizes de CNPJ do mapa desta rodada, para os grupos ·Gn (``company_groups``) e o ELENCO."""
 
     _ACTIVE_CNPJ_ROOTS.clear()
+    _ACTIVE_SHARED_TOKENS.clear()
     for record in getattr(mapping, "records", ()) or ():
+        if str(getattr(record, "canonical", "")).startswith(("denominacao:", "marca:")):
+            _ACTIVE_SHARED_TOKENS.add(str(record.token))
         canonical = str(getattr(record, "canonical", ""))
         if getattr(record, "entity_type", "") == "BR_CNPJ" and len(canonical) >= 8:
             _ACTIVE_CNPJ_ROOTS[str(record.token)] = canonical[:8]
@@ -146,20 +156,12 @@ def company_groups(
 
     docs = [(name, strip_groups(text)) for name, text in documents]
     cover_ids = _cover_ids(docs)
-    links = _links(docs, cover_ids)
+    links = _links(docs, cover_ids, cnpj_roots)
     parent: dict[str, str] = {}
     # v0.4.15: raizes de CNPJ coladas a cada token de empresa (corpo e capas). Dois grupos com raizes conhecidas e
     # diferentes nunca se juntam: o "antiga denominacao" entre duas empresas de CNPJ diferente (ou o token que o LLM
     # fundiu) nao faz grupo. Sem o mapa, o proprio token de CNPJ e a raiz.
-    known = _ACTIVE_CNPJ_ROOTS if cnpj_roots is None else cnpj_roots
-    roots: dict[str, set[str]] = defaultdict(set)
-    for identifier, tokens in _body_cnpj_owners(docs, shared_only=False).items():
-        for token in tokens:
-            roots[token].add(known.get(identifier, identifier))
-    for identifier, parties in cover_ids.items():
-        if identifier.startswith("[CNPJ"):
-            for token in parties:
-                roots[token].add(known.get(identifier, identifier))
+    roots = _token_roots(docs, cover_ids, cnpj_roots)
 
     def find(token: str) -> str:
         parent.setdefault(token, token)
@@ -204,6 +206,23 @@ def company_groups(
 
 def _reason_order(reason: str) -> tuple[int, str]:
     return (0 if reason.startswith("cadeia") else 1, reason)
+
+
+def _token_roots(
+    docs: Sequence[tuple[str, str]], cover_ids: dict[str, dict[str, set[str]]], cnpj_roots: Mapping[str, str] | None
+) -> dict[str, set[str]]:
+    """Token de empresa -> raizes de CNPJ coladas a ele no corpo e nas capas (sem o mapa, o token de CNPJ e a raiz)."""
+
+    known = _ACTIVE_CNPJ_ROOTS if cnpj_roots is None else cnpj_roots
+    roots: dict[str, set[str]] = defaultdict(set)
+    for identifier, tokens in _body_cnpj_owners(docs, shared_only=False).items():
+        for token in tokens:
+            roots[token].add(known.get(identifier, identifier))
+    for identifier, parties in cover_ids.items():
+        if identifier.startswith("[CNPJ"):
+            for token in parties:
+                roots[token].add(known.get(identifier, identifier))
+    return roots
 
 
 def apply_groups(text: str, groups: Sequence[CompanyGroup]) -> str:
@@ -458,15 +477,26 @@ def _role_list(roles: Counter[str] | None) -> str:
 def _links(
     documents: Sequence[tuple[str, str]],
     cover_ids: dict[str, dict[str, set[str]]],
+    cnpj_roots: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str, str, str]]:
-    """(token, vinculo, token, evidencia): so o que o texto diz, nunca por semelhanca de nome."""
+    """(token, vinculo, token, evidencia): so o que o texto diz, nunca por semelhanca de nome.
+
+    v0.4.16: a mudanca de nome entre dois tokens de empresa com raizes de CNPJ conhecidas e diferentes nao e vinculo
+    (o grupo ja nao se formava, mas a tabela do ELENCO ainda a imprimia como evidencia firme)."""
 
     links: list[tuple[str, str, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
+    roots = _token_roots(documents, cover_ids, cnpj_roots)
 
     def add(first: str, kind: str, second: str, evidence: str) -> None:
         if first == second or (first, kind, second) in seen:
             return
+        if kind in _RENAME_KINDS | {"possível vínculo"} and roots.get(first) and roots.get(second) and not (
+            roots[first] & roots[second]
+        ):
+            return
+        if kind in _RENAME_KINDS | {"possível vínculo"} and {first, second} & _ACTIVE_SHARED_TOKENS:
+            return  # a denominacao de varias empresas nao e o nome antigo de uma delas
         seen.add((first, kind, second))
         links.append((first, kind, second, evidence))
 
@@ -798,8 +828,42 @@ def compared_token_pairs(documents: Sequence[tuple[str, str]]) -> set[frozenset[
     return pairs
 
 
-def same_cpf_rows(documents: Sequence[tuple[str, str]]) -> list[tuple[str, list[str], str]]:
-    """Dois ou mais tokens de pessoa colados ao MESMO token de CPF (na mesma linha, logo antes do CPF)."""
+def compatible_person_names(left: str, right: str) -> bool:
+    """v0.4.16: os dois nomes podem ser a mesma pessoa: sem sufixo de geracao diferente (pai x filho) e as palavras do
+    nome mais curto (sem particula; inicial vale pela palavra) todas no mais longo, na ordem, com o mesmo prenome."""
+
+    from anonimizador_juridico.pseudonymizer import fold_lexical
+
+    from .name_generation import conflicting_generation
+
+    if conflicting_generation(left, right):
+        return False
+    words = [
+        [word for word in re.findall(r"[^\W\d_]+", fold_lexical(name)) if word not in _NAME_PARTICLES]
+        for name in (left, right)
+    ]
+    short, long = sorted(words, key=lambda item: (len(item), sum(map(len, item))))
+    if not short or not long or short[0] != long[0]:
+        return False
+    position = 0
+    for word in short:
+        while position < len(long) and not (long[position] == word or (len(word) == 1 and long[position][0] == word)):
+            position += 1
+        if position == len(long):
+            return False
+        position += 1
+    return True
+
+
+def same_cpf_rows(
+    documents: Sequence[tuple[str, str]], names: dict[str, str] | None = None
+) -> list[tuple[str, list[str], str]]:
+    """Dois ou mais tokens de pessoa colados ao MESMO token de CPF (na mesma linha, logo antes do CPF).
+
+    v0.4.16: o CPF ao lado nao basta. Com ``names`` (token -> nome, privado), so liga tokens cujos nomes podem ser da
+    mesma pessoa (``compatible_person_names``): o CPF de um ao lado do nome do outro (assinatura conjunta, tabela,
+    OCR) ligava pai e filho, conjuges e socios. Sem ``names``, nao liga ninguem.
+    """
 
     owners: dict[str, set[str]] = defaultdict(set)
     for _name, text in documents:
@@ -819,11 +883,16 @@ def same_cpf_rows(documents: Sequence[tuple[str, str]]) -> list[tuple[str, list[
                     owners[cpf.group(0)].add(before[-1].group(0))
     rows: list[tuple[str, list[str], str]] = []
     for cpf, tokens in sorted(owners.items(), key=lambda item: _token_key(item[0])):
-        if len(tokens) < 2:
+        if len(tokens) < 2 or not names:
             continue
         ordered = sorted(tokens, key=_token_key)
         for token in ordered:
-            rows.append((token, [other for other in ordered if other != token], f"mesmo CPF {cpf} ao lado"))
+            others = [
+                other for other in ordered
+                if other != token and compatible_person_names(names.get(token, ""), names.get(other, ""))
+            ]
+            if others:
+                rows.append((token, others, f"mesmo CPF {cpf} ao lado"))
     return rows
 
 
@@ -846,6 +915,27 @@ def same_person_lines(rows: Sequence[tuple[str, list[str], str]]) -> list[str]:
     ]
 
 
+def ocr_variant_rows(
+    people: Sequence[tuple[str, str]], linked: set[tuple[str, str]] = frozenset()
+) -> list[tuple[str, list[str], str]]:
+    """v0.4.16: tokens de pessoa com o mesmo prenome e o resto do nome igual salvo erro de OCR ou inicial ("Fulano B.
+    Silva", "Fulano Beltrano Sllva"): o motor os separou por grafia; o ELENCO diz que podem ser a mesma pessoa."""
+
+    from .first_names import _same_person
+
+    rows: list[tuple[str, list[str], str]] = []
+    for token, name in people:
+        others = [
+            other
+            for other, other_name in people
+            if other != token and (token, other) not in linked
+            and (_same_person(name, other_name) or _same_person(other_name, name))
+        ]
+        if others:
+            rows.append((token, sorted(others, key=_token_key), "mesmo nome com outra grafia (OCR ou inicial)"))
+    return rows
+
+
 def append_same_person_section(
     export_dir: Path, people: Sequence[tuple[str, str]], markdown_paths: Sequence[Path]
 ) -> Path:
@@ -854,7 +944,8 @@ def append_same_person_section(
     documents = [(path.name, path.read_text(encoding="utf-8")) for path in markdown_paths]
     rows = partial_name_rows(people, documents)
     seen = {(token, tuple(others)) for token, others, _how in rows}
-    rows += [row for row in same_cpf_rows(documents) if (row[0], tuple(row[1])) not in seen]
+    rows += [row for row in same_cpf_rows(documents, dict(people)) if (row[0], tuple(row[1])) not in seen]
+    rows += ocr_variant_rows(people, {(token, other) for token, others, _how in rows for other in others})
     rows.sort(key=lambda row: _token_key(row[0]))
     target = Path(export_dir) / CAST_NAME
     existing = target.read_text(encoding="utf-8").rstrip("\n") if target.is_file() else ""
@@ -1113,6 +1204,69 @@ def append_first_name_section(export_dir: Path, records: Sequence[object]) -> Pa
         "|---|---|",
         *(f"| {token} | {', '.join(owners) if owners else '-'} |" for token, owners in rows),
     ]
+    target = Path(export_dir) / CAST_NAME
+    existing = target.read_text(encoding="utf-8").rstrip("\n") if target.is_file() else ""
+    target.write_text((existing + "\n\n" if existing else "") + "\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
+# --- v0.4.16: denominacao usada por mais de uma empresa (sem ancora: um token so, declarado) ---------------------------
+SHARED_DENOMINATION_TITLE = "## Denominação usada por mais de uma empresa (sem CNPJ por perto)"
+
+
+def shared_denomination_rows(
+    records: Sequence[object], documents: Sequence[tuple[str, str]]
+) -> list[tuple[str, list[tuple[str, list[str]]]]]:
+    """(token da denominacao, [(token de empresa que a usa, tokens de CNPJ colados a ela)])."""
+
+    companies: list[tuple[str, str]] = []
+    shared: list[tuple[str, str]] = []
+    for record in records:
+        if getattr(record, "entity_type", "") != "ORGANIZATION":
+            continue
+        canonical = str(getattr(record, "canonical", ""))
+        token = str(record.token)  # type: ignore[attr-defined]
+        if canonical.startswith("denominacao:"):
+            shared.append((token, canonical.split(":", 1)[1]))
+        elif canonical.startswith(("razao:", "alvo:empresa:")):
+            companies.append((token, canonical.split(":")[-1]))
+    if not shared:
+        return []
+    cnpjs: dict[str, set[str]] = defaultdict(set)
+    for identifier, tokens in _body_cnpj_owners(documents, shared_only=False).items():
+        for token in tokens:
+            cnpjs[token].add(identifier)
+    rows = []
+    for token, words in shared:
+        users = [
+            (company, sorted(cnpjs.get(company, ()), key=_token_key))
+            for company, body in companies
+            if body == words or body.startswith(words + " ")
+        ]
+        rows.append((token, sorted(users, key=lambda item: _token_key(item[0]))))
+    rows.sort(key=lambda row: _token_key(row[0]))
+    return rows
+
+
+def append_shared_denomination_section(export_dir: Path, records: Sequence[object], markdown_paths: Sequence[Path]) -> Path | None:
+    documents = [(path.name, path.read_text(encoding="utf-8")) for path in markdown_paths]
+    rows = shared_denomination_rows(records, documents)
+    if not rows:
+        return None
+    lines = [
+        SHARED_DENOMINATION_TITLE,
+        "",
+        "O token da esquerda é uma DENOMINAÇÃO (o começo de uma razão social, uma marca) que mais de uma empresa do lote "
+        "usa. Onde o texto traz a razão social completa ou o CNPJ na mesma frase, a ocorrência foi para o token da "
+        "empresa certa; onde não traz, ficou neste token: o texto, sozinho, NÃO diz de qual delas se trata. Não presuma "
+        "uma delas; confira a folha.",
+        "",
+        "| Denominação | Usada por (token da empresa: CNPJ ao lado no texto) |",
+        "|---|---|",
+    ]
+    for token, users in rows:
+        described = "; ".join(f"{company}: {', '.join(ids) if ids else 'sem CNPJ colado'}" for company, ids in users)
+        lines.append(f"| {token} | {described or '-'} |")
     target = Path(export_dir) / CAST_NAME
     existing = target.read_text(encoding="utf-8").rstrip("\n") if target.is_file() else ""
     target.write_text((existing + "\n\n" if existing else "") + "\n".join(lines) + "\n", encoding="utf-8")

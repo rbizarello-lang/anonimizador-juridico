@@ -156,17 +156,22 @@ class PseudonymizerTests(unittest.TestCase):
         )
 
     def test_oab_format_variants_share_token(self) -> None:
-        first_text = "Patrona OAB/SP 123.456 na capa."
-        first = pseudonymize(first_text, StructuredDetector().detect(first_text))
-        second_text = "Substabelecimento OAB 123456/SP no merito."
-        second = pseudonymize(
-            second_text,
-            StructuredDetector().detect(second_text),
-            mapping=first.mapping,
-        )
-        self.assertIn("[OAB_1]", first.text)
-        self.assertIn("[OAB_1]", second.text)
-        self.assertNotIn("[OAB_2]", second.text)
+        from unittest import mock
+
+        from anonimizador_juridico import recognizers
+
+        with mock.patch.object(recognizers, "OAB_EM_CLARO", False):
+            first_text = "Patrona OAB/SP 123.456 na capa."
+            first = pseudonymize(first_text, StructuredDetector().detect(first_text))
+            second_text = "Substabelecimento OAB 123456/SP no merito."
+            second = pseudonymize(
+                second_text,
+                StructuredDetector().detect(second_text),
+                mapping=first.mapping,
+            )
+            self.assertIn("[OAB_1]", first.text)
+            self.assertIn("[OAB_1]", second.text)
+            self.assertNotIn("[OAB_2]", second.text)
 
     def test_rg_preserves_alphanumeric_check_digit(self) -> None:
         from anonimizador_juridico.pseudonymizer import canonicalize

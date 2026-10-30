@@ -1,6 +1,7 @@
 """Codigos eproc de procurador na capa e em linhas Procurador(es)/Advogado(s) (Ciclo 4c).
 
-Apos um PERSON da lista de alvos, ``PR900001`` / ``P9000001`` viram [EPROC_n].
+Apos um PERSON da lista de alvos, ``PR900001`` / ``P9000001`` viram [EPROC_n] (desligado desde a 0.4.16:
+``recognizers.EPROC_EM_CLARO``, decisao do Operador, deixa o codigo em claro).
 ``PFN`` + digitos ao lado de PFN permanece em claro. ``REsp 1.259.018`` nao casa.
 Uma vez visto, o mesmo codigo e propagado no restante do documento.
 """
@@ -42,6 +43,10 @@ class EprocCodesEngine:
         self.enabled_tags = enabled_tags if enabled_tags is not None else default_enabled_tags()
 
     def detect(self, text: str) -> list[EntitySpan]:
+        from anonimizador_juridico import recognizers
+
+        if recognizers.EPROC_EM_CLARO:
+            return []  # v0.4.16: codigo eproc em claro por decisao do Operador (como OAB e CRECI)
         if not self.enabled_tags.get("BR_EPROC", True):
             return []
         seeds = list(_codes_after_targets(text, self.people)) if self.people else []

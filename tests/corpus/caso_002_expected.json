@@ -4,16 +4,14 @@
     "BR_PIX": 2,
     "BR_CONTA_BANCARIA": 2,
     "BR_RENAVAM": 1,
-    "BR_PLACA": 1,
-    "BR_OAB": 2
+    "BR_PLACA": 1
   },
   "expected_values": {
     "BR_PROCESSO": ["5004321-44.2024.4.04.7100"],
     "BR_PIX": ["9b2c3d4e-5f6a-4b7c-8d9e-0a1b2c3d4e5f", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"],
     "BR_CONTA_BANCARIA": ["3456-7", "89012-3"],
     "BR_RENAVAM": ["00345678901"],
-    "BR_PLACA": ["ABC1D23"],
-    "BR_OAB": ["RS n.º 54.321", "11223"]
+    "BR_PLACA": ["ABC1D23"]
   },
   "must_preserve": [
     "Evento 203",

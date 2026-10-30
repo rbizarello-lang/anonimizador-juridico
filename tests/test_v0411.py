@@ -94,8 +94,8 @@ def _span(text: str, value: str, nth: int = 0) -> tuple[int, int]:
 
 class VersaoTest(unittest.TestCase):
     def test_versoes(self) -> None:
-        self.assertEqual(APP_VERSION, "0.4.15")  # v0.4.15 sobe as duas
-        self.assertEqual(DETECTION_VERSION, "2.21.0")
+        self.assertEqual(APP_VERSION, "0.4.16")  # v0.4.16 sobe as duas
+        self.assertEqual(DETECTION_VERSION, "2.22.0")
 
 
 # ------------------------------------------------------------------------------------------- 1. agentes publicos
@@ -510,7 +510,12 @@ class ElencoCpfAoLadoTests(unittest.TestCase):
         ]
         self.assertEqual(same_cpf_rows(documents), [])
         documents = [("a.md", "[PESSOA_1], CPF [CPF_1], foi citado.\n[PESSOA_3], inscrito no CPF sob o nº [CPF_1].\n")]
-        self.assertEqual([row[0] for row in same_cpf_rows(documents)], ["[PESSOA_1]", "[PESSOA_3]"])
+        # v0.4.16: so com os nomes, e so quando podem ser a mesma pessoa.
+        self.assertEqual(same_cpf_rows(documents), [])
+        names = {"[PESSOA_1]": "Osvaldo Tibério Cunha", "[PESSOA_3]": "Osvaldo T. Cunha"}
+        self.assertEqual([row[0] for row in same_cpf_rows(documents, names)], ["[PESSOA_1]", "[PESSOA_3]"])
+        names["[PESSOA_3]"] = "Osvaldo Tibério Cunha Filho"
+        self.assertEqual(same_cpf_rows(documents, names), [])
 
 
 if __name__ == "__main__":

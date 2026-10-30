@@ -5,7 +5,6 @@
     "BR_CPF": 2,
     "BR_PHONE": 2,
     "EMAIL_ADDRESS": 1,
-    "BR_OAB": 1,
     "BR_RG": 1,
     "BR_CEP": 1
   },
@@ -15,7 +14,6 @@
     "BR_CPF": ["529.982.247-25", "52998224725"],
     "BR_PHONE": ["+55 (11) 98765-4321", "(11) 98765-4321"],
     "EMAIL_ADDRESS": ["helena.teste@example.org"],
-    "BR_OAB": ["SP 123.456"],
     "BR_RG": ["12.345.678-2"],
     "BR_CEP": ["01310-200"]
   },
